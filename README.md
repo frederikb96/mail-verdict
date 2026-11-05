@@ -1,269 +1,170 @@
-# MailVerdict
+<p align="center">
+  <img src="docs/images/header.jpg" alt="Envelopes flying into a letter tray under a green check mark, a crumpled envelope dropping into a bin beside it" width="100%">
+</p>
+
+<table>
+<tr>
+<td width="100">
+<img src="ui/public/icon.svg" alt="MailVerdict" width="84">
+</td>
+<td>
+<h1>MailVerdict</h1>
+A self-hosted mail client with an AI layer.
+</td>
+</tr>
+</table>
 
 [![CI](https://github.com/frederikb96/mail-verdict/actions/workflows/ci.yaml/badge.svg)](https://github.com/frederikb96/mail-verdict/actions/workflows/ci.yaml)
 [![Release](https://img.shields.io/github/v/release/frederikb96/mail-verdict)](https://github.com/frederikb96/mail-verdict/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A self-hosted mail client with an AI layer: read and organise mail across accounts, send and
-reply, and let a language model sort out what is spam while rules handle the rest.
+Mail, calendars and contacts from any IMAP, CalDAV and CardDAV server, in one web app you run
+yourself. A language model decides what is spam and explains why, bundles the mail about each
+order or booking into one entry, and writes rules from a sentence. Plain rules handle the rest.
 
-MailVerdict does not speak IMAP. Mail transport is handled by
-[PostIMAP](https://github.com/frederikb96/postimap), which mirrors your mailboxes into PostgreSQL
-in both directions. MailVerdict is an ordinary Postgres-backed web application on top of that
-mirror, which is what keeps it simple.
+<p align="center">
+  <img src="docs/images/mail.png" alt="The mail view: folders on the left, the inbox in the middle, an open conversation on the right" width="100%">
+</p>
 
-## What it does
+## Why
 
-- **Mail** — multiple accounts, folder tree with live counts, conversation threading, a virtualized
-  list that stays smooth on large mailboxes, and unified views: any set of folders, across
-  accounts, merged into one list with an icon of its own in the sidebar -- one folder can sit in
-  several. A conversation reads newest first; any earlier message in it can be made the open one,
-  so the toolbar and the reply act on that message instead of the newest. An open conversation
-  updates live, a reply arriving or your own sent reply showing up in it without reopening it. A
-  message header's sender and recipients copy
-  their addresses on a click, each alone or a whole line comma-separated. Folders can be created
-  and deleted (renaming and re-nesting are an IMAP limitation, not implemented). A quick filter
-  narrows the open folder or view by subject, sender or recipient, its rows carrying the same
-  actions an ordinary row does, and a toggle beside it shows only unread mail. Opening a reply
-  collapses the quoted original behind a "Show
-  quoted text" control, and ctrl+F (or a control beside the message's other icons) searches and
-  highlights matches inside the open message, which the browser's own find cannot reach. An
-  image or PDF attachment opens full screen for a look at it, rendered rather than downloaded;
-  the download control stays for that and for anything else the preview does not recognise.
-- **Compose** — a rich-text editor with Markdown input rules, tables, checklists and pasted
-  images, send, reply, reply-all, forward and drafts, with attachments. The panel resizes by
-  dragging its top edge or expanding to fill the window. A reply or forward embeds the original as
-  a collapsible quote, replies thread correctly, and a sending identity is chosen for you —
-  whichever address the original arrived at, or the account's starred default for a fresh message
-  — shown, and changeable, in one From control spanning every account that always names the
-  exact address (`Name <address>`), not just the account, over a mailbox that stays readable
-  rather than blurred behind it. Reopening a draft continues editing it
-  in place, and sending one leaves no draft behind. Pressing Send takes the message out of the
-  composer at once and sends it exactly once -- the server refuses a repeat whatever the browser
-  does -- and a failure brings the composer back as it was. A send can be undone for a few seconds
-  after pressing Send, held durably on the server rather than in the browser, and Undo reopens the
-  composer with everything that was written, attachments and pasted images included, rather than
-  only cancelling the send. Any message can
-  be downloaded as a raw `.eml` file, or its link copied -- the link opens that message wherever it
-  has been filed since.
-- **Actions** — read/unread, flag, archive, trash, permanent delete (with confirmation, since it
-  is irreversible), keywords, drag-and-drop moves (a long press selects instead of dragging on a
-  touch device) or a type-to-filter "Move to..." picker in the reading pane, and bulk actions over
-  a selection or a whole folder, threaded or not. A folder can be worked through from the keyboard
-  alone: the arrow keys move the reading pane between messages, `c` composes, `a` replies all, `f`
-  forwards, `v` moves the open message, `e` archives, `Delete` trashes, `r` toggles read and
-  unread, `/` focuses search, `?` lists every shortcut, Ctrl+Z (Cmd+Z on a Mac) takes back the last
-  few actions one by one, and whatever takes the open message out of the list opens the next one
-  in the direction you were already going. With more than one message ticked, `e`, `Delete`, `r`,
-  `u`, `s` and `v` act on the whole selection instead, the same as the bulk toolbar's own buttons.
-  Every action shows at once and survives a flaky or
-  absent connection: it waits, retries and is sent exactly once, even across a reload, with a
-  marker on the row while the server has not confirmed it and a Retry when the server refuses.
-  Sent late, or undone, an action never pulls a message out of a folder it was filed into
-  meanwhile, and one left unsent for an hour asks before it is sent at all.
-  Archiving a message, or filing it as spam, marks it read as it moves, and mail in Archive or
-  Trash stays read even when another client put it there — a setting turns this off for Archive
-  and Junk.
-  An account can also be given a Trash retention and a Junk retention, each in days and set
-  independently, so mail sitting in either long enough is permanently removed on its own.
-- **Glacier storage** — a per-account place mail can be moved to where it leaves the mail server
-  for good and lives on only in this application's own database: listed, searched and included in
-  unified views like any folder, since moving into or out of it is the ordinary move action. Read,
-  star, keyword, reply and forward all keep working, since none of them need the server; moving it
-  to a real folder restores it there with its original flags and, for the overwhelming majority of
-  mail, its original date — derived from the message's own `Date` header rather than the server's
-  original arrival stamp, so the two can diverge for a message whose header was wrong or missing.
-  Turning a glacier off, or
-  deleting its account, is refused while it still holds anything. A number of days set on the
-  account moves its archived mail in automatically, in small paced batches, once a message has sat
-  there that long.
-- **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
-  server, including a send that never left, surfaced with the reason and a live update the moment
-  it happens. A message still waiting on its way out long after it should have gone raises an
-  alert of its own, rather than waiting silently, which clears itself once the message is sent
-  or the send is undone. Such alerts are system notifications: always counted on the bell, and
-  listed with the write failures.
-- **Alerts** — new mail raises a bell with a durable, dismissable list, and — once notifications
-  are turned on for a device — a system notification that reaches it even with no MailVerdict page
-  open, using the browser's own Web Push. Which folders alert is a per-device setting; every
-  registered device can be reviewed and removed from Settings. Requires a home-screen install on
-  iOS/iPadOS, and stops the moment the browser itself is quit on a desktop — the durable list is
-  what a closed tab or a declined permission falls back to. An alert resolves itself once its mail
-  is read anywhere, and a setting keeps new-mail alerts out of the bell's badge so it counts only
-  system notifications. Calendar reminders are not delivered as alerts yet.
-- **Spam verdicts** — each new message is classified by a language model, with the reasoning
-  visible and a correction loop when it gets one wrong. A dedicated review screen lists every
-  message currently called spam with no ruling yet, across every account and folder including
-  Junk, for confirming or correcting them singly or in bulk. Historical mail is never classified,
-  and nothing is classified twice.
-- **Orders and tickets** — mail about a purchase, ticket or booking (confirmation, invoice,
-  payment, shipping, carrier notices, delivery, return, refund, customer-service conversation) is
-  bundled into one entry with an AI-written title, status and summary, across every account that
-  has the feature switched on, in a screen of its own. A carrier notice or payment receipt with no
-  order number of its own still finds its way to the right entry by merchant, timing and what is
-  already in flight; a mail is attached to an existing entry or opens a new one, never split
-  between two afterwards. When the bundling goes wrong, a mail can be moved to another entry or
-  removed, two entries merged, or the summary rewritten by hand. Each entry is a ticket, an order
-  or something else (a subscription, a claim), set by the model and overridable by hand. What an
-  entry's mails attach is read too — the text of PDFs (scans by OCR), Wallet passes, calendar files,
-  e-invoices and images (a photo OCR cannot read, such as a photographed ticket, is transcribed by
-  a vision model when one is set), and every QR, Aztec or bar code, which the entry shows as an image to scan —
-  and a file can be added to an entry directly (or opened as a new one) without any mail. Entries
-  can be marked as favorites, narrowed by a typo-tolerant text filter, closed or reopened by hand, and sealed so
-  the agent adds no more mail to them; an open entry nothing is expected of any more is closed
-  automatically, a few days (7 by default) after the date the model estimates it is over, or 30
-  days after its last mail when it has no such date; both are settings. A shipment
-  number that only a carrier's tracking link carries is read from the link. The same actions sit in the detail's menu and in a menu on each row (right-click or long
-  press), and on a touch screen a row swipes: right to left for favorite, left to right for closed
-  or open. The screen shows all entries, only orders or only tickets (one click), with Open and
-  Favorites toggles on top; the choice is remembered. Tickets form a timeline around a today line,
-  later events above and earlier ones below, with a Today button to jump back to it. A ticket's codes open fullscreen on a white page for
-  scanning. Recent mail can be looked through after switching the feature on for an account.
-- **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it, or send
-  it to a webhook: the message's raw source is posted to a URL, with a header that can take its value
-  from a named secret stored encrypted in the database (set from Settings, never shown again). A
-  delivery is queued, retried when the receiver is unavailable, never repeated once it succeeded,
-  and raises an alert when it gives up; mail that predates a rule can be sent once, oldest first,
-  through the API. From an open mail, the "Add rule" icon takes a sentence ("these should go to
-  Newsletter too", "split this rule by sender") and proposes one change to the rules, which may
-  add, change, reorder or remove several rules at once — showing the explanation, each affected
-  rule as it is and as it would be, and what the touched rules would have caught among the last
-  100 mails, for Accept or Decline as a whole. Nothing is kept, and it never proposes permanent
-  deletion or a webhook.
-- **Search** — a field in the top header on every page (`/` focuses it) jumps straight to a
-  result; text search scoped to whichever accounts, folders and fields (subject, from, to,
-  body) you pick, ranked by whether the word itself matched rather than merely started a longer
-  one, then by where the match lands and newest first within that, with a typo-tolerant fallback
-  for a query the primary match misses entirely; plus semantic search over an embedding of every
-  message, for finding mail by meaning rather than exact words: the likely hits first, then a
-  "Less likely" group, each newest first, with nothing to tune; text matches show at once and the
-  list by meaning replaces them when it arrives. A clock button narrows either
-  search to a time window: today, since yesterday, the last 7 or 30 days, a slider over the last
-  52 weeks, or a custom range of days. Both remember the account and folder scope you chose, independent of whichever account
-  the sidebar shows. Opening a result lands on that message in its
-  folder wherever it sits, however far back, rather than only reaching whatever the newest page
-  happens to include.
-- **Calendars and contacts** — CalDAV and CardDAV servers mirrored the same way mail is: calendars
-  with recurring events, RSVPs and per-occurrence editing, and address books with compose
-  autocomplete. An emailed invitation is parsed and offered for import on its own, and a reply
-  goes back over the identity's own outbox rather than the server's scheduling engine. An event
-  can carry any number of reminders and say whether it makes you free or busy; a calendar's own
-  default reminder can override or switch off the global one. Dates and times are entered and
-  shown day-first in a 24-hour clock, in an app-owned control rather than the browser's own.
-- **Privacy** — remote images are blocked by default, with a per-sender and per-domain allowlist.
-  A sender's avatar shows their address-book photo when one exists — an embedded photo is served
-  from this application's own endpoint, never a third-party request, and a remote one follows the
-  same allowlist as any other remote image — and initials otherwise; never a lookup against an
-  unrelated third party. Message HTML, including a sender's own stylesheet, is sanitized on the
-  server and rendered in an isolated shadow root — every escaping declaration dropped, every
-  remote reference gated behind the same allowlist that governs images. Opening a message from a
-  sender that is not allowlisted makes no request anywhere, and a read-receipt request is never
-  answered; an allowlisted sender's images and backgrounds load, while active content
-  (frames, scripts, media, forms) and anything that escapes the message's box stay blocked for
-  everyone. In the dark theme a message opens dark when it declares its own dark-mode support,
-  with the sender's own dark styles applied, or when its own colours read safely on dark; in
-  the light theme every message opens light. A toggle in its header always overrides either
-  default. Hovering a link shows where it leads. The image block does
-  not extend to the message body itself: a newly arrived message's subject, sender and a
-  truncated body go to the configured model provider twice, once for spam classification and once
-  for the embedding that powers semantic search, and a third time for orders and tickets on an
-  account with that feature on and a mail that passes its first filter — a deliberate design
-  choice, not something a setting turns off. The "Add rule" assistant sends the open mail's
-  excerpt, the rule set, and the sender and subject of a handful of other mails to the model
-  provider each time it is used, and only then.
-- **MCP server** — connect an MCP client and let it search, read, organise and send mail —
-  including replying to or forwarding a message by its id, saved as a draft for you to review and
-  send, with attachments — and
-  read, create, edit and delete calendar events and contacts.
-- **Installable** — a browser that supports it offers to install the site, which then runs in its
-  own window with its own icon. The installed application registers as a `mailto:` handler, so it
-  can be the machine's mail client: a `mailto:` link opens the composer filled in from the link.
-  `Ctrl+Shift+1`, `Ctrl+Shift+2` and `Ctrl+Shift+3` jump to mail, calendar and contacts.
+A mail client is mostly the same everywhere. MailVerdict adds what the usual ones don't:
 
-## Running it
+- **Spam verdicts with reasons.** Every new message gets a verdict from a language model, with the
+  reasoning shown next to it. A review screen collects every open verdict across all accounts,
+  and a wrong one is corrected right from the message.
+- **Orders and tickets.** Confirmation, invoice, shipping notice, delivery, return: the mail about
+  one purchase or booking becomes one entry with a status and a summary. Attached PDFs, Wallet
+  passes and QR codes are read, so a train ticket's code opens full screen, ready to scan.
+- **Rules from a sentence.** "These should go to Newsletter too" on an open mail proposes the rule
+  change, shows what it would have caught in the last 100 mails, and waits for Accept. Rules can
+  also post a message to a webhook.
+- **Search by meaning.** Besides ordinary text search, every message has an embedding, so "the mail
+  about the broken heater" finds it without the exact words.
+- **Glacier storage.** Old mail can leave the mail server for good and live on in MailVerdict's own
+  database, still searchable, readable and answerable, and movable back with its flags and date.
+- **Mail that behaves.** Undo send held on the server, every action sent exactly once even across a
+  flaky connection and a reload, Ctrl+Z for the last few actions, and keyboard shortcuts for the
+  everyday ones.
+- **Built to be driven by an agent.** A REST API with worked examples, and an MCP server that
+  searches, reads, files and sends mail and edits calendars and contacts.
 
-Both compose files bring up MailVerdict, PostIMAP and PostgreSQL together.
+Every feature, area by area: [docs/features.md](docs/features.md).
+
+<p align="center">
+  <img src="docs/images/calendar.png" alt="The calendar's week view with the month and calendar list on the left" width="100%">
+</p>
+
+## How it fits together
+
+```
+browser, iPhone app, MCP client  →  MailVerdict  →  PostgreSQL  ←  PostIMAP  →  IMAP, SMTP, CalDAV, CardDAV
+```
+
+MailVerdict does not speak IMAP. [PostIMAP](https://github.com/frederikb96/postimap) mirrors your
+mailboxes, calendars and address books into PostgreSQL in both directions, and MailVerdict is an
+ordinary Postgres-backed web app on top of that mirror. Marking a message read is an `UPDATE`;
+PostIMAP carries it to the mail server. [docs/architecture.md](docs/architecture.md) explains the
+split and everything built on it.
+
+## What you need
+
+- A container runtime (Podman or Docker with compose), or a Kubernetes cluster.
+- One or more mail accounts reachable over IMAP and SMTP. Calendars and contacts need a CalDAV or
+  CardDAV server, for example Nextcloud.
+- An API key for at least one model provider: OpenAI, Anthropic, or any OpenAI-compatible server.
+  Without one, mail works and the AI features skip their work until a key is set.
+- An authenticating proxy in front of it. MailVerdict has no login of its own ([Access](#access)).
+
+## Run your own
+
+With compose, which brings up MailVerdict, PostIMAP and PostgreSQL together:
 
 ```bash
-cp .prod.env.example .prod.env      # fill in the secrets below
+cp .prod.env.example .prod.env      # fill in the secrets, see Configuration
 podman compose --env-file .prod.env up -d
 ```
 
-The UI is then on <http://localhost:8080>. Add an account through the interface; PostIMAP starts
-syncing it immediately and the mail appears as it arrives.
+The UI is then on <http://localhost:8080>. Add an account under *Accounts*; PostIMAP starts
+syncing it right away and mail appears as it arrives. Then set a provider key and pick the models
+under *Settings*.
 
-For development — hot reload, plus a throwaway mail server and SMTP sink so there is a mailbox to
-work against — see [docs/development.md](docs/development.md).
-
-## Kubernetes
-
-A Helm chart ships in [`charts/mail-verdict`](charts/mail-verdict) and is published on release:
+On Kubernetes, a Helm chart is published with every release:
 
 ```bash
-helm install mail-verdict oci://ghcr.io/frederikb96/charts/mail-verdict --version 1.0.0
+helm install mail-verdict oci://ghcr.io/frederikb96/charts/mail-verdict --version <version>
 ```
 
 It expects an external PostgreSQL shared with PostIMAP. The
 [chart README](charts/mail-verdict/README.md) walks through the three steps — database, PostIMAP,
-then MailVerdict — and includes a CloudNativePG example and the access setup.
+then MailVerdict — with a CloudNativePG example and the access setup.
+
+For development — hot reload, plus a throwaway mail server and SMTP sink — see
+[docs/development.md](docs/development.md).
 
 ## Configuration
 
 Every option, with its default and an explanation, lives in
 [`config/config.yaml`](config/config.yaml). That file is the documentation; this README does not
-repeat it.
+repeat it. Configuration comes from that file, then a sparse override file, then environment
+variables, and the app refuses to start on anything missing rather than quietly substituting a
+fallback.
 
-Configuration comes from that file, then a sparse override file, then environment variables — and
-the application refuses to start on anything missing rather than quietly substituting a fallback.
-Anything that changes at runtime — the AI providers and models, spam behaviour, rules, and provider
-API keys — is a **setting**, stored in the database (keys encrypted) and edited through the API or
-the Settings page, not in a file.
+Anything that changes at runtime is a **setting**, stored in the database and edited on the
+Settings page or through the API: the AI providers and models, spam behaviour, rules, and provider
+API keys (stored encrypted).
 
-Every AI task has its own provider and model, so several providers can be configured at once: spam
-verdicts (`ai`), embeddings (`semantic`), the order-matching, order-text and image-reading calls
-(`orders`' `decide_*`, `write_*` and `read_*` keys) and the rule assistant (`assistant`). A provider is OpenAI, Anthropic
-(not for embeddings — no embedding model of its own), or any OpenAI-compatible server by its own
-address, key and model name; a custom server needs its address set on the task that uses it
-(`ai.base_url`, `semantic.base_url`, `orders.decide_base_url`, ...). A key is stored once per
-provider and shared by every task that names it, so mail that must stay private can sit on one
-provider while order analysis and the rule assistant use another. Which mail each task reads is
-stated beside it on the Settings page. A provider that runs out of credit, or rejects its key,
-pauses its tasks until it answers again, and is raised as an alert if that lasts
-(`providers.suspended_alert_after_seconds`).
+- **One provider and model per AI task:** spam verdicts (`ai`), embeddings (`semantic`), the
+  order-matching, order-text and image-reading calls (`orders`' `decide_*`, `write_*` and `read_*`
+  keys) and the rule assistant (`assistant`). A provider is OpenAI, Anthropic (not for embeddings,
+  it has no embedding model), or any OpenAI-compatible server by its own address, key and model
+  name; a custom server's address is set on the task that uses it (`ai.base_url`,
+  `semantic.base_url`, `orders.decide_base_url`, ...).
+- A key is stored once per provider and shared by every task that names it, so mail that must stay
+  private can sit on one provider while order analysis uses another. The Settings page states
+  beside each task which mail it reads; [docs/features.md](docs/features.md#privacy) has the
+  details.
+- A provider that runs out of credit, or rejects its key, pauses its tasks until it answers again,
+  and raises an alert if that lasts (`providers.suspended_alert_after_seconds`).
+- **Token usage:** the tokens of every paid model response are recorded locally with their
+  purpose, provider and model, and pushed to an Elasticsearch data stream once
+  `usage_export.elasticsearch_url` is set and an API key for it is stored
+  (`elastic_usage_api_key`, written like a provider key). The Settings page shows how the push is
+  going.
 
-The tokens of every paid model response — every task, retries, embeddings and search queries —
-are recorded locally with their purpose, provider and model, cache reads and writes included, and
-pushed to an Elasticsearch data stream once its address is set (`usage_export.elasticsearch_url`,
-empty by default) and an API key for it is stored (`elastic_usage_api_key`, written and reported
-like a provider key; retention under `usage_export` too). The
-Settings page shows how the push is going.
-
-A handful of values stay environment variables regardless, because they either gate config loading
-itself or are the fallback path for a deployment that would rather not put a key in the database:
+A handful of values stay environment variables, because they gate config loading itself or are the
+fallback for a deployment that would rather not put a key in the database:
 
 | Variable | Purpose |
 |----------|---------|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `CUSTOM_AI_API_KEY` / `ELASTIC_USAGE_API_KEY` | Fallback provider and usage export keys, used only when nothing is stored via the Settings API |
 | `MAIL_VERDICT_DATABASE_URL` | PostgreSQL connection, shared with PostIMAP |
 | `POSTGRES_PASSWORD` | Database password, used by compose |
-| `ENCRYPTION_KEY` | Encrypts provider keys stored via the Settings API, PostIMAP's own credential-at-rest encryption, and this server's Web Push signing key (generated on first use, never provisioned) — one key shared by all three. Optional; without it, provider keys can only come from the two env vars above, and push notifications are unavailable |
+| `ENCRYPTION_KEY` | Encrypts provider keys stored via the Settings API, PostIMAP's own credential-at-rest encryption, and this server's Web Push signing key (generated on first use, never provisioned) — one key shared by all three. Optional; without it, provider keys can only come from the env vars above, and push notifications are unavailable |
 
 ## Access
 
 MailVerdict has no login screen and no auth mechanism of its own — nothing checks a header or a
 key on any endpoint. Put an authenticating proxy in front of it (OIDC, basic auth, an internal
-SSO) and let that handle sign-in — people never touch application credentials, and the application
-stays free of session management. The chart README has a worked example.
+SSO) and let that handle sign-in. People never touch application credentials, and the app stays
+free of session management. The chart README has a worked example.
 
-## iPhone app
+## On a phone
+
+<p align="center">
+  <img src="docs/images/phone.png" alt="The inbox and an open message at phone width" width="60%">
+</p>
+
+The web UI works at phone width and can be installed to the home screen, where it also gets push
+notifications.
 
 [mail-verdict-ios](https://github.com/frederikb96/mail-verdict-ios) is a native iPhone client for
-this server. It talks to the same API as the browser, sending whatever credential the proxy in front
-of it expects (a bearer token or basic auth).
+the same server. It talks to the same API as the browser, sending whatever credential the proxy in
+front of it expects (a bearer token or basic auth).
 
-Notifications on the phone go through a push relay run by the app's publisher, because only the
-publisher can sign pushes for the app. Each notification is sealed on this server with a key only
-the phone holds, so the relay forwards ciphertext:
+Its notifications go through a push relay run by the app's publisher, because only the publisher
+can sign pushes for the app. Each notification is sealed on this server with a key only the phone
+holds, so the relay forwards ciphertext:
 
 - **The relay sees** the phone's device token, this server's IP address, and the size and timing
   of each push.
@@ -275,22 +176,18 @@ Native push needs `ENCRYPTION_KEY`. The relays a phone may use are listed in
 push off; nothing is then sent to any relay. With the chart's network policy enabled, allow egress
 to those relays.
 
-## API
+## Docs
 
-MailVerdict is built to be driven by an agent as much as by the browser UI. [docs/api.md](docs/api.md)
-is the reference: worked examples from an empty instance to a configured one, the REST endpoint
-groups, and the two things about the API that are easy to assume wrongly — that there is no
-authentication at all, and that a pipeline write behaves differently from every other write when
-it names something that does not exist yet. The generated OpenAPI document at `/api/openapi.json`
-is the exhaustive schema; the MCP server at `/mcp` wraps a curated subset of the same
-functionality as typed tools.
-
-## Architecture
-
-[docs/architecture.md](docs/architecture.md) covers how MailVerdict and PostIMAP divide the work,
-how live updates reach the browser, and the two design decisions that are not obvious: why
-MailVerdict's tables carry no foreign keys onto PostIMAP's, and how a message is guaranteed never
-to be classified twice.
+- [docs/features.md](docs/features.md): every feature, area by area, and what reaches the model
+  provider
+- [docs/architecture.md](docs/architecture.md): how MailVerdict and PostIMAP divide the work, live
+  updates, the message pipeline, orders, glacier storage, calendars
+- [docs/api.md](docs/api.md): the REST API with worked examples, live updates, and the MCP server
+  at `/mcp`; the generated OpenAPI document is served at `/api/openapi.json`
+- [docs/development.md](docs/development.md): setup, the test layers, running a dev stack,
+  releasing
+- [charts/mail-verdict/README.md](charts/mail-verdict/README.md): the Helm chart
+- [docs/IOS_PARITY.md](docs/IOS_PARITY.md): which web features the iPhone app has
 
 Built with FastAPI, SQLAlchemy and Alembic on the server, React and Next.js on the client, and
 FastMCP for the tool interface.

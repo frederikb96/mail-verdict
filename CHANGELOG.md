@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The README is a short overview with screenshots of the app; the full feature list is
+  `docs/features.md`.
+
 ## [7.4.0] - 2026-11-04
 
 ### Changed
