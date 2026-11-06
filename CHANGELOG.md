@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A screen no longer crashes after an update on a response saved by the previous version: the
+  query cache kept in the browser is discarded when the build changes, and an entry whose data is
+  older than a day is no longer carried from one load to the next.
+
 ### Changed
 
 - The README is a short overview with screenshots of the app; the full feature list is

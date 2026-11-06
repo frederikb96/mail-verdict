@@ -55,6 +55,24 @@ export function isEphemeralQuery(queryKey: readonly unknown[]): boolean {
   return EPHEMERAL_PREFIXES.some((p) => first.startsWith(p));
 }
 
+/**
+ * Whether a query goes into the stored cache. Restoring the cache restarts
+ * every query's garbage-collection clock, so an entry for a screen opened
+ * once (settings, a contact) would otherwise be carried over on every load
+ * for as long as the app is used daily -- its age is judged by when its data
+ * was fetched, not by when the cache was last written.
+ */
+export function shouldPersistQuery(
+  query: { queryKey: readonly unknown[]; state: { status: string; dataUpdatedAt: number } },
+  now: number,
+): boolean {
+  return (
+    query.state.status === "success" &&
+    now - query.state.dataUpdatedAt < PERSIST_MAX_AGE &&
+    !isEphemeralQuery(query.queryKey)
+  );
+}
+
 export const queryPersister =
   typeof window !== "undefined"
     ? createSyncStoragePersister({

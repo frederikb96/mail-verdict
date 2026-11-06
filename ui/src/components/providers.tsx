@@ -8,7 +8,7 @@ import { useState, type ReactNode } from "react";
 import {
   queryPersister,
   PERSIST_MAX_AGE,
-  isEphemeralQuery,
+  shouldPersistQuery,
 } from "@/lib/query-persister";
 
 /** 30 seconds stale time for lists, queries refetch in background after. */
@@ -43,10 +43,12 @@ export function Providers({ children }: { children: ReactNode }) {
         persistOptions={{
           persister: queryPersister,
           maxAge: PERSIST_MAX_AGE,
+          // A cache written by another build is discarded: a response shape
+          // that changed between releases would otherwise render from the
+          // stored copy before the refetch lands, and crash the screen.
+          buster: process.env.NEXT_PUBLIC_BUILD_ID,
           dehydrateOptions: {
-            shouldDehydrateQuery: (query) =>
-              query.state.status === "success" &&
-              !isEphemeralQuery(query.queryKey),
+            shouldDehydrateQuery: (query) => shouldPersistQuery(query, Date.now()),
           },
         }}
       >
