@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.4.2] - 2026-11-06
+
+### Fixed
+
+- Nudging the month view a week or two up and down no longer stutters on a busy machine: such a
+  nudge mounts no rows, and the URL catching up after each pause no longer re-renders the
+  sidebar, the header and the rest of the app around the calendar.
+
 ## [7.4.1] - 2026-11-06
 
 ### Fixed

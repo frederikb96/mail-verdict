@@ -23,8 +23,10 @@
  * Two more things are deliberately NOT driven by the raw scroll position:
  *
  * - React state changes only when the rendered week RANGE actually moves,
- *   never per pixel -- `renderRange` is derived from `scrollTop` on every
- *   scroll event, but only committed via `setState` when it differs from
+ *   never per pixel -- `renderRange` is re-derived on every scroll event,
+ *   holds while enough mounted rows are left beyond the view on both sides
+ *   (so nudging a week or two mounts nothing), and is only committed via
+ *   `setState` when it differs from
  *   what's already rendered (a functional update returning the previous
  *   object when nothing changed, so React bails out with no re-render at
  *   all). `MonthWeekRow` is memoized on top of that, so even the rare
@@ -73,6 +75,7 @@ import {
   computeAnchorWeek,
   computeFetchWindow,
   computeRenderRange,
+  nextRenderRange,
   positionAt,
   restorePosition,
   sameMonthSet,
@@ -87,6 +90,9 @@ const MIN_ROW_HEIGHT = 72;
 const MAX_ROW_HEIGHT = 180;
 /** ~1.5 screens of margin each side of the visible range. */
 const RENDER_MARGIN_ROWS = 8;
+/** Rows the mounted range keeps beyond the visible ones before scrolling
+ * re-centres it (see month-window.ts's `nextRenderRange`). */
+const RENDER_KEEP_ROWS = 2;
 /** How long scrolling has to be quiet before it's "settled": the URL and
  * the fetch window both catch up at this point, not on every scroll
  * event. Short enough that a genuine pause feels immediate, long enough
@@ -399,15 +405,17 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     lastPosition[shape] = positionAt(top, viewportHeightRef.current, rowHeightRef.current, WEEK_INDEX_MIN);
     updateMonthLabel(top, viewportHeightRef.current, rowHeightRef.current);
 
-    const range = computeRenderRange(
-      top, viewportHeightRef.current, rowHeightRef.current, RENDER_MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX,
+    const range = nextRenderRange(
+      renderRangeRef.current, top, viewportHeightRef.current, rowHeightRef.current,
+      RENDER_MARGIN_ROWS, RENDER_KEEP_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX,
     );
     // The functional-update form is what makes this a no-op commit when
     // the range hasn't moved: returning the same object React already
     // holds is an Object.is match, so it bails out before re-rendering
     // anything -- the mechanism behind "zero commits for a wheel movement
-    // that stays inside one row".
+    // that stays inside the mounted margin".
     const rangeMoved = !sameRange(renderRangeRef.current, range);
+    renderRangeRef.current = range;
     setRenderRange((prev) => (sameRange(prev, range) ? prev : range));
 
     // Velocity from the last two scroll events -- a fling mounts rows light

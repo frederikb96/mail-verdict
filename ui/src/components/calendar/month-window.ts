@@ -2,9 +2,10 @@
  * Pure geometry for the month scroller: no React, no DOM, unit testable on
  * plain numbers. Two windows, kept deliberately separate:
  *
- * - The **render window** is what gets mounted -- computed straight from
- *   `scrollTop`, generous margin each side, updated live so scrolling never
- *   shows a gap.
+ * - The **render window** is what gets mounted -- computed from
+ *   `scrollTop`, generous margin each side, re-centred live once fewer than
+ *   a few rows of that margin are left, so scrolling never shows a gap and
+ *   a small nudge changes nothing.
  * - The **fetch window** is what gets requested from the server -- the
  *   months the render window overlaps, plus one month's buffer each side.
  *   It is deliberately computed as a separate step so the caller can commit
@@ -131,6 +132,31 @@ export function computeRenderRange(
     start: Math.max(min, firstVisible - marginRows),
     end: Math.min(max, lastVisible + marginRows),
   };
+}
+
+/** The render range after a scroll: the current one while at least
+ * `keepRows` rows of it are still left beyond the visible rows on both
+ * sides (or it already reaches the bound), else a fresh one with the full
+ * margin. Nudging a week or two back and forth then mounts and unmounts
+ * nothing, and a steady scroll re-centres in steps of several rows
+ * rather than one row per crossing. */
+export function nextRenderRange(
+  current: RenderRange,
+  scrollTop: number,
+  viewportHeight: number,
+  rowHeight: number,
+  marginRows: number,
+  keepRows: number,
+  min: number,
+  max: number,
+): RenderRange {
+  if (rowHeight <= 0) return computeRenderRange(scrollTop, viewportHeight, rowHeight, marginRows, min, max);
+  const firstVisible = Math.floor(scrollTop / rowHeight) + min;
+  const lastVisible = Math.floor((scrollTop + viewportHeight) / rowHeight) + min;
+  const startHolds = current.start === min || current.start <= firstVisible - keepRows;
+  const endHolds = current.end === max || current.end >= lastVisible + keepRows;
+  if (startHolds && endHolds) return current;
+  return computeRenderRange(scrollTop, viewportHeight, rowHeight, marginRows, min, max);
 }
 
 /** Every month chunk key the render range's own days fall into. */

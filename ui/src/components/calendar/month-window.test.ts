@@ -7,6 +7,7 @@ import {
   computeFetchWindow,
   computeRenderRange,
   monthsForRenderRange,
+  nextRenderRange,
   positionAt,
   restorePosition,
   sameMonthSet,
@@ -31,6 +32,25 @@ test("computeRenderRange centers on scrollTop with margin on both sides", () => 
 test("computeRenderRange clamps to the min/max week bounds", () => {
   const range = computeRenderRange(0, 720, ROW_HEIGHT, MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX);
   assert.equal(range.start, WEEK_INDEX_MIN);
+});
+
+test("nextRenderRange keeps the mounted rows while a nudge stays inside the margin", () => {
+  const anchor = dateToWeekIndex(new Date(2026, 8, 9));
+  const top = (anchor - WEEK_INDEX_MIN) * ROW_HEIGHT;
+  const current = computeRenderRange(top, 720, ROW_HEIGHT, MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX);
+  for (const rows of [1, -1, 2, -2, 6, -6]) {
+    const next = nextRenderRange(current, top + rows * ROW_HEIGHT, 720, ROW_HEIGHT, MARGIN_ROWS, 2, WEEK_INDEX_MIN, WEEK_INDEX_MAX);
+    assert.equal(next, current, `nudged ${rows} rows`);
+  }
+});
+
+test("nextRenderRange re-centres with the full margin once fewer rows are left beyond the view", () => {
+  const anchor = dateToWeekIndex(new Date(2026, 8, 9));
+  const top = (anchor - WEEK_INDEX_MIN) * ROW_HEIGHT;
+  const current = computeRenderRange(top, 720, ROW_HEIGHT, MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX);
+  const moved = top + 7 * ROW_HEIGHT;
+  const next = nextRenderRange(current, moved, 720, ROW_HEIGHT, MARGIN_ROWS, 2, WEEK_INDEX_MIN, WEEK_INDEX_MAX);
+  assert.deepEqual(next, computeRenderRange(moved, 720, ROW_HEIGHT, MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX));
 });
 
 test("computeRenderRange never divides by a zero row height", () => {

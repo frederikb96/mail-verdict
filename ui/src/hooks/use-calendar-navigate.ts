@@ -63,12 +63,25 @@ export function useCalendarNavigate() {
  * every row scrolled past) and only wants the address bar to catch up
  * once, when scrolling settles. A replace, like every other passive write
  * here: a settle event happens once per pause, not once per user gesture,
- * so it never deserves a history entry. */
+ * so it never deserves a history entry.
+ *
+ * It also keeps Next's router out of it. Next's patched replaceState turns
+ * a write into a router restore, and that re-renders every router consumer
+ * -- the sidebar, the header, the shell around the calendar -- once per
+ * pause while the reader nudges the month view, the work that stalled the
+ * next wheel tick on a loaded machine. Passing the entry's own state along
+ * (it carries Next's `__NA` marker) is the form Next lets through
+ * untouched, and keeps the router's tree on the entry for Back and
+ * Forward. The router's own idea of the URL then lags until the next
+ * navigate(), which nothing reads: use-calendar-url-sync.ts applies the
+ * URL on mount and popstate only, from `window.location`. */
 export function useCalendarUrlWriter() {
   const store = useStore();
   return useCallback(() => {
     window.history.replaceState(
-      null, "", calendarUrl(store.get(calendarViewAtom), store.get(calendarDateAtom)),
+      window.history.state,
+      "",
+      calendarUrl(store.get(calendarViewAtom), store.get(calendarDateAtom)),
     );
   }, [store]);
 }
