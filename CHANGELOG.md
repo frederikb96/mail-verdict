@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.4.1] - 2026-11-06
+
 ### Fixed
 
 - A screen no longer crashes after an update on a response saved by the previous version: the
