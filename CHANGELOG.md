@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The compose files run PostIMAP 1.11.16, which decodes a message in a charset its MIME library
+  cannot handle by detecting the charset instead of reading it as UTF-8, and updates its HTTP
+  client (undici) with security fixes.
+
 ## [7.4.3] - 2026-11-07
 
 ### Security
