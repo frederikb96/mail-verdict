@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.4.3] - 2026-11-07
+
+### Security
+
+- Updated the UI's Next.js to 16.4.5, which fixes seven moderate advisories, among them
+  GHSA-mfr8-8qww-v76h and GHSA-rhh4-g77r-r9qj (cache disclosure through `use cache`) and
+  GHSA-7qx7-33qx-rqx2 (an SVG bypass in image optimization). The UI is a static export without
+  `use cache`, image optimization or Edge routes, so the shipped image was not exposed; the fixes
+  reach the build toolchain.
+
+### Changed
+
+- UI dependency updates: Tiptap 3.32.3, lucide-react 1.61.0.
+- The dev compose file runs Mailpit 1.32.0.
+
 ## [7.4.2] - 2026-11-06
 
 ### Fixed
