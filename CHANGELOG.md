@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.4.4] - 2026-11-09
+
+### Fixed
+
+- On an iPhone, the app is sized to the visible area above the keyboard and Safari's scroll of
+  the page when a field gains focus is undone, so the reply box sits right above the keyboard and
+  the header stays in view.
+
 ### Changed
 
 - The compose files run PostIMAP 1.11.16, which decodes a message in a charset its MIME library
