@@ -15,6 +15,7 @@ import { ToastContainer } from "@/components/common/toast-container";
 import { ProtocolHandler } from "@/components/layout/protocol-handler";
 import { SectionShortcuts } from "@/components/layout/section-shortcuts";
 import { ServiceWorkerNavigation } from "@/components/layout/service-worker-navigation";
+import { KeyboardSafeViewport } from "@/components/layout/keyboard-safe-viewport";
 import { ShortcutsOverlay } from "@/components/layout/shortcuts-overlay";
 
 const geistSans = Geist({
@@ -76,6 +77,7 @@ export default function RootLayout({
         <Providers>
           <ThemeProvider>
             <SidebarProvider>
+              <KeyboardSafeViewport />
               <SSEConnector />
               <ProtocolHandler />
               <SectionShortcuts />
