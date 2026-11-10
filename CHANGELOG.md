@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.4.5] - 2026-11-10
+
 ### Changed
 
 - The section shortcuts are `Ctrl+Alt+1`, `Ctrl+Alt+2` and `Ctrl+Alt+3` (mail, calendar,
