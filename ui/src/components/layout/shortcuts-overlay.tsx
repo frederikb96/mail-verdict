@@ -71,9 +71,9 @@ const GROUPS: ShortcutGroup[] = [
   {
     title: "Sections",
     items: [
-      { keys: "Ctrl+Shift+1", description: "Mail" },
-      { keys: "Ctrl+Shift+2", description: "Calendar" },
-      { keys: "Ctrl+Shift+3", description: "Contacts" },
+      { keys: "Ctrl+Alt+1", description: "Mail" },
+      { keys: "Ctrl+Alt+2", description: "Calendar" },
+      { keys: "Ctrl+Alt+3", description: "Contacts" },
     ],
   },
 ];

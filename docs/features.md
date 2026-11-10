@@ -233,5 +233,5 @@ subset of the REST API ([api.md](api.md)) as typed tools.
 
 A browser that supports it offers to install the site, which then runs in its own window with its
 own icon. The installed application registers as a `mailto:` handler, so it can be the machine's
-mail client: a `mailto:` link opens the composer filled in from the link. `Ctrl+Shift+1`,
-`Ctrl+Shift+2` and `Ctrl+Shift+3` jump to mail, calendar and contacts.
+mail client: a `mailto:` link opens the composer filled in from the link. `Ctrl+Alt+1`,
+`Ctrl+Alt+2` and `Ctrl+Alt+3` jump to mail, calendar and contacts.

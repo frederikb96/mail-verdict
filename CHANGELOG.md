@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The section shortcuts are `Ctrl+Alt+1`, `Ctrl+Alt+2` and `Ctrl+Alt+3` (mail, calendar,
+  contacts) instead of `Ctrl+Shift+<n>`.
+
 ## [7.4.4] - 2026-11-09
 
 ### Fixed
