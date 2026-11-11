@@ -1,7 +1,7 @@
 # Architecture
 
 MailVerdict is a web mail client with an AI layer on top. It does not speak IMAP or SMTP. All
-mail transport is handled by [PostIMAP](https://github.com/frederikb96/postimap), a separate
+mail transport is handled by [PostIMAP](https://github.com/frederikberg/postimap), a separate
 service that mirrors IMAP mailboxes into PostgreSQL in both directions.
 
 The two services share a database and never talk to each other directly.
@@ -36,7 +36,7 @@ of the database, and this application is an ordinary Postgres-backed web app.
 
 The full set of tables, the exact columns a consumer may write, the notification payloads and
 worked SQL for every operation are defined in PostIMAP's
-[consumer contract](https://github.com/frederikb96/postimap/blob/main/docs/consumer-contract.md).
+[consumer contract](https://github.com/frederikberg/postimap/blob/main/docs/consumer-contract.md).
 That document is authoritative; this one only explains how MailVerdict uses it.
 
 ## Layers
@@ -769,7 +769,7 @@ The iPhone app is a second transport on the same table: a `push_subscriptions` r
 `transport = 'apns'`, so every rule above — folder scope, staging, exactly-once, resolution —
 applies to it unchanged. Only the app's publisher can sign pushes for the app, so a server never
 talks to Apple itself; it goes through a stateless push relay
-([`mail-verdict-ios/relay`](https://github.com/frederikb96/mail-verdict-ios/blob/main/relay/README.md)).
+([`mail-verdict-ios/relay`](https://github.com/frederikberg/mail-verdict-ios/blob/main/relay/README.md)).
 
 ```
 phone ──register──► relay ──ticket──► phone ──ticket + content key──► this server

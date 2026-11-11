@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.5.1] - 2026-11-11
+
+### Changed
+
+- The image, the chart and the PostIMAP test image default to `ghcr.io/frederikberg/...`, and the
+  README, chart metadata and docs link to the `frederikberg` GitHub account. The chart is published
+  to `oci://ghcr.io/frederikberg/charts`; earlier chart versions need `image.repository` set to
+  keep pulling.
+
 ## [7.5.0] - 2026-11-11
 
 ### Added

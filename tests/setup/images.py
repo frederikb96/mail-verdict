@@ -11,7 +11,7 @@ import os
 # renovate: datasource=docker depName=pgvector/pgvector versioning=docker
 POSTGRES_IMAGE = "pgvector/pgvector:pg18"
 
-# renovate: datasource=docker depName=ghcr.io/frederikb96/postimap versioning=docker
+# renovate: datasource=docker depName=ghcr.io/frederikberg/postimap versioning=docker
 #
 # Overridable via MAIL_VERDICT_TEST_POSTIMAP_IMAGE for a local run against a
 # PostIMAP build the pinned tag does not carry yet -- a capability still on
@@ -19,7 +19,7 @@ POSTGRES_IMAGE = "pgvector/pgvector:pg18"
 # pinned default is what every ordinary run, and Renovate's own tracking,
 # uses.
 POSTIMAP_IMAGE = os.environ.get(
-    "MAIL_VERDICT_TEST_POSTIMAP_IMAGE", "ghcr.io/frederikb96/postimap:1.11.0",
+    "MAIL_VERDICT_TEST_POSTIMAP_IMAGE", "ghcr.io/frederikberg/postimap:1.11.0",
 )
 
 # renovate: datasource=docker depName=dovecot/dovecot versioning=docker

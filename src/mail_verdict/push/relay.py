@@ -6,7 +6,7 @@ ticket the relay issued plus a content key of its own. This module posts
 each notification to that relay, sealed with the content key
 (push/envelope.py), so the relay forwards ciphertext it cannot read. The
 relay's HTTP API is specified in mail-verdict-ios/relay/README.md:
-https://github.com/frederikb96/mail-verdict-ios/blob/main/relay/README.md
+https://github.com/frederikberg/mail-verdict-ios/blob/main/relay/README.md
 
 The ticket and content key are stored encrypted under ENCRYPTION_KEY and
 decrypted per send. A relay missing from push.apns_relay_urls is never

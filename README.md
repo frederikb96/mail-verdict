@@ -14,8 +14,8 @@ A self-hosted mail client with an AI layer.
 </tr>
 </table>
 
-[![CI](https://github.com/frederikb96/mail-verdict/actions/workflows/ci.yaml/badge.svg)](https://github.com/frederikb96/mail-verdict/actions/workflows/ci.yaml)
-[![Release](https://img.shields.io/github/v/release/frederikb96/mail-verdict)](https://github.com/frederikb96/mail-verdict/releases)
+[![CI](https://github.com/frederikberg/mail-verdict/actions/workflows/ci.yaml/badge.svg)](https://github.com/frederikberg/mail-verdict/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/github/v/release/frederikberg/mail-verdict)](https://github.com/frederikberg/mail-verdict/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Mail, calendars and contacts from any IMAP, CalDAV and CardDAV server, in one web app you run
@@ -64,7 +64,7 @@ browser, iPhone app, MCP client
          MailVerdict  →  PostgreSQL  ←  PostIMAP  →  IMAP, SMTP, CalDAV, CardDAV
 ```
 
-MailVerdict does not speak IMAP. [PostIMAP](https://github.com/frederikb96/postimap) mirrors your
+MailVerdict does not speak IMAP. [PostIMAP](https://github.com/frederikberg/postimap) mirrors your
 mailboxes, calendars and address books into PostgreSQL in both directions, and MailVerdict is an
 ordinary Postgres-backed web app on top of that mirror. Marking a message read is an `UPDATE`;
 PostIMAP carries it to the mail server. [docs/architecture.md](docs/architecture.md) explains the
@@ -95,7 +95,7 @@ under *Settings*.
 On Kubernetes, a Helm chart is published with every release:
 
 ```bash
-helm install mail-verdict oci://ghcr.io/frederikb96/charts/mail-verdict --version <version>
+helm install mail-verdict oci://ghcr.io/frederikberg/charts/mail-verdict --version <version>
 ```
 
 It expects an external PostgreSQL shared with PostIMAP. The
@@ -161,7 +161,7 @@ free of session management. The chart README has a worked example.
 The web UI works at phone width and can be installed to the home screen, where it also gets push
 notifications.
 
-[mail-verdict-ios](https://github.com/frederikb96/mail-verdict-ios) is a native iPhone client for
+[mail-verdict-ios](https://github.com/frederikberg/mail-verdict-ios) is a native iPhone client for
 the same server. It talks to the same API as the browser, sending whatever credential the proxy in
 front of it expects (a bearer token or basic auth).
 

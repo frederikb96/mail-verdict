@@ -41,6 +41,6 @@ The programmatic API route (MCP clients and scripts) is exposed at:
 {{- end }}
 
 MailVerdict syncs no mail on its own -- it reads and writes PostIMAP's
-tables. Install PostIMAP (its own chart, oci://ghcr.io/frederikb96/charts/postimap)
+tables. Install PostIMAP (its own chart, oci://ghcr.io/frederikberg/charts/postimap)
 against the same PostgreSQL database, then add an account through the
 MailVerdict UI or API. See the chart README for the full three-step install.

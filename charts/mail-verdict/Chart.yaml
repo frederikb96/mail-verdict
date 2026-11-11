@@ -2,12 +2,12 @@ apiVersion: v2
 name: mail-verdict
 description: AI-powered email management with spam detection, rule engine, and full-text search
 type: application
-version: 7.5.0
-appVersion: "7.5.0"
+version: 7.5.1
+appVersion: "7.5.1"
 kubeVersion: ">=1.27.0-0"
-home: https://github.com/frederikb96/mail-verdict
+home: https://github.com/frederikberg/mail-verdict
 sources:
-  - https://github.com/frederikb96/mail-verdict
+  - https://github.com/frederikberg/mail-verdict
 keywords:
   - email
   - imap
@@ -16,6 +16,6 @@ keywords:
   - postgresql
 maintainers:
   - name: Frederik Berg
-    url: https://github.com/frederikb96
+    url: https://github.com/frederikberg
 annotations:
   artifacthub.io/license: MIT
