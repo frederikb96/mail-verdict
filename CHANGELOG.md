@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A keyboard shortcuts page (Settings → Keyboard shortcuts) to rebind, switch off or reset every
+  shortcut, kept per browser. Letters follow what is printed on the key on any layout, so `z` is
+  the key labelled Z on a German keyboard, and `#`, `!`, `?` and `/` match the character typed.
+- `Ctrl+Alt+4` to `Ctrl+Alt+9` jump to orders & tickets, spam review, the search page, accounts,
+  the pipeline and settings.
+- `Shift+R` replies to the open message, and `j`/`k` step through orders & tickets.
+- The `?` cheat sheet shows the shortcuts as bound in this browser, with a link to change them.
+
+### Fixed
+
+- `Ctrl+B` in the composer makes text bold without also hiding the sidebar.
+- The calendar's letter shortcuts no longer fire with Ctrl or Cmd held (`Ctrl+D` switched to the
+  day view, `Ctrl+A` to the agenda) or from inside a dialog.
+
 ## [7.4.5] - 2026-11-10
 
 ### Changed

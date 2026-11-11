@@ -1,23 +1,15 @@
 "use client";
 
 /**
- * The `?` cheat sheet -- every keyboard shortcut in the app, in one place,
- * since none of them were discoverable anywhere in the interface before
- * this existed. Mounted once, globally (like section-shortcuts.tsx),
- * rather than scoped to the mail list the way most of the shortcuts it
- * lists are: it needs to open from any page, and it lists the calendar's
- * and the section jumps too.
- *
- * A static list rather than one derived from the hooks that implement
- * each shortcut -- those are scattered across use-keyboard-shortcuts.ts,
- * use-calendar-shortcuts.ts and section-shortcuts.tsx, each keyed
- * differently (KeyboardEvent.key vs .code) for reasons specific to that
- * hook, and none of them expose a list a UI could render. Keeping this in
- * sync by hand costs less than building a registry three call sites would
- * have to route through just to feed one dialog.
+ * The cheat sheet -- every keyboard shortcut in the app, as this browser
+ * has them bound, opened by its own shortcut (`?` by default) from any
+ * page. Read from the registry (lib/shortcuts.ts), so a rebinding on the
+ * shortcuts page shows here at once.
  */
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { Keyboard } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -25,100 +17,82 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { isEditableElement } from "@/lib/utils";
+import { useShortcutBindings } from "@/lib/shortcut-bindings";
+import {
+  FIXED_SHORTCUTS,
+  SCOPE_LABELS,
+  SCOPE_ORDER,
+  SHORTCUT_ACTIONS,
+  formatChord,
+  matchAction,
+} from "@/lib/shortcuts";
 
-interface ShortcutGroup {
-  title: string;
-  items: Array<{ keys: string; description: string }>;
+export function ShortcutKeys({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="whitespace-nowrap rounded border bg-muted px-1.5 py-0.5 font-mono text-xs">
+      {children}
+    </kbd>
+  );
 }
-
-const GROUPS: ShortcutGroup[] = [
-  {
-    title: "Mail",
-    items: [
-      { keys: "j / ↓", description: "Next message" },
-      { keys: "k / ↑", description: "Previous message" },
-      { keys: "Enter", description: "Open the focused message" },
-      { keys: "Esc", description: "Close the reading pane / clear selection" },
-      { keys: "x", description: "Toggle selection on the current message" },
-      { keys: "c", description: "Compose a new message" },
-      { keys: "a", description: "Reply all" },
-      { keys: "f", description: "Forward" },
-      { keys: "v", description: "Move to folder" },
-      { keys: "e", description: "Archive" },
-      { keys: "Delete / #", description: "Move to trash" },
-      { keys: "!", description: "Mark as spam" },
-      { keys: "r", description: "Toggle read / unread" },
-      { keys: "u", description: "Mark as unread" },
-      { keys: "s", description: "Toggle star" },
-      { keys: "Ctrl+Z / ⌘Z", description: "Undo the last mail action" },
-      { keys: "/", description: "Focus search" },
-    ],
-  },
-  {
-    title: "Calendar",
-    items: [
-      { keys: "t", description: "Jump to today" },
-      { keys: "d", description: "Day view" },
-      { keys: "w", description: "Week view" },
-      { keys: "m", description: "Month view" },
-      { keys: "a", description: "Agenda view" },
-      { keys: "n", description: "New event" },
-      { keys: "j / k / ← / →", description: "Next / previous period" },
-      { keys: "Delete", description: "Delete the selected event" },
-      { keys: "Esc", description: "Close the event popover" },
-    ],
-  },
-  {
-    title: "Sections",
-    items: [
-      { keys: "Ctrl+Alt+1", description: "Mail" },
-      { keys: "Ctrl+Alt+2", description: "Calendar" },
-      { keys: "Ctrl+Alt+3", description: "Contacts" },
-    ],
-  },
-];
 
 export function ShortcutsOverlay() {
   const [open, setOpen] = useState(false);
+  const bindings = useShortcutBindings();
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key !== "?" || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (matchAction(e, bindings, "global") !== "show_shortcuts") return;
       if (isEditableElement(e.target)) return;
       e.preventDefault();
       setOpen((o) => !o);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [bindings]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Keyboard shortcuts</DialogTitle>
         </DialogHeader>
-        <div className="grid gap-4 sm:grid-cols-2">
-          {GROUPS.map((group) => (
-            <div key={group.title}>
-              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
-                {group.title}
-              </h3>
-              <dl className="space-y-1">
-                {group.items.map((item) => (
-                  <div key={item.keys} className="flex items-center justify-between gap-3 text-sm">
-                    <dt className="text-muted-foreground">{item.description}</dt>
-                    <dd>
-                      <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-xs">
-                        {item.keys}
-                      </kbd>
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </div>
-          ))}
+        <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+          {SCOPE_ORDER.map((scope) => {
+            const items = [
+              ...SHORTCUT_ACTIONS.filter((a) => a.scope === scope && bindings[a.id]).map((a) => ({
+                keys: formatChord(bindings[a.id]!),
+                label: a.label,
+              })),
+              ...FIXED_SHORTCUTS[scope],
+            ];
+            if (items.length === 0) return null;
+            return (
+              <div key={scope}>
+                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
+                  {SCOPE_LABELS[scope]}
+                </h3>
+                <dl className="space-y-1">
+                  {items.map((item) => (
+                    <div key={`${item.label}|${item.keys}`} className="flex items-center justify-between gap-3 text-sm">
+                      <dt className="text-muted-foreground">{item.label}</dt>
+                      <dd>
+                        <ShortcutKeys>{item.keys}</ShortcutKeys>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            );
+          })}
         </div>
+        <Link
+          href="/shortcuts"
+          onClick={() => setOpen(false)}
+          className="flex items-center gap-1.5 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+        >
+          <Keyboard className="h-4 w-4" />
+          Change shortcuts
+        </Link>
       </DialogContent>
     </Dialog>
   );

@@ -33,7 +33,9 @@ import {
 } from "@/lib/order-view-state";
 import { buildTimelineRows, timelineSplitIndex, todayString } from "@/lib/order-timeline";
 import { stableOrder } from "@/lib/stable-order";
-import { cn } from "@/lib/utils";
+import { cn, isEditableElement } from "@/lib/utils";
+import { useShortcutBindings } from "@/lib/shortcut-bindings";
+import { matchAction } from "@/lib/shortcuts";
 import type { OrderListItem } from "@/types/api";
 import Link from "next/link";
 
@@ -329,6 +331,38 @@ export function OrdersPage() {
       document.removeEventListener("visibilitychange", tryRestore);
     };
   }, [selectedId, listItems, rowTopOf, releaseTimelineHold]);
+
+  // j/k (by default) step through the list the way they do through mail,
+  // scrolling just far enough to keep the new row in view.
+  const bindings = useShortcutBindings();
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isEditableElement(e.target)) return;
+      if (e.target instanceof Element && e.target.closest('[role="dialog"], [role="alertdialog"]')) return;
+      const action = matchAction(e, bindings, "orders");
+      if (action !== "next_order" && action !== "previous_order") return;
+      const items = listItemsRef.current;
+      if (items.length === 0) return;
+      e.preventDefault();
+      const current = selectedId ? items.findIndex((o) => o.id === selectedId) : -1;
+      const next =
+        current < 0
+          ? 0
+          : Math.max(0, Math.min(current + (action === "next_order" ? 1 : -1), items.length - 1));
+      if (next === current) return;
+      selectOrder(items[next].id);
+      const el = listScrollRef.current;
+      if (!el) return;
+      releaseTimelineHold();
+      const top = rowTopOf(next);
+      if (top < el.scrollTop) el.scrollTop = top;
+      else if (top + ORDER_ROW_HEIGHT > el.scrollTop + el.clientHeight) {
+        el.scrollTop = top + ORDER_ROW_HEIGHT - el.clientHeight;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [bindings, selectedId, selectOrder, rowTopOf, releaseTimelineHold]);
 
   // On a phone the detail covers the list rather than replacing it: the list
   // stays laid out underneath, only made invisible, so going back finds it

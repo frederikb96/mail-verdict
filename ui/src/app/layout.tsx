@@ -13,7 +13,7 @@ import { OutboxDeadBanner } from "@/components/mail/outbox-dead-banner";
 import { UndoSendBanner } from "@/components/mail/undo-send-banner";
 import { ToastContainer } from "@/components/common/toast-container";
 import { ProtocolHandler } from "@/components/layout/protocol-handler";
-import { SectionShortcuts } from "@/components/layout/section-shortcuts";
+import { GlobalShortcuts } from "@/components/layout/global-shortcuts";
 import { ServiceWorkerNavigation } from "@/components/layout/service-worker-navigation";
 import { KeyboardSafeViewport } from "@/components/layout/keyboard-safe-viewport";
 import { ShortcutsOverlay } from "@/components/layout/shortcuts-overlay";
@@ -80,7 +80,7 @@ export default function RootLayout({
               <KeyboardSafeViewport />
               <SSEConnector />
               <ProtocolHandler />
-              <SectionShortcuts />
+              <GlobalShortcuts />
               <ShortcutsOverlay />
               <ServiceWorkerNavigation />
               <MailDndProvider>
