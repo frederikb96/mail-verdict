@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Save, Loader2, Archive, Bot, CalendarDays, Package, Repeat, ShieldCheck, Sparkles, Sun, Moon, Monitor, Undo2, WandSparkles, Workflow } from "lucide-react";
+import { Save, Loader2, Archive, Bot, CalendarDays, Keyboard, Package, Repeat, ShieldCheck, Sparkles, Sun, Moon, Monitor, Undo2, WandSparkles, Workflow } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -527,7 +527,8 @@ const SECTIONS = [
  * undifferentiated scroll -- this jumps straight to a section instead of
  * making every visit start with the same scroll. Plain anchor links, not
  * a router push: nothing here is a distinct route worth its own history
- * entry. */
+ * entry. Keyboard shortcuts are their own page, linked at the end, and
+ * hidden on a touch screen, where there is no keyboard to configure. */
 function SectionNav() {
   return (
     <nav className="flex flex-wrap gap-1.5 border-b pb-3 text-sm">
@@ -541,6 +542,13 @@ function SectionNav() {
           {label}
         </a>
       ))}
+      <Link
+        href="/shortcuts"
+        className="ml-auto flex items-center gap-1.5 rounded-md px-2.5 py-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground pointer-coarse:hidden"
+      >
+        <Keyboard className="h-3.5 w-3.5" />
+        Keyboard shortcuts
+      </Link>
     </nav>
   );
 }

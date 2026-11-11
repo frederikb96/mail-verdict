@@ -22,6 +22,8 @@ import { useClearSelection, useSelection, useSelectionGestures } from "@/hooks/u
 import { useUndoMailAction } from "@/hooks/use-mail-intents";
 import { isEditableElement } from "@/lib/utils";
 import { isRowUnread } from "@/lib/mail-unread";
+import { useShortcutBindings } from "@/lib/shortcut-bindings";
+import { matchAction } from "@/lib/shortcuts";
 import type { MailRowAction, MessageSummary } from "@/types/api";
 
 interface UseKeyboardShortcutsOptions {
@@ -60,47 +62,32 @@ function isUndoKey(e: KeyboardEvent): boolean {
 }
 
 /**
- * Registers global keyboard shortcuts for mail navigation and actions.
- *
- * Shortcuts:
- * - ArrowDown/j: move to the next (older) message
- * - ArrowUp/k: move to the previous (newer) message
- * - Enter: open the focused message
- * - Escape: close the reading pane / clear selection
- * - x: toggle checkbox selection on the current message
- * - e: archive
- * - Delete/#: move to trash
- * - !: mark as spam
- * - r: mark as read (toggle read/unread outside a multi-selection)
- * - u: mark as unread
- * - s: star
- * - c: compose a new message
- * - a: reply all (the open message only -- there is no row form of this)
- * - f: forward (the open message only)
- * - v: move to folder
- * - Ctrl+Z / Cmd+Z: undo this tab's most recent mail action, repeatedly --
- *   never while typing, with a composer open, or in a dialog, where the
- *   browser's own undo belongs
+ * Registers the mail list's keyboard shortcuts: the rebindable actions of
+ * the "mail" scope in lib/shortcuts.ts (defaults: j/k move, x select, c
+ * compose, Shift+R reply, a reply all, f forward, v move, e archive, #
+ * trash, ! spam, r toggle read, u unread, s star), plus the fixed keys --
+ * arrows, Enter, Escape, Delete and Ctrl+Z / Cmd+Z, which undoes this
+ * tab's most recent mail action, repeatedly, never while typing, with a
+ * composer open, or in a dialog, where the browser's own undo belongs.
  *
  * Every one of them acts on the open message when there is one, and on the
  * focused row otherwise -- so a shortcut and a click on the same message's
  * own control do the same thing, auto-advance included. With more than one
  * message ticked -- the same threshold the reading pane itself switches to
- * the bulk panel at -- e/Delete/!/r/u/s/v act on the whole selection
- * instead, through the same bulk-action request the toolbar's own buttons
- * send, and clear the selection the same way those do. r and s have no
- * single message to read a toggle target from there, so they always mean
- * "mark read" and "star" -- the two actions the bulk panel itself offers a
- * button for. c/a/f are the exception: compose, reply and forward have
- * nothing to do with a selection, and reply/forward exist only for an open
- * message (there is no row form of either), so they act only while the
- * reading pane actually has one open and no multi-selection is shadowing
- * it.
+ * the bulk panel at -- archive, trash, spam, read, unread, star and move act
+ * on the whole selection instead, through the same bulk-action request the
+ * toolbar's own buttons send, and clear the selection the same way those
+ * do. Toggle read and star have no single message to read a toggle target
+ * from there, so they always mean "mark read" and "star" -- the two actions
+ * the bulk panel itself offers a button for. Compose, reply, reply all and
+ * forward are the exception: they have nothing to do with a selection, and
+ * the replies exist only for an open message (there is no row form of
+ * them), so they act only while the reading pane actually has one open and
+ * no multi-selection is shadowing it.
  *
- * `/` (focus the global search field) and `?` (the shortcuts overlay) are
- * not here -- they are not specific to a mail list, so they are registered
- * once, globally, in components/layout/shortcuts-overlay.tsx and
- * app-header.tsx respectively.
+ * Focusing the search field and the cheat sheet are not here -- they are
+ * not specific to a mail list (components/layout/app-header.tsx and
+ * shortcuts-overlay.tsx).
  */
 export function useKeyboardShortcuts({
   mails,
@@ -119,6 +106,7 @@ export function useKeyboardShortcuts({
   const setRequestBulkMoveMenu = useSetAtom(requestBulkMoveMenuAtom);
   const setRequestBulkQuickAction = useSetAtom(requestBulkQuickActionAtom);
   const undoMailAction = useUndoMailAction();
+  const bindings = useShortcutBindings();
   // Same threshold reading-pane.tsx switches the pane to the bulk panel
   // at -- below it a lone ticked row is not "a selection" for shortcut
   // purposes, and the open/focused message is still what e/r/s/etc. act
@@ -149,10 +137,6 @@ export function useKeyboardShortcuts({
       // `e` or Delete with Accept focused would archive or trash the mail
       // the dialog is about, and Enter would be swallowed.
       if (isInsideDialog(e.target)) return;
-      // A shortcut is a bare keypress: ctrl+r reloads the page and cmd+e
-      // belongs to the browser, so neither may be swallowed here.
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-
       // Moving between messages carries the reading pane with it whenever
       // one is open, so arrow keys walk the list the way the reader
       // already reads it.
@@ -181,62 +165,83 @@ export function useKeyboardShortcuts({
         if (mail) onAction(mail.id, action, mail.account_id);
       }
 
-      switch (e.key) {
-        case "ArrowDown":
-        case "j": {
-          if (currentIndex < 0 && e.key === "ArrowDown") return; // let the page scroll
+      // The fixed keys are bare presses: ctrl+Enter or shift+Delete
+      // belong to someone else.
+      const bare = !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
+      const fixed = bare ? e.key : null;
+      switch (fixed) {
+        case "ArrowDown": {
+          if (currentIndex < 0) return; // let the page scroll
           e.preventDefault();
           move(1);
-          break;
+          return;
         }
-        case "ArrowUp":
-        case "k": {
-          if (currentIndex < 0 && e.key === "ArrowUp") return;
+        case "ArrowUp": {
+          if (currentIndex < 0) return;
           e.preventDefault();
           move(-1);
-          break;
+          return;
         }
         case "Enter": {
           const mail = getCurrentMail();
           if (!mail) return;
           e.preventDefault();
           onOpen(mail.id);
-          break;
+          return;
         }
         case "Escape": {
           e.preventDefault();
           requestSelectMail(null);
           clearSelection();
+          return;
+        }
+        case "Delete": {
+          e.preventDefault();
+          act("trash");
+          return;
+        }
+      }
+
+      const action = matchAction(e, bindings, "mail");
+      switch (action) {
+        case "next_message": {
+          e.preventDefault();
+          move(1);
           break;
         }
-        case "x": {
+        case "previous_message": {
+          e.preventDefault();
+          move(-1);
+          break;
+        }
+        case "toggle_select": {
           const mail = getCurrentMail();
           if (!mail) return;
           e.preventDefault();
           toggleSelection(mail);
           break;
         }
-        case "e": {
+        case "archive": {
           e.preventDefault();
           act("archive");
           break;
         }
-        case "Delete":
-        case "#": {
+        case "trash": {
           e.preventDefault();
           act("trash");
           break;
         }
-        case "!": {
+        case "spam": {
           e.preventDefault();
           act("spam");
           break;
         }
-        case "r": {
+        case "toggle_read": {
           e.preventDefault();
           // No single message to read a toggle target from once several
           // are ticked -- "mark read" is what the bulk panel itself offers
-          // a button for, "mark unread" stays reachable through u.
+          // a button for, "mark unread" stays reachable through its own
+          // shortcut.
           if (multiSelect) {
             act("mark_read");
             break;
@@ -245,15 +250,15 @@ export function useKeyboardShortcuts({
           if (mail) act(isRowUnread(mail) ? "mark_read" : "mark_unread");
           break;
         }
-        case "u": {
+        case "mark_unread": {
           e.preventDefault();
           act("mark_unread");
           break;
         }
-        case "s": {
+        case "toggle_star": {
           e.preventDefault();
-          // Same reasoning as r -- and the bulk panel itself offers only
-          // "Star", never an "Unstar", over a selection.
+          // Same reasoning as toggle_read -- and the bulk panel itself
+          // offers only "Star", never an "Unstar", over a selection.
           if (multiSelect) {
             act("flag");
             break;
@@ -262,12 +267,14 @@ export function useKeyboardShortcuts({
           if (mail) act(mail.is_flagged ? "unflag" : "flag");
           break;
         }
-        case "c": {
+        case "compose": {
           e.preventDefault();
           setComposeIntent({});
           break;
         }
-        case "a": {
+        case "reply":
+        case "reply_all":
+        case "forward": {
           // Acts on the open reading pane, not merely a focused row --
           // openIndex, not currentIndex, is "something is actually open".
           // A multi-selection replaces that pane with the bulk panel, so
@@ -275,16 +282,11 @@ export function useKeyboardShortcuts({
           // names a message.
           if (openIndex < 0 || multiSelect) return;
           e.preventDefault();
-          setRequestReplyMode({ mode: "reply-all", nonce: Date.now() });
+          const mode = action === "reply_all" ? "reply-all" : action === "forward" ? "forward" : "reply";
+          setRequestReplyMode({ mode, nonce: Date.now() });
           break;
         }
-        case "f": {
-          if (openIndex < 0 || multiSelect) return;
-          e.preventDefault();
-          setRequestReplyMode({ mode: "forward", nonce: Date.now() });
-          break;
-        }
-        case "v": {
+        case "move": {
           if (multiSelect) {
             e.preventDefault();
             setRequestBulkMoveMenu({ nonce: nextBulkRequestNonce() });
@@ -319,5 +321,6 @@ export function useKeyboardShortcuts({
     scrollToIndex,
     undoMailAction,
     multiSelect,
+    bindings,
   ]);
 }

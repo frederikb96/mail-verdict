@@ -16,6 +16,7 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
 - [Privacy](#privacy)
 - [MCP server](#mcp-server)
 - [Installable](#installable)
+- [Keyboard shortcuts](#keyboard-shortcuts)
 
 ## Mail
 
@@ -64,12 +65,14 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
   irreversible), keywords, drag-and-drop moves (a long press selects instead of dragging on a
   touch device) and a type-to-filter "Move to..." picker in the reading pane.
 - Bulk actions over a selection or a whole folder, threaded or not.
-- **Keyboard:** the arrow keys move the reading pane between messages, `c` composes, `a` replies
-  all, `f` forwards, `v` moves the open message, `e` archives, `Delete` trashes, `r` toggles read
-  and unread, `/` focuses search, `?` lists every shortcut, and Ctrl+Z (Cmd+Z on a Mac) takes back
-  the last few actions one by one. Whatever takes the open message out of the list opens the next
-  one in the direction you were already going. With more than one message ticked, `e`, `Delete`,
-  `r`, `u`, `s` and `v` act on the whole selection, the same as the bulk toolbar's buttons.
+- **Keyboard:** `j`/`k` and the arrow keys move the reading pane between messages, `c` composes,
+  `Shift+R` replies, `a` replies all, `f` forwards, `v` moves the open message, `e` archives,
+  `Delete` or `#` trashes, `!` marks spam, `r` toggles read and unread, `s` stars, and Ctrl+Z
+  (Cmd+Z on a Mac) takes back the last few actions one by one. Whatever takes the open message out
+  of the list opens the next one in the direction you were already going. With more than one
+  message ticked, archive, trash, spam, read, unread, star and move act on the whole selection,
+  the same as the bulk toolbar's buttons. The rest of the keyboard is under
+  [Keyboard shortcuts](#keyboard-shortcuts).
 - **Offline-tolerant:** every action shows at once and survives a flaky or absent connection. It
   waits, retries and is sent exactly once, even across a reload, with a marker on the row while
   the server has not confirmed it and a Retry when the server refuses. Sent late, or undone, an
@@ -233,5 +236,19 @@ subset of the REST API ([api.md](api.md)) as typed tools.
 
 A browser that supports it offers to install the site, which then runs in its own window with its
 own icon. The installed application registers as a `mailto:` handler, so it can be the machine's
-mail client: a `mailto:` link opens the composer filled in from the link. `Ctrl+Alt+1`,
-`Ctrl+Alt+2` and `Ctrl+Alt+3` jump to mail, calendar and contacts.
+mail client: a `mailto:` link opens the composer filled in from the link.
+
+## Keyboard shortcuts
+
+- From any page, `Ctrl+Alt+1` to `Ctrl+Alt+9` jump to mail, calendar, contacts, orders & tickets,
+  spam review, the search page, accounts, the pipeline and settings, in the sidebar's order. `/`
+  focuses search, `Ctrl+B` shows or hides the sidebar, and `?` lists every shortcut.
+- The calendar has its own (`t` today, `d`/`w`/`m`/`a` views, `n` new event, `j`/`k` and the
+  arrows for the next and previous period), and orders & tickets step through the list with
+  `j`/`k`. The mail list's are under [Actions and the keyboard](#actions-and-the-keyboard).
+- Settings → Keyboard shortcuts rebinds, switches off or resets any of them, kept per browser. A
+  chord already in use offers to take it over; keys the browser or text editing owns are refused.
+- Letters follow what is printed on the key, whatever the layout, so `z` is the key labelled Z on
+  a German keyboard too; `#`, `!`, `?` and `/` match the character typed, with or without Shift.
+  In a text field, typed characters and editor chords such as `Ctrl+B` stay with the field, and a
+  `Ctrl+Alt` chord is ignored when it is AltGr typing a character there.

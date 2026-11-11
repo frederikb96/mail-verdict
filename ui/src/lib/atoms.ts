@@ -210,22 +210,22 @@ export const composeIntentAtom = atom<{
   unrestoredAttachments?: string[];
 } | null>(null);
 
-/** Asks the currently open message's own ReplyBox to start a reply-all or
- * forward -- the `a`/`f` keyboard shortcuts' only way to reach a component
+/** Asks the currently open message's own ReplyBox to start a reply,
+ * reply-all or forward -- the keyboard shortcuts' only way to reach a component
  * mounted deep in the reading pane without lifting its whole state up here.
  * A nonce rather than a plain mode: the same mode pressed twice in a row
  * (or ReplyBox remounting on a different message with a stale value still
  * in the atom) must still register as a fresh request. */
-export const requestReplyModeAtom = atom<{ mode: "reply-all" | "forward"; nonce: number } | null>(
+export const requestReplyModeAtom = atom<{ mode: "reply" | "reply-all" | "forward"; nonce: number } | null>(
   null,
 );
 
 /** Asks the reading pane to open its "Move to..." picker for the message
- * currently open -- the `v` shortcut's counterpart to the toolbar button
+ * currently open -- the move shortcut's counterpart to the toolbar button
  * that does the same thing. Same nonce reasoning as requestReplyModeAtom. */
 export const requestMoveDialogAtom = atom<{ nonce: number } | null>(null);
 
-/** Asks the bulk panel to open its own "Move to..." menu -- the `v`
+/** Asks the bulk panel to open its own "Move to..." menu -- the move
  * shortcut's counterpart to requestMoveDialogAtom for a multi-selection,
  * where there is no single open message for that picker to act on. Same
  * nonce reasoning. */

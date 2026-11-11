@@ -4,7 +4,7 @@
  * The one header row every page shares -- previously just the sidebar
  * toggle and the connection indicator, the most valuable strip of screen
  * in the app saying nothing actionable. A global search field lives here
- * instead: `/` focuses it from anywhere, and Enter jumps to the full
+ * instead: its shortcut (`/` by default) focuses it from anywhere, and Enter jumps to the full
  * search page with the query already applied, which stays the place for
  * scope, fields and semantic search rather than duplicating any of that
  * here.
@@ -18,15 +18,18 @@ import { Input } from "@/components/ui/input";
 import { ActionsIndicator } from "@/components/layout/actions-indicator";
 import { ConnectionIndicator } from "@/components/layout/connection-indicator";
 import { isEditableElement } from "@/lib/utils";
+import { useShortcutBindings } from "@/lib/shortcut-bindings";
+import { matchAction } from "@/lib/shortcuts";
 
 export function AppHeader() {
   const router = useRouter();
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const bindings = useShortcutBindings();
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (matchAction(e, bindings, "global") !== "focus_search") return;
       if (isEditableElement(e.target)) return;
       e.preventDefault();
       inputRef.current?.focus();
@@ -34,7 +37,7 @@ export function AppHeader() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [bindings]);
 
   const submit = () => {
     const q = value.trim();
