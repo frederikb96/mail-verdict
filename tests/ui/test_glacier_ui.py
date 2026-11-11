@@ -11,7 +11,7 @@ scope picker.
 Restoring a message needs an IMAP APPEND, which the pinned default
 PostIMAP test image (tests/setup/images.py) does not support yet -- run
 this module with MAIL_VERDICT_TEST_POSTIMAP_IMAGE pointed at a build
-that does (ghcr.io/frederikb96/postimap:1.11.0 at the time of writing)
+that does (ghcr.io/frederikberg/postimap:1.11.0 at the time of writing)
 or the moves in TestGlacierMoveUi time out waiting for the glacier
 folder's own count, since the manual glacier-in flow itself is gated on
 the same capability check restoring needs.

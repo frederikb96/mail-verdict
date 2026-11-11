@@ -1,6 +1,6 @@
 # MailVerdict Helm Chart
 
-Deploys [MailVerdict](https://github.com/frederikb96/mail-verdict) -- AI-powered email management with spam detection, a rule engine, and full-text search -- onto Kubernetes.
+Deploys [MailVerdict](https://github.com/frederikberg/mail-verdict) -- AI-powered email management with spam detection, a rule engine, and full-text search -- onto Kubernetes.
 
 ## Rendering from the registry
 
@@ -9,7 +9,7 @@ reference is an OCI URL, so piping straight into `kubectl apply -f -` fails with
 `apiVersion not set, kind not set`. Strip the preamble, or render from a local copy:
 
 ```bash
-helm pull oci://ghcr.io/frederikb96/charts/mail-verdict --version <version> -d ./charts
+helm pull oci://ghcr.io/frederikberg/charts/mail-verdict --version <version> -d ./charts
 helm template mail-verdict ./charts/mail-verdict-<version>.tgz -f values.yaml | kubectl apply -f -
 ```
 
@@ -18,7 +18,7 @@ helm template mail-verdict ./charts/mail-verdict-<version>.tgz -f values.yaml | 
 ## Before you install: three steps
 
 MailVerdict has no direct IMAP dependency -- it talks to mail exclusively through
-[PostIMAP](https://github.com/frederikb96/postimap)'s PostgreSQL database. This chart does not
+[PostIMAP](https://github.com/frederikberg/postimap)'s PostgreSQL database. This chart does not
 create the database or install PostIMAP for you:
 
 1. **The shared PostgreSQL database.** Not a chart dependency for either service. See
@@ -26,7 +26,7 @@ create the database or install PostIMAP for you:
    [CloudNativePG](https://cloudnative-pg.io/) setup: one Cluster, PostIMAP's owner role, and
    MailVerdict's own role.
 2. **PostIMAP** 1.1.0 or newer, its own released chart
-   (`oci://ghcr.io/frederikb96/charts/postimap`), pointed at
+   (`oci://ghcr.io/frederikberg/charts/postimap`), pointed at
    the same database. See [`examples/postimap-values.yaml`](examples/postimap-values.yaml). Its
    migrations run automatically on first start and create the `postimap_app` role that step 1's
    `GRANT` needs to already exist -- so run that `GRANT` after PostIMAP is up, not before.
@@ -61,7 +61,7 @@ during a rollout has the exact same problem.
 ## Install
 
 ```bash
-helm install mail-verdict oci://ghcr.io/frederikb96/charts/mail-verdict \
+helm install mail-verdict oci://ghcr.io/frederikberg/charts/mail-verdict \
   --namespace mail --create-namespace \
   --set secret.create=true \
   --set secret.databaseUrl=postgresql+asyncpg://mailverdict:<password>@<host>:5432/postimap \
@@ -78,7 +78,7 @@ For anything beyond a quick test, write a values file instead -- see
 The image bundles `config/config.yaml` with defaults for everything. This chart's `config:` value
 is a **sparse override** -- a ConfigMap rendered from it and mounted at `configOverridePath`,
 deep-merged onto the image's defaults at startup. Its structure mirrors `config/config.yaml` in
-the [repository](https://github.com/frederikb96/mail-verdict/blob/main/config/config.yaml)
+the [repository](https://github.com/frederikberg/mail-verdict/blob/main/config/config.yaml)
 exactly, so only set the keys you want to change:
 
 ```yaml
@@ -181,7 +181,7 @@ blocks that loop never delays it.
 | Key | Default | Description |
 |---|---|---|
 | `replicaCount` | `1` | Pinned by `values.schema.json`. See [Why exactly one replica](#why-exactly-one-replica). |
-| `image.repository` | `ghcr.io/frederikb96/mail-verdict` | Container image. |
+| `image.repository` | `ghcr.io/frederikberg/mail-verdict` | Container image. |
 | `image.pullPolicy` | `IfNotPresent` | |
 | `image.tag` | `""` | Defaults to the chart's `appVersion`. |
 | `imagePullSecrets` | `[]` | For a private GHCR repository/tag. |

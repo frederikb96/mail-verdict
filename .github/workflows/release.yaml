@@ -16,8 +16,8 @@ permissions:
   packages: write
 
 env:
-  IMAGE: ghcr.io/frederikb96/mail-verdict
-  CHART_REGISTRY: oci://ghcr.io/frederikb96/charts
+  IMAGE: ghcr.io/frederikberg/mail-verdict
+  CHART_REGISTRY: oci://ghcr.io/frederikberg/charts
 
 jobs:
   guard:

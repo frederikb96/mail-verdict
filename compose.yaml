@@ -2,7 +2,7 @@ name: mail-verdict
 
 services:
   app:
-    image: ghcr.io/frederikb96/mail-verdict:latest
+    image: ghcr.io/frederikberg/mail-verdict:latest
     container_name: mv-app
     ports:
       - "8080:8080"
@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
 
   postimap:
-    image: ghcr.io/frederikb96/postimap:1.11.16
+    image: ghcr.io/frederikberg/postimap:1.11.16
     container_name: mv-postimap
     environment:
       POSTIMAP_DATABASE_HOST: postgres

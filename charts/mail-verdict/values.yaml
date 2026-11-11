@@ -16,7 +16,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/frederikb96/mail-verdict
+  repository: ghcr.io/frederikberg/mail-verdict
   pullPolicy: IfNotPresent
   # -- Image tag. Defaults to the chart's appVersion when empty.
   tag: ""

@@ -1,6 +1,6 @@
 [project]
 name = "mail-verdict"
-version = "7.5.0"
+version = "7.5.1"
 description = "AI-powered email management: spam detection, smart rules, and vector search"
 readme = "README.md"
 requires-python = ">=3.15"
@@ -38,9 +38,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/frederikb96/mail-verdict"
-Repository = "https://github.com/frederikb96/mail-verdict"
-Issues = "https://github.com/frederikb96/mail-verdict/issues"
+Homepage = "https://github.com/frederikberg/mail-verdict"
+Repository = "https://github.com/frederikberg/mail-verdict"
+Issues = "https://github.com/frederikberg/mail-verdict/issues"
 
 [project.optional-dependencies]
 dev = [

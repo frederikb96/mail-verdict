@@ -4,7 +4,7 @@
 # an Ingress behind Traefik ForwardAuth, and a second Ingress for
 # programmatic clients.
 #
-#   helm install mail-verdict oci://ghcr.io/frederikb96/charts/mail-verdict \
+#   helm install mail-verdict oci://ghcr.io/frederikberg/charts/mail-verdict \
 #     --namespace mail --create-namespace \
 #     -f values-production.yaml
 

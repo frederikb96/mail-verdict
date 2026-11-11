@@ -290,7 +290,7 @@ find yourself writing SQL against PostIMAP's tables somewhere else, that is the 
 statements its triggers depend on need exactly one definition.
 
 The authoritative list of what is readable and writable is PostIMAP's
-[consumer contract](https://github.com/frederikb96/postimap/blob/main/docs/consumer-contract.md).
+[consumer contract](https://github.com/frederikberg/postimap/blob/main/docs/consumer-contract.md).
 
 ## Releasing
 
