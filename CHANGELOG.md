@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.5.0] - 2026-11-11
+
 ### Added
 
 - A keyboard shortcuts page (Settings → Keyboard shortcuts) to rebind, switch off or reset every
