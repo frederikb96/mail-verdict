@@ -123,16 +123,20 @@ async def entry_usage(session: AsyncSession, order_id: uuid.UUID) -> tuple[int, 
 
 
 async def create_file(
-    session: AsyncSession, *, filename: str, content_type: str, data: bytes,
+    session: AsyncSession, *, user_id: uuid.UUID, filename: str, content_type: str, data: bytes,
     order_id: uuid.UUID | None,
 ) -> FileState:
     """
-    Store an upload and queue its file job. The same bytes uploaded again
-    while the first copy is waiting or placed answer with that copy (a share
-    sheet retrying a flaky upload must not add a second document).
+    Store `user_id`'s upload and queue its file job. The same bytes uploaded
+    again by the same user while the first copy is waiting or placed answer
+    with that copy (a share sheet retrying a flaky upload must not add a
+    second document); another user's copy is never answered with.
     """
     digest = hashlib.sha256(data).hexdigest()
-    same = [OrderFile.sha256 == digest, OrderFile.status.in_(("pending", "attached"))]
+    same = [
+        OrderFile.user_id == user_id, OrderFile.sha256 == digest,
+        OrderFile.status.in_(("pending", "attached")),
+    ]
     if order_id is not None:
         same.append(OrderFile.order_id == order_id)
     duplicate = await session.execute(
@@ -145,7 +149,7 @@ async def create_file(
 
     result = await session.execute(
         pg_insert(OrderFile).values(
-            order_id=order_id, filename=filename, content_type=content_type,
+            user_id=user_id, order_id=order_id, filename=filename, content_type=content_type,
             size_bytes=len(data), sha256=digest, data=data, status="pending",
         ).returning(OrderFile.id)
     )
@@ -159,10 +163,13 @@ async def create_file(
     return FileState(file_id, order_id, "pending", None)
 
 
-async def file_state(session: AsyncSession, file_id: uuid.UUID) -> FileState | None:
+async def file_state(
+    session: AsyncSession, file_id: uuid.UUID, *, user_id: uuid.UUID,
+) -> FileState | None:
+    """Where `user_id`'s file stands; None for no such file or another user's."""
     result = await session.execute(
         select(OrderFile.id, OrderFile.order_id, OrderFile.status, OrderFile.last_error)
-        .where(OrderFile.id == file_id)
+        .where(OrderFile.id == file_id, OrderFile.user_id == user_id)
     )
     row = result.first()
     return FileState(row.id, row.order_id, row.status, row.last_error) if row else None
@@ -172,7 +179,8 @@ async def delete_file(
     session: AsyncSession, order_id: uuid.UUID, file_id: uuid.UUID,
 ) -> bool | None:
     """
-    Delete one file of an entry: its document and code facts go with it, the
+    Delete one file of an entry (the caller has checked the entry is the
+    user's): its document and code facts go with it, the
     entry's aggregates are recomputed, and the entry is deleted when nothing
     is left of it, else rewritten.
 
@@ -204,6 +212,9 @@ async def prune_failed_files(session: AsyncSession, *, days: int) -> int:
     return len(result.all())
 
 
-async def order_exists(session: AsyncSession, order_id: uuid.UUID) -> bool:
-    result = await session.execute(select(Order.id).where(Order.id == order_id))
+async def order_exists(session: AsyncSession, order_id: uuid.UUID, *, user_id: uuid.UUID) -> bool:
+    """Whether `user_id` has an order with this id."""
+    result = await session.execute(
+        select(Order.id).where(Order.id == order_id, Order.user_id == user_id)
+    )
     return result.scalar_one_or_none() is not None

@@ -9,7 +9,8 @@ about a week after a parcel shipped):
   and the last activity (mail or file);
 - without one: orders.auto_close_days after the last activity.
 orders.auto_close_days = 0 turns the whole sweep off; a grace of 0 closes
-as soon as the date has passed.
+as soon as the date has passed. Both settings are each user's own: an order
+is judged by its owner's.
 
 Skipped: an order a person opened or closed (open_set_by <> 'ai' -- a
 reopen stays open until the next mail hands the decision back to the
@@ -22,9 +23,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
-from mail_verdict.api.events import broadcast_event
+from mail_verdict.database.models import Order
+from mail_verdict.orders.announce import announce
 from mail_verdict.orders.repository import OPEN_SET_BY_AUTO, OPEN_SET_BY_MODEL
 from mail_verdict.orders.worker import ORDERS_LOCK_KEY
 from mail_verdict.queue.notify import ReconciliationTimer
@@ -47,11 +49,11 @@ _CLOSE_INTERVAL_SECONDS = 3600.0
 
 
 async def close_overdue_orders(
-    db: DatabaseConnection, *, days: int, grace_days: int,
+    db: DatabaseConnection, *, user_id: uuid.UUID, days: int, grace_days: int,
 ) -> list[uuid.UUID]:
     """
-    Close every open, model-owned, written, non-stale order that is overdue
-    by the rules in this module's docstring.
+    Close every open, model-owned, written, non-stale order of `user_id`
+    that is overdue by the rules in this module's docstring.
 
     Returns:
         The ids of the orders closed
@@ -63,7 +65,8 @@ async def close_overdue_orders(
                 """
                 UPDATE orders
                 SET is_open = false, open_set_by = :auto, updated_at = now()
-                WHERE is_open
+                WHERE user_id = :user_id
+                  AND is_open
                   AND open_set_by = :model
                   AND written_at IS NOT NULL
                   AND NOT text_stale
@@ -78,7 +81,7 @@ async def close_overdue_orders(
                 """
             ),
             {
-                "auto": OPEN_SET_BY_AUTO, "model": OPEN_SET_BY_MODEL,
+                "auto": OPEN_SET_BY_AUTO, "model": OPEN_SET_BY_MODEL, "user_id": user_id,
                 "days": days, "grace": grace_days,
             },
         )
@@ -88,24 +91,26 @@ async def close_overdue_orders(
 async def auto_close_once(
     db: DatabaseConnection, settings_service: SettingsService, event_ring: EventRing | None,
 ) -> None:
-    """One pass: close what is overdue under the current setting (nothing
-    when it is 0) and announce each closed order."""
-    settings = settings_service.get("orders")
-    days = int(settings["auto_close_days"])
-    if days <= 0:
-        return
-    closed = await close_overdue_orders(
-        db, days=days, grace_days=int(settings["auto_close_grace_days"]),
-    )
-    if not closed:
-        return
-    logger.info("Closed %d overdue orders", len(closed))
-    if event_ring is not None:
+    """One pass: for each user with an open order, close what is overdue
+    under that user's settings (nothing when theirs is 0) and announce each
+    closed order to them."""
+    async with db.session() as session:
+        owners = (
+            await session.execute(select(Order.user_id).where(Order.is_open.is_(True)).distinct())
+        ).scalars().all()
+    for user_id in (owner for owner in owners if owner is not None):
+        settings = settings_service.get_for_user("orders", user_id)
+        days = int(settings["auto_close_days"])
+        if days <= 0:
+            continue
+        closed = await close_overdue_orders(
+            db, user_id=user_id, days=days, grace_days=int(settings["auto_close_grace_days"]),
+        )
+        if not closed:
+            continue
+        logger.info("Closed %d overdue orders of one user", len(closed))
         for order_id in closed:
-            await broadcast_event(
-                db, event_ring, "order.updated",
-                {"order_id": str(order_id), "change": "updated"},
-            )
+            await announce(event_ring, user_id, order_id, "updated")
 
 
 def build_auto_close_timer(

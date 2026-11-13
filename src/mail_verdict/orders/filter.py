@@ -1,8 +1,8 @@
 """
 The orders first filter: a cheap deterministic pattern match that lets
 through anything that might be an order, ticket or booking, before any
-model is ever called. Read fresh from settings.orders.filter on every
-call (the pipeline stage's own execute, and the catch-up sweep) -- a
+model is ever called. Read fresh from the mail owner's settings.orders.filter
+on every call (the pipeline stage's own execute, and the catch-up sweep) -- a
 pattern change takes effect on the next mail, no restart.
 
 Deliberately generous: recall matters far more than precision here, since

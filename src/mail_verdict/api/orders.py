@@ -15,6 +15,10 @@ GET    /api/orders/{id}/files/{file_id}               -- download an added file
 DELETE /api/orders/{id}/files/{file_id}               -- delete an added file
 GET    /api/orders/{id}/codes/{fact_id}.png           -- a code fact rendered as an image
 
+Every route acts for the caller alone: an order, a file or a mail account that
+belongs to someone else answers as if it did not exist (404; catch-up names an
+account, so a foreign one is 403 as everywhere else).
+
 An order is hidden from the list until it has been written once
 (written_at is not null) -- see orders/repository.py's own write path.
 `mail_key` in the detach route is order_mails.id, the row's own key, not
@@ -30,10 +34,11 @@ import uuid
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from sqlalchemy import Date, and_, cast, desc, func, or_, select
 
-from mail_verdict.api.events import broadcast_event, get_event_ring
+from mail_verdict.api.deps import current_scope
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.outbox import _read_capped_attachment
 from mail_verdict.api.schemas import (
     OrderCatchUpRequest,
@@ -50,6 +55,7 @@ from mail_verdict.api.schemas import (
     OrderMergeRequest,
     OrderUpdateRequest,
 )
+from mail_verdict.auth.scope import Scope
 from mail_verdict.config import get_config
 from mail_verdict.core.content_disposition import content_disposition
 from mail_verdict.database.connection import get_db_connection
@@ -68,6 +74,7 @@ from mail_verdict.database.models import (
     OrderMail,
 )
 from mail_verdict.orders import files, repository
+from mail_verdict.orders.announce import announce
 from mail_verdict.orders.carriers import tracking_url
 from mail_verdict.orders.catch_up import run_catch_up
 from mail_verdict.orders.locate import resolve_mails
@@ -108,6 +115,17 @@ async def _account_ids_by_order(
     return out
 
 
+async def _require_order(session: Any, user_id: uuid.UUID, *order_ids: uuid.UUID) -> None:
+    """404 unless every given order is the user's -- a foreign one is
+    indistinguishable from one that does not exist."""
+    wanted = set(order_ids)
+    result = await session.execute(
+        select(Order.id).where(Order.id.in_(wanted), Order.user_id == user_id)
+    )
+    if len(result.scalars().all()) != len(wanted):
+        raise HTTPException(status_code=404, detail="Order not found")
+
+
 def _list_item(
     order: Order, account_ids: list[uuid.UUID], timeline_date: date | None,
 ) -> OrderListItem:
@@ -132,6 +150,7 @@ def _list_item(
 async def add_file(
     file: UploadFile = File(...),
     order_id: uuid.UUID | None = Form(default=None),
+    scope: Scope = Depends(current_scope),
 ) -> OrderFileStatus:
     """
     Add a file of any type to the register; one that cannot be read (a
@@ -142,6 +161,7 @@ async def add_file(
     was the person's decision). Answers at once with `pending`; poll
     `GET /orders/files/{file_id}`, or wait for the entry's `order.updated`.
     """
+    user_id = scope.require_user()
     limits = get_config().order_files
     data = await _read_capped_attachment(file, limits.max_file_bytes)
     name = files.clean_filename(file.filename)
@@ -149,7 +169,7 @@ async def add_file(
     db = get_db_connection()
     async with db.session() as session:
         if order_id is not None:
-            if not await files.order_exists(session, order_id):
+            if not await files.order_exists(session, order_id, user_id=user_id):
                 raise HTTPException(status_code=404, detail="Order not found")
             count, total = await files.entry_usage(session, order_id)
             if count + 1 > limits.max_files_per_order:
@@ -162,8 +182,8 @@ async def add_file(
                     status_code=413, detail="The files of one entry exceed the total size limit",
                 )
         state = await files.create_file(
-            session, filename=name, content_type=files.FILE_TYPES[file_type], data=data,
-            order_id=order_id,
+            session, user_id=user_id, filename=name, content_type=files.FILE_TYPES[file_type],
+            data=data, order_id=order_id,
         )
     return OrderFileStatus(
         file_id=state.file_id, order_id=state.order_id,
@@ -173,10 +193,12 @@ async def add_file(
 
 
 @router.get("/files/{file_id}", response_model=OrderFileStatus)
-async def get_file_status(file_id: uuid.UUID) -> OrderFileStatus:
+async def get_file_status(
+    file_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> OrderFileStatus:
     db = get_db_connection()
     async with db.session() as session:
-        state = await files.file_state(session, file_id)
+        state = await files.file_state(session, file_id, user_id=scope.require_user())
     if state is None:
         raise HTTPException(status_code=404, detail="File not found")
     return OrderFileStatus(
@@ -195,9 +217,11 @@ async def list_orders(
     q: str | None = Query(default=None, max_length=_MAX_FILTER_LENGTH),
     kind: str = Query(default="all", pattern="^(all|ticket|order|other)$"),
     sort: str = Query(default="activity", pattern="^(activity|event)$"),
+    scope: Scope = Depends(current_scope),
 ) -> OrderListResponse:
     """
-    Orders across every enabled account, newest first.
+    The caller's orders across every one of their accounts that has the
+    feature on, newest first.
 
     `sort=activity` (default) orders by last activity (a mail or a file);
     `sort=event` by `timeline_date` -- the event date of a ticket, else the
@@ -208,13 +232,14 @@ async def list_orders(
     matches the merchant, subject, status or summary -- the same tokenizer
     and per-token predicate as the mail search's fallback tier.
     """
+    user_id = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
         sort_value = TIMELINE_DATE if sort == "event" else Order.last_activity_at
         cursor_value, cursor_id = None, None
         if before is not None:
             cursor_result = await session.execute(
-                select(sort_value, Order.id).where(Order.id == before)
+                select(sort_value, Order.id).where(Order.id == before, Order.user_id == user_id)
             )
             cursor_row = cursor_result.one_or_none()
             if cursor_row is None:
@@ -224,7 +249,7 @@ async def list_orders(
             cursor_value, cursor_id = cursor_row
 
         stmt = select(Order, TIMELINE_DATE.label("timeline_date")).where(
-            Order.written_at.is_not(None)
+            Order.user_id == user_id, Order.written_at.is_not(None),
         )
         if state == "open":
             stmt = stmt.where(Order.is_open.is_(True))
@@ -425,9 +450,11 @@ async def _load_documents(
     return documents
 
 
-async def _load_detail(session: Any, order_id: uuid.UUID) -> OrderDetail | None:
+async def _load_detail(session: Any, user_id: uuid.UUID, order_id: uuid.UUID) -> OrderDetail | None:
     order_result = await session.execute(
-        select(Order, TIMELINE_DATE.label("timeline_date")).where(Order.id == order_id)
+        select(Order, TIMELINE_DATE.label("timeline_date")).where(
+            Order.id == order_id, Order.user_id == user_id,
+        )
     )
     order_row = order_result.one_or_none()
     if order_row is None:
@@ -463,24 +490,29 @@ async def _load_detail(session: Any, order_id: uuid.UUID) -> OrderDetail | None:
 
 
 @router.get("/{order_id}", response_model=OrderDetail)
-async def get_order(order_id: uuid.UUID) -> OrderDetail:
+async def get_order(order_id: uuid.UUID, scope: Scope = Depends(current_scope)) -> OrderDetail:
     db = get_db_connection()
     async with db.session() as session:
-        detail = await _load_detail(session, order_id)
+        detail = await _load_detail(session, scope.require_user(), order_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return detail
 
 
 @router.get("/{order_id}/files/{file_id}")
-async def download_file(order_id: uuid.UUID, file_id: uuid.UUID) -> Response:
+async def download_file(
+    order_id: uuid.UUID, file_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> Response:
     """Stream a file added to the register, with its content type and a
     download disposition."""
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(
-            select(OrderFile.filename, OrderFile.content_type, OrderFile.data).where(
+            select(OrderFile.filename, OrderFile.content_type, OrderFile.data)
+            .join(Order, Order.id == OrderFile.order_id)
+            .where(
                 OrderFile.id == file_id, OrderFile.order_id == order_id,
+                Order.user_id == scope.require_user(),
             )
         )
         row = result.first()
@@ -493,21 +525,29 @@ async def download_file(order_id: uuid.UUID, file_id: uuid.UUID) -> Response:
 
 
 @router.delete("/{order_id}/files/{file_id}", status_code=204)
-async def delete_file(order_id: uuid.UUID, file_id: uuid.UUID) -> None:
+async def delete_file(
+    order_id: uuid.UUID, file_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> None:
     """Delete a file of an entry, with its document and codes. The entry is
     deleted when nothing else is left of it, otherwise rewritten. Mail
     attachments are never touched."""
+    user_id = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
+        try:
+            await _require_order(session, user_id, order_id)
+        except HTTPException:
+            raise HTTPException(status_code=404, detail="File not found") from None
         order_deleted = await files.delete_file(session, order_id, file_id)
     if order_deleted is None:
         raise HTTPException(status_code=404, detail="File not found")
-    await _announce(order_id, "deleted" if order_deleted else "updated")
+    await _announce(user_id, order_id, "deleted" if order_deleted else "updated")
 
 
 @router.get("/{order_id}/codes/{fact_id}.png")
 async def get_code_image(
     order_id: uuid.UUID, fact_id: uuid.UUID, scale: int = Query(default=8, ge=1, le=16),
+    scope: Scope = Depends(current_scope),
 ) -> Response:
     """A code fact as a PNG a gate scanner reads: the stored payload encoded
     again at `scale` pixels per module, else the crop of the code taken from
@@ -515,8 +555,11 @@ async def get_code_image(
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(
-            select(OrderFact.document_id, OrderFact.barcode_index).where(
+            select(OrderFact.document_id, OrderFact.barcode_index)
+            .join(Order, Order.id == OrderFact.order_id)
+            .where(
                 OrderFact.id == fact_id, OrderFact.order_id == order_id, OrderFact.kind == "code",
+                Order.user_id == scope.require_user(),
             )
         )
         fact = result.first()
@@ -549,79 +592,84 @@ async def get_code_image(
 
 
 @router.patch("/{order_id}", response_model=OrderDetail)
-async def update_order(order_id: uuid.UUID, request: OrderUpdateRequest) -> OrderDetail:
+async def update_order(
+    order_id: uuid.UUID, request: OrderUpdateRequest, scope: Scope = Depends(current_scope),
+) -> OrderDetail:
     """Favorite, open/closed, sealed and kind. A person's open/closed
     decision sticks until the next mail arrives; a person's kind sticks for
     good (see orders/repository.py)."""
+    user_id = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
+        await _require_order(session, user_id, order_id)
         updated = await repository.update_controls(
             session, order_id, is_favorite=request.is_favorite, is_open=request.is_open,
             is_sealed=request.is_sealed, kind=request.kind,
         )
         if not updated:
             raise HTTPException(status_code=404, detail="Order not found")
-        detail = await _load_detail(session, order_id)
+        detail = await _load_detail(session, user_id, order_id)
     assert detail is not None
-    await _announce(order_id, "updated")
+    await _announce(user_id, order_id, "updated")
     return detail
 
 
 @router.delete("/{order_id}", status_code=204)
-async def delete_order(order_id: uuid.UUID) -> None:
+async def delete_order(order_id: uuid.UUID, scope: Scope = Depends(current_scope)) -> None:
     """Delete an order. No mail is touched."""
+    user_id = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
+        await _require_order(session, user_id, order_id)
         deleted = await repository.delete_order(session, order_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Order not found")
-    await _announce(order_id, "deleted")
+    await _announce(user_id, order_id, "deleted")
 
 
 @router.post("/{order_id}/rewrite", status_code=202)
-async def rewrite_order(order_id: uuid.UUID) -> None:
+async def rewrite_order(order_id: uuid.UUID, scope: Scope = Depends(current_scope)) -> None:
     """Enqueue a manual rewrite of an order's title and summary."""
     db = get_db_connection()
     async with db.session() as session:
-        exists = await session.execute(select(Order.id).where(Order.id == order_id))
-        if exists.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Order not found")
+        await _require_order(session, scope.require_user(), order_id)
         await repository.enqueue_write_job(session, order_id, priority=10, origin="manual")
 
 
 @router.post("/{order_id}/merge", response_model=OrderDetail)
-async def merge_order(order_id: uuid.UUID, request: OrderMergeRequest) -> OrderDetail:
+async def merge_order(
+    order_id: uuid.UUID, request: OrderMergeRequest, scope: Scope = Depends(current_scope),
+) -> OrderDetail:
     """Merge `order_id` into `request.into`. The source disappears."""
     if order_id == request.into:
         raise HTTPException(status_code=400, detail="Cannot merge an order into itself")
+    user_id = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
-        target_exists = await session.execute(select(Order.id).where(Order.id == request.into))
-        if target_exists.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Target order not found")
-        source_exists = await session.execute(select(Order.id).where(Order.id == order_id))
-        if source_exists.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Order not found")
+        await _require_order(session, user_id, order_id, request.into)
         await repository.merge_order(session, source_id=order_id, target_id=request.into)
         await repository.mark_text_stale(session, request.into)
         await repository.enqueue_write_job(session, request.into, priority=10, origin="manual")
-        detail = await _load_detail(session, request.into)
+        detail = await _load_detail(session, user_id, request.into)
     assert detail is not None
-    await _announce(order_id, "deleted")
-    await _announce(request.into, "updated")
+    await _announce(user_id, order_id, "deleted")
+    await _announce(user_id, request.into, "updated")
     return detail
 
 
 @router.post("/{order_id}/mails/{mail_key}/detach", response_model=None)
 async def detach_mail(
     order_id: uuid.UUID, mail_key: uuid.UUID, request: OrderDetachRequest,
+    scope: Scope = Depends(current_scope),
 ) -> OrderDetail | Response:
     """Remove a mail from its order, optionally moving it to another --
     never bundled automatically again either way (uq_order_mails_account
     _msg_key holds; the job row for it is left as-is so a catch-up never
     reconsiders it)."""
+    user_id = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
+        await _require_order(session, user_id, order_id)
         mail_result = await session.execute(
             select(OrderMail).where(OrderMail.id == mail_key, OrderMail.order_id == order_id)
         )
@@ -630,11 +678,7 @@ async def detach_mail(
             raise HTTPException(status_code=404, detail="Mail not found in this order")
 
         if request.move_to is not None:
-            target_exists = await session.execute(
-                select(Order.id).where(Order.id == request.move_to)
-            )
-            if target_exists.scalar_one_or_none() is None:
-                raise HTTPException(status_code=404, detail="Target order not found")
+            await _require_order(session, user_id, request.move_to)
 
         removed_order_id = await repository.detach_mail(
             session, mail_key, move_documents_to=request.move_to,
@@ -662,33 +706,32 @@ async def detach_mail(
             await repository.mark_text_stale(session, order_id)
             await repository.enqueue_write_job(session, order_id, priority=10, origin="manual")
 
-        detail = None if order_deleted else await _load_detail(session, order_id)
+        detail = None if order_deleted else await _load_detail(session, user_id, order_id)
 
     if request.move_to is not None:
-        await _announce(request.move_to, "updated")
-    await _announce(order_id, "deleted" if order_deleted else "updated")
+        await _announce(user_id, request.move_to, "updated")
+    await _announce(user_id, order_id, "deleted" if order_deleted else "updated")
     if detail is None:
         return Response(status_code=204)
     return detail
 
 
 @router.post("/catch-up", response_model=OrderCatchUpResponse)
-async def catch_up(request: OrderCatchUpRequest) -> OrderCatchUpResponse:
+async def catch_up(
+    request: OrderCatchUpRequest, scope: Scope = Depends(current_scope),
+) -> OrderCatchUpResponse:
+    """Sweep recent mail of one of the caller's accounts, under their own
+    filter patterns."""
+    scope.require_account(request.account_id)
     db = get_db_connection()
     result = await run_catch_up(
-        db, get_settings_service(), account_id=request.account_id, days=request.days,
-        dry_run=request.dry_run,
+        db, get_settings_service(), user_id=scope.require_user(), account_id=request.account_id,
+        days=request.days, dry_run=request.dry_run,
     )
     return OrderCatchUpResponse(
         considered=result.considered, passed=result.passed, queued=result.queued,
     )
 
 
-async def _announce(order_id: uuid.UUID, change: str) -> None:
-    event_ring = get_event_ring()
-    if event_ring is None:
-        return
-    db = get_db_connection()
-    await broadcast_event(
-        db, event_ring, "order.updated", {"order_id": str(order_id), "change": change},
-    )
+async def _announce(user_id: uuid.UUID, order_id: uuid.UUID, change: str) -> None:
+    await announce(get_event_ring(), user_id, order_id, change)

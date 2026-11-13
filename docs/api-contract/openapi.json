@@ -11330,7 +11330,7 @@
     },
     "/admin/accounts/{account_id}/owner": {
       "put": {
-        "description": "Give a mail account to another user. Its stored name moves into the\nnew owner's namespace in the same transaction; 409 if they already have\nan account by that name.",
+        "description": "Give a mail account to another user. Its stored name moves into the\nnew owner's namespace in the same transaction; 409 if they already have\nan account by that name. Its orders follow (orders/ownership.py).",
         "operationId": "set_owner_admin_accounts__account_id__owner_put",
         "parameters": [
           {
@@ -14839,7 +14839,7 @@
     },
     "/orders": {
       "get": {
-        "description": "Orders across every enabled account, newest first.\n\n`sort=activity` (default) orders by last activity (a mail or a file);\n`sort=event` by `timeline_date` -- the event date of a ticket, else the\ndate of its first activity -- newest date first. `before` is the id of\nthe last entry of the previous page and continues in the same sort.\n`kind` keeps one kind. `favorites` keeps only favorites, in any state.\n`q` keeps orders where every token of it (any order, typo-tolerant)\nmatches the merchant, subject, status or summary -- the same tokenizer\nand per-token predicate as the mail search's fallback tier.",
+        "description": "The caller's orders across every one of their accounts that has the\nfeature on, newest first.\n\n`sort=activity` (default) orders by last activity (a mail or a file);\n`sort=event` by `timeline_date` -- the event date of a ticket, else the\ndate of its first activity -- newest date first. `before` is the id of\nthe last entry of the previous page and continues in the same sort.\n`kind` keeps one kind. `favorites` keeps only favorites, in any state.\n`q` keeps orders where every token of it (any order, typo-tolerant)\nmatches the merchant, subject, status or summary -- the same tokenizer\nand per-token predicate as the mail search's fallback tier.",
         "operationId": "list_orders_orders_get",
         "parameters": [
           {
@@ -14962,6 +14962,7 @@
     },
     "/orders/catch-up": {
       "post": {
+        "description": "Sweep recent mail of one of the caller's accounts, under their own\nfilter patterns.",
         "operationId": "catch_up_orders_catch_up_post",
         "requestBody": {
           "content": {

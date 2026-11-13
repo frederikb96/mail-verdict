@@ -112,8 +112,11 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
 
 - Mail about a purchase, ticket or booking — confirmation, invoice, payment, shipping, carrier
   notices, delivery, return, refund, customer-service conversation — is bundled into one entry
-  with an AI-written title, status and summary, across every account that has the feature
-  switched on, in a screen of its own.
+  with an AI-written title, status and summary, across every account of yours that has the
+  feature switched on, in a screen of its own. Entries and files are each user's own: two people
+  receiving mail about the same purchase get two entries, and nobody sees another's.
+  An admin giving an account to someone else moves its entries along, or takes its mail out of
+  entries that also hold mail of the previous owner's other accounts.
 - A carrier notice or payment receipt with no order number of its own still finds the right entry
   by merchant, timing and what is already in flight. A mail is attached to an existing entry or
   opens a new one, never split between two afterwards. A shipment number that only a carrier's

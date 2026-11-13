@@ -41,8 +41,10 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.auth.ownership import owner_of_account
 from mail_verdict.database.models import AccountPrefs, Order, OrderFile, OrderJob, OrderMail
 from mail_verdict.orders import documents, facts, model_calls, prompts, repository
+from mail_verdict.orders.announce import announce
 from mail_verdict.orders.candidates import (
     Candidate,
     extract_labeled_identifiers,
@@ -187,15 +189,14 @@ async def _handle_item(
 async def _announce(
     db: DatabaseConnection, event_ring: EventRing | None, broadcast: tuple[uuid.UUID, str] | None,
 ) -> None:
-    """Tell open clients an order changed: (order_id, change) as the handlers return it."""
+    """Tell the order's owner's open clients it changed: (order_id, change) as
+    the handlers return it."""
     if broadcast is None or event_ring is None:
         return
-    from mail_verdict.api.events import broadcast_event
-
     order_id, change = broadcast
-    await broadcast_event(
-        db, event_ring, "order.updated", {"order_id": str(order_id), "change": change},
-    )
+    async with db.session() as session:
+        user_id = await repository.owner_of_order(session, order_id)
+    await announce(event_ring, user_id, order_id, change)
 
 
 def _in(seconds: float) -> datetime:
@@ -384,6 +385,11 @@ async def _handle_mail_job(
             await _set_outcome(session, row["id"], outcome="skipped", last_error="orders disabled")
             return None
 
+        user_id = await owner_of_account(session, account_id)
+        if user_id is None:
+            await _set_outcome(session, row["id"], outcome="skipped", last_error="no owner")
+            return None
+
         verdict = await current_verdict_for_mail(db, content.message_id)
         if verdict is not None and verdict.is_spam:
             await _set_outcome(session, row["id"], outcome="skipped", last_error="spam")
@@ -405,7 +411,7 @@ async def _handle_mail_job(
         )
         attachment_text = documents.attachment_haystack(reads)
         candidates = await find_candidates(
-            session, account_id=account_id, thread_id=content.thread_id,
+            session, user_id=user_id, account_id=account_id, thread_id=content.thread_id,
             subject=content.subject, from_addr=content.from_addr,
             haystack_raw=f"{content.body.raw}\n{attachment_text}",
         )
@@ -431,7 +437,7 @@ async def _handle_mail_job(
 
         was_new = target == "new"
         if was_new:
-            order_id = await repository.create_order(session)
+            order_id = await repository.create_order(session, user_id=user_id)
         else:
             handle_map = {f"C{i + 1}": c.order_id for i, c in enumerate(candidates)}
             order_id = handle_map[target]
@@ -497,7 +503,7 @@ async def _handle_file_job(
         file_result = await session.execute(
             select(
                 OrderFile.order_id, OrderFile.filename, OrderFile.content_type, OrderFile.status,
-                OrderFile.created_at,
+                OrderFile.created_at, OrderFile.user_id,
             ).where(OrderFile.id == file_id)
         )
         file_row = file_result.one_or_none()
@@ -506,6 +512,10 @@ async def _handle_file_job(
             return None
         if file_row.status == "attached":
             await _set_outcome(session, row["id"], outcome="attached", order_id=file_row.order_id)
+            return None
+        user_id = file_row.user_id
+        if user_id is None:
+            await _set_outcome(session, row["id"], outcome="skipped", last_error="no owner")
             return None
 
         if file_row.order_id is None:
@@ -529,7 +539,8 @@ async def _handle_file_job(
             was_new = False
         else:
             candidates = await find_candidates(
-                session, account_id=None, thread_id=None, subject=file_row.filename,
+                session, user_id=user_id, account_id=None, thread_id=None,
+                subject=file_row.filename,
                 from_addr="", haystack_raw=attachment_text,
             )
             user_prompt = prompts.build_decide_file_prompt(
@@ -542,16 +553,19 @@ async def _handle_file_job(
             )
             was_new = decision["target"] == "new"
             if was_new:
-                order_id = await repository.create_order(session)
+                order_id = await repository.create_order(session, user_id=user_id)
             else:
                 order_id = {f"C{i + 1}": c.order_id for i, c in enumerate(candidates)}[
                     decision["target"]
                 ]
 
-        written = await session.execute(select(Order.written_at).where(Order.id == order_id))
+        written = await session.execute(
+            select(Order.written_at).where(Order.id == order_id, Order.user_id == user_id)
+        )
         written_row = written.one_or_none()
         if written_row is None:
-            # The entry it was added to is gone: nothing to attach to.
+            # The entry it was added to is gone (or is not its uploader's):
+            # nothing to attach to.
             await _set_outcome(session, row["id"], outcome="skipped", last_error="order gone")
             return None
         already_written = written_row.written_at is not None
@@ -633,8 +647,6 @@ async def _handle_write_job(
     settings_service: SettingsService,
 ) -> tuple[uuid.UUID, str] | None:
     order_id: uuid.UUID = row["order_id"]
-    orders_settings = settings_service.get("orders")
-    language = str(orders_settings.get("language", "English"))
 
     async with db.session() as session:
         await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ORDERS_LOCK_KEY})
@@ -642,13 +654,15 @@ async def _handle_write_job(
         order_result = await session.execute(
             select(
                 Order.merchant, Order.subject, Order.status, Order.summary, Order.written_at,
-                Order.mail_count, Order.file_count,
+                Order.mail_count, Order.file_count, Order.user_id,
             ).where(Order.id == order_id)
         )
         order_row = order_result.one_or_none()
         if order_row is None or order_row.mail_count + order_row.file_count == 0:
             await _set_outcome(session, row["id"], outcome="skipped")
             return None
+        # The owner's language: each person reads their own entries in it.
+        language = str(settings_service.get_for_user("orders", order_row.user_id)["language"])
 
         await model_calls.ensure_available(db, settings_service, "write")
 

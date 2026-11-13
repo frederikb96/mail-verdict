@@ -231,6 +231,7 @@ class Candidate:
 async def find_candidates(
     session: AsyncSession,
     *,
+    user_id: uuid.UUID,
     account_id: uuid.UUID | None,
     thread_id: uuid.UUID | None,
     subject: str,
@@ -239,10 +240,14 @@ async def find_candidates(
     now: datetime | None = None,
 ) -> list[Candidate]:
     """
-    Rank and return at most 8 candidate orders for one new mail.
+    Rank and return at most 8 candidate orders for one new mail. Only the
+    orders of `user_id` are ever offered: two people's mail about the same
+    purchase never joins one order.
 
     Args:
         session: Session to read through
+        user_id: Whose orders may take the mail (its account's owner, or a
+            file's uploader)
         account_id: The mail's account (None for a file, which has no thread)
         thread_id: The mail's thread, if any
         subject: The mail's Subject header (a file's name)
@@ -262,7 +267,8 @@ async def find_candidates(
             select(OrderMail.order_id.distinct())
             .join(Order, Order.id == OrderMail.order_id)
             .where(
-                OrderMail.account_id == account_id, OrderMail.thread_id == thread_id, ACCEPTS_MAIL,
+                OrderMail.account_id == account_id, OrderMail.thread_id == thread_id,
+                ACCEPTS_MAIL, Order.user_id == user_id,
             )
         )
         thread_order_ids = {row[0] for row in result.all()}
@@ -270,7 +276,8 @@ async def find_candidates(
     cutoff = now - timedelta(days=_LOAD_WINDOW_DAYS)
     windowed_result = await session.execute(
         select(Order).where(
-            Order.last_activity_at.is_not(None), Order.last_activity_at >= cutoff, ACCEPTS_MAIL,
+            Order.user_id == user_id, Order.last_activity_at.is_not(None),
+            Order.last_activity_at >= cutoff, ACCEPTS_MAIL,
         )
     )
     windowed_orders = list(windowed_result.scalars().all())
@@ -278,7 +285,9 @@ async def find_candidates(
     order_by_id: dict[uuid.UUID, Order] = {o.id: o for o in windowed_orders}
     if thread_order_ids - order_by_id.keys():
         extra_result = await session.execute(
-            select(Order).where(Order.id.in_(thread_order_ids - order_by_id.keys()))
+            select(Order).where(
+                Order.id.in_(thread_order_ids - order_by_id.keys()), Order.user_id == user_id,
+            )
         )
         for order in extra_result.scalars().all():
             order_by_id[order.id] = order

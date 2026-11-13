@@ -61,12 +61,21 @@ _IDENTIFIER_LABELS = {
 }
 
 
-async def create_order(session: AsyncSession) -> uuid.UUID:
-    """Insert a new, unwritten order -- text_stale true, written_at null."""
+async def create_order(session: AsyncSession, *, user_id: uuid.UUID) -> uuid.UUID:
+    """Insert a new, unwritten order of `user_id` -- text_stale true,
+    written_at null."""
     result = await session.execute(
-        insert(Order).values(text_stale=True).returning(Order.id)
+        insert(Order).values(text_stale=True, user_id=user_id).returning(Order.id)
     )
     return uuid.UUID(str(result.scalar_one()))
+
+
+async def owner_of_order(session: AsyncSession, order_id: uuid.UUID) -> uuid.UUID | None:
+    """The user an order belongs to, or None if it is gone or has no owner."""
+    owner: uuid.UUID | None = await session.scalar(
+        select(Order.user_id).where(Order.id == order_id)
+    )
+    return owner
 
 
 async def attach_mail(
@@ -157,9 +166,11 @@ async def upsert_identifier_fact(
 ) -> uuid.UUID | None:
     """
     Store one identifier-kind fact, unless the value is not a plausible
-    identifier or is held by ANOTHER order active in the last 365 days -- a
-    duplicate number is evidence the decide call chose the wrong candidate,
-    not a reason to make two orders claim the same number.
+    identifier or is held by ANOTHER order of the same user active in the
+    last 365 days -- a duplicate number is evidence the decide call chose the
+    wrong candidate, not a reason to make two orders claim the same number.
+    Another user's order holding it says nothing: two people may each have
+    an order with the same shop's number.
 
     Args:
         update_existing: Whether a fact this order already holds takes the
@@ -179,6 +190,7 @@ async def upsert_identifier_fact(
         .join(Order, Order.id == OrderFact.order_id)
         .where(
             OrderFact.value_norm == value_norm, OrderFact.order_id != order_id,
+            Order.user_id == select(Order.user_id).where(Order.id == order_id).scalar_subquery(),
             Order.last_activity_at.is_not(None), Order.last_activity_at >= cutoff, ACCEPTS_MAIL,
         )
         .limit(1)

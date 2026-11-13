@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Orders and tickets belong to one user. Mail only joins an order of the account's owner, so two
+  people's mail about the same purchase makes two entries; entries, files, the catch-up and the
+  automatic close are each user's own, with the user's own filter patterns, language and closing
+  days. Giving an account to another user moves the entries made of only its mail to them.
 - Users. MailVerdict validates an OpenID Connect token on every request to `/api` and `/mcp`
   against the issuer configured under `auth:`, and refuses to start without one. A new subject
   becomes an ordinary user on first sign-in (`auth.auto_provision`); `auth.owner_subjects` name

@@ -4,8 +4,8 @@ first filter's patterns -- a support reply or a bare "Re:" answer must
 reach the register even when its own subject says nothing.
 
 Built once per pipeline run (pipeline/context.py's RunContext), the same
-way NeighborService is -- scoped to nothing (the register spans every
-enabled account), reading fresh on each call rather than caching.
+way NeighborService is -- for the owner of the mail's account, whose orders
+are the only ones it reads, and fresh on each call rather than cached.
 """
 
 from __future__ import annotations
@@ -30,8 +30,9 @@ class OrderLookup:
     """Whether a mail is already known to the register, independent of
     the first filter's patterns."""
 
-    def __init__(self, db: DatabaseConnection) -> None:
+    def __init__(self, db: DatabaseConnection, user_id: uuid.UUID) -> None:
         self._db = db
+        self._user_id = user_id
 
     async def known(
         self, *, account_id: uuid.UUID, thread_id: uuid.UUID | None, text: str,
@@ -50,29 +51,31 @@ class OrderLookup:
         """
         async with self._db.session() as session:
             if thread_id is not None and await self._thread_known(
-                session, account_id=account_id, thread_id=thread_id,
+                session, user_id=self._user_id, account_id=account_id, thread_id=thread_id,
             ):
                 return "thread"
-            if await self._number_known(session, text=text):
+            if await self._number_known(session, user_id=self._user_id, text=text):
                 return "number"
         return None
 
     @staticmethod
     async def _thread_known(
-        session: AsyncSession, *, account_id: uuid.UUID, thread_id: uuid.UUID,
+        session: AsyncSession, *, user_id: uuid.UUID, account_id: uuid.UUID,
+        thread_id: uuid.UUID,
     ) -> bool:
         result = await session.execute(
             select(OrderMail.id)
             .join(Order, Order.id == OrderMail.order_id)
             .where(
-                OrderMail.account_id == account_id, OrderMail.thread_id == thread_id, ACCEPTS_MAIL,
+                OrderMail.account_id == account_id, OrderMail.thread_id == thread_id,
+                ACCEPTS_MAIL, Order.user_id == user_id,
             )
             .limit(1)
         )
         return result.scalar_one_or_none() is not None
 
     @staticmethod
-    async def _number_known(session: AsyncSession, *, text: str) -> bool:
+    async def _number_known(session: AsyncSession, *, user_id: uuid.UUID, text: str) -> bool:
         haystack_norm = normalize_identifier(text.upper())
         if not haystack_norm:
             return False
@@ -81,7 +84,7 @@ class OrderLookup:
             select(OrderFact.value_norm)
             .join(Order, Order.id == OrderFact.order_id)
             .where(
-                OrderFact.value_norm.is_not(None),
+                OrderFact.value_norm.is_not(None), Order.user_id == user_id,
                 Order.last_activity_at.is_not(None), Order.last_activity_at >= cutoff,
                 ACCEPTS_MAIL,
             )

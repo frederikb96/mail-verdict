@@ -18,8 +18,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.mcp_tools import mcp
+from mail_verdict.auth.principal import OWNER_USER_ID, Principal
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.orders import repository
+from tests.helpers.auth import as_principal
 
 pytestmark = pytest.mark.asyncio
 
@@ -32,8 +34,9 @@ async def mcp_client(migrated_db: DatabaseConnection) -> AsyncIterator[Client]:
     for p in patchers:
         p.start()
     try:
-        async with Client(mcp) as client:
-            yield client
+        with as_principal(Principal(OWNER_USER_ID, "test", True)):
+            async with Client(mcp) as client:
+                yield client
     finally:
         for p in patchers:
             p.stop()
@@ -55,7 +58,7 @@ async def _seed_account(session: AsyncSession) -> uuid.UUID:
 async def _seed_written_order(
     session: AsyncSession, *, account_id: uuid.UUID, subject: str,
 ) -> uuid.UUID:
-    order_id = await repository.create_order(session)
+    order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
     await repository.attach_mail(
         session, order_id=order_id, account_id=account_id, msg_key=f"<{uuid.uuid4()}@example.com>",
         message_id=None, thread_id=None, subject=subject, from_addr="shop@example.com",
@@ -93,7 +96,7 @@ class TestListOrdersTool:
     ) -> None:
         async with migrated_db.session() as session:
             account_id = await _seed_account(session)
-            unwritten_order_id = await repository.create_order(session)
+            unwritten_order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
             await repository.attach_mail(
                 session, order_id=unwritten_order_id, account_id=account_id,
                 msg_key=f"<{uuid.uuid4()}@example.com>", message_id=None, thread_id=None,

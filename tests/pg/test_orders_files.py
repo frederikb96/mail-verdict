@@ -23,6 +23,7 @@ from PIL import Image
 from sqlalchemy import func, select, text
 
 from mail_verdict.api.orders import router
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.config import get_config
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Order, OrderDocument, OrderFile, OrderJob
@@ -32,6 +33,7 @@ from mail_verdict.orders.candidates import find_candidates
 from mail_verdict.orders.lookup import OrderLookup
 from mail_verdict.orders.worker import _fail, _handle_file_job, _handle_item, _handle_mail_job
 from mail_verdict.pipeline.contracts import StageRefused, StageTransient
+from tests.helpers.auth import act_as, owner_scope
 from tests.helpers.orders_pg import ModelStub, ticket_pdf
 from tests.pg.test_orders_documents import (
     _cred_repo,
@@ -53,6 +55,7 @@ def client() -> Iterator[TestClient]:
     connections are bound to the loop that opened them."""
     app = FastAPI()
     app.include_router(router)
+    act_as(app, owner_scope())
     with TestClient(app) as c:
         yield c
 
@@ -148,7 +151,7 @@ class TestAnUploadedFileBecomesAnEntry:
     ) -> None:
         async def entry() -> uuid.UUID:
             async with migrated_db.session() as session:
-                order_id = await repository.create_order(session)
+                order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
                 await repository.write_order_text(
                     session, order_id, merchant="Rail", subject="Trip", status="ok",
                     is_open=True, icon="train", summary="s", model="fake",
@@ -272,7 +275,7 @@ class TestUploadLimits:
     ) -> None:
         async def entry() -> uuid.UUID:
             async with migrated_db.session() as session:
-                return await repository.create_order(session)
+                return await repository.create_order(session, user_id=OWNER_USER_ID)
 
         order_id = client.portal.call(entry)
         first = ticket_pdf(f"E{uuid.uuid4().int % 10**9:09d}")
@@ -422,10 +425,11 @@ class TestAnEntryMadeOnlyOfFiles:
                     await session.execute(select(Order).where(Order.id == order_id))
                 ).scalar_one()
                 candidates = await find_candidates(
-                    session, account_id=_ACCOUNT_FREE, thread_id=None, subject="Shipping",
+                    session, user_id=OWNER_USER_ID, account_id=_ACCOUNT_FREE, thread_id=None,
+                    subject="Shipping",
                     from_addr="shop@example.com", haystack_raw=f"your booking {number} is ready",
                 )
-            known = await OrderLookup(migrated_db).known(
+            known = await OrderLookup(migrated_db, OWNER_USER_ID).known(
                 account_id=_ACCOUNT_FREE, thread_id=None, text=f"re: {number}",
             )
             async with migrated_db.session() as session:
@@ -434,7 +438,9 @@ class TestAnEntryMadeOnlyOfFiles:
                     {"old": datetime.now(timezone.utc) - timedelta(days=400), "f": file_id},
                 )
                 await repository.recompute_aggregates(session, order_id)
-            closed = await close_overdue_orders(migrated_db, days=30, grace_days=0)
+            closed = await close_overdue_orders(
+                migrated_db, user_id=OWNER_USER_ID, days=30, grace_days=0,
+            )
             return order, [
                 reason for c in candidates if c.order_id == order_id for reason in c.reasons
             ], known, closed
@@ -695,7 +701,7 @@ class TestAFailedJobLeavesNothingInvisible:
 
         async def entry() -> uuid.UUID:
             async with migrated_db.session() as session:
-                order_id = await repository.create_order(session)
+                order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
                 await repository.write_order_text(
                     session, order_id, merchant="Rail", subject="Trip", status="ok",
                     is_open=True, icon="train", summary="s", model="fake",

@@ -50,12 +50,15 @@ async def run_catch_up(
     db: DatabaseConnection,
     settings_service: SettingsService,
     *,
+    user_id: uuid.UUID,
     account_id: uuid.UUID,
     days: int,
     dry_run: bool,
 ) -> CatchUpResult:
     """
     Args:
+        user_id: Who the sweep is for -- the account's owner, whose own
+            filter patterns decide what passes
         account_id: Account to sweep
         days: How many days back to look, by received_at
         dry_run: When True, count what would happen without inserting
@@ -66,7 +69,7 @@ async def run_catch_up(
         filter; queued: how many got a new order_jobs row (equals
         `passed` unless dry_run, in which case it is always 0)
     """
-    patterns = settings_service.get("orders").get("filter", {})
+    patterns = settings_service.get_for_user("orders", user_id).get("filter", {})
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     effective_special_use = func.coalesce(FolderPrefs.special_use_override, Folder.special_use)
 

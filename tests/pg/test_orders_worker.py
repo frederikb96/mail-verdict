@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Order, OrderFact, OrderJob, OrderMail
 from mail_verdict.orders import repository
@@ -48,7 +49,7 @@ async def _settings_service(db: DatabaseConnection) -> SettingsService:
 
 
 async def _seed_account(
-    session: AsyncSession, *, orders_enabled: bool | None,
+    session: AsyncSession, *, orders_enabled: bool | None, owner_id: uuid.UUID = OWNER_USER_ID,
 ) -> uuid.UUID:
     account_id = uuid.uuid4()
     await session.execute(
@@ -58,6 +59,10 @@ async def _seed_account(
             "'\\x00' || convert_to('pw', 'UTF8'))"
         ),
         {"id": account_id, "name": f"acct-{account_id}"},
+    )
+    await session.execute(
+        text("INSERT INTO account_owners (account_id, user_id) VALUES (:id, :owner)"),
+        {"id": account_id, "owner": owner_id},
     )
     if orders_enabled is not None:
         await session.execute(
@@ -326,7 +331,7 @@ class TestThreadBypassJoinsAnOrdersConversation:
         -- OrdersStage's own bypass rule, against a real OrderLookup."""
         async with migrated_db.session() as session:
             account_id = await _seed_account(session, orders_enabled=True)
-            order_id = await repository.create_order(session)
+            order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
             thread_id = uuid.uuid4()
             await repository.attach_mail(
                 session, order_id=order_id, account_id=account_id,
@@ -343,7 +348,7 @@ class TestThreadBypassJoinsAnOrdersConversation:
             folders=None, neighbors=None, models=None,  # type: ignore[arg-type]
             log=BoundLog(logging.getLogger("test")),
             account_spam_enabled=False, account_orders_enabled=True,
-            orders=OrderLookup(migrated_db),
+            orders=OrderLookup(migrated_db, OWNER_USER_ID),
         )
         outcome = await stage.execute(
             _view(subject="Re: hi", account_id=account_id, thread_id=thread_id), ctx,
@@ -360,7 +365,7 @@ class TestThreadBypassJoinsAnOrdersConversation:
         in Sent, whose subject also says nothing about an order."""
         async with migrated_db.session() as session:
             account_id = await _seed_account(session, orders_enabled=True)
-            order_id = await repository.create_order(session)
+            order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
             thread_id = uuid.uuid4()
             await repository.attach_mail(
                 session, order_id=order_id, account_id=account_id,

@@ -17,6 +17,7 @@ import pytest
 from PIL import Image
 from sqlalchemy import select, text, update
 
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.config import get_config
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Order, OrderDocument, OrderFact, OrderMail
@@ -393,7 +394,7 @@ class TestARewriteRepairsAnOldOrder:
                 session, message_id=message_id, filename="ticket.pdf",
                 content_type="application/pdf", data=ticket_pdf(number),
             )
-            order_id = await repository.create_order(session)
+            order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
             await repository.attach_mail(
                 session, order_id=order_id, account_id=account_id, msg_key=key,
                 message_id=message_id, thread_id=None, subject=f"Ticket {number}",
@@ -586,7 +587,7 @@ class TestARewriteRepairsAnOldOrder:
     ) -> None:
         service = await _settings_service(migrated_db)
         async with migrated_db.session() as session:
-            order_id = await repository.create_order(session)
+            order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
             file_id = (await session.execute(
                 text(
                     "INSERT INTO order_files (order_id, filename, content_type, size_bytes, "
@@ -621,7 +622,7 @@ class TestReadingLimits:
         )
         async with migrated_db.session() as session:
             [read] = await read_mail_documents(session, [ref])
-            order_id = await repository.create_order(session)
+            order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
             await store_mail_documents(
                 session, order_id=order_id, account_id=uuid.uuid4(), msg_key="k", reads=[read],
             )
@@ -694,7 +695,7 @@ class TestStoringWhatWasRead:
             barcodes=(Barcode(1, "QR", b"x", "A\ud800B", None, None, None),),
         )
         async with migrated_db.session() as session:
-            order_id = await repository.create_order(session)
+            order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
             await store_mail_documents(
                 session, order_id=order_id, account_id=uuid.uuid4(), msg_key="k",
                 reads=[order_documents.ReadDocument(uuid.uuid4(), None, document)],
