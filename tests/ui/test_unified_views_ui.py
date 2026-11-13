@@ -320,17 +320,22 @@ class TestOneFolderInSeveralViews:
             assert resp.status_code == 201, resp.text
             views.append(resp.json())
 
-        page.goto(f"{app_server}/settings")
-        folder_row = page.locator(
-            f'[data-testid="unified-folder-row"][data-folder-id="{inbox["id"]}"]'
-        )
-        # "Inbox", not the raw "INBOX" -- unified-setup.tsx now names a
-        # special-use folder by its role, the same as the sidebar.
-        folder_row.get_by_role("button", name="Unified views for Inbox", exact=True).click()
+        page.goto(f"{app_server}/settings/views")
         for view in views:
-            # The multi-select stays open between ticks.
-            page.get_by_role("menuitemcheckbox", name=view["name"], exact=True).click()
-        page.keyboard.press("Escape")
+            # A view opens in place to show its folder picker; one view is
+            # open at a time, so opening the next closes the first.
+            view_row = page.locator(
+                f'[data-testid="unified-view-row"][data-view-id="{view["id"]}"]'
+            )
+            view_row.get_by_role("button", name=view["name"]).click(timeout=15_000)
+            group = view_row.locator(
+                f'[data-testid="folder-picker-account"][data-account-id="{account["id"]}"]'
+            )
+            toggle = group.get_by_role("button", expanded=False)
+            if toggle.count():
+                toggle.click()
+            group.locator(f'[data-folder-id="{inbox["id"]}"]').get_by_role("checkbox").click()
+            expect(view_row.get_by_text("1 folder", exact=False)).to_be_visible(timeout=15_000)
 
         def _both_assigned() -> bool | None:
             folders = api_client.get(f"/api/accounts/{account['id']}/folders").json()
@@ -338,7 +343,6 @@ class TestOneFolderInSeveralViews:
             return True if set(ids) == {v["id"] for v in views} else None
 
         wait_for(_both_assigned, timeout_s=15.0, description="INBOX in both views")
-        expect(folder_row.get_by_test_id("folder-view-chip")).to_have_count(2)
 
         _goto(page, app_server)
         select_unified_view(page)

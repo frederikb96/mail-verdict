@@ -49,7 +49,8 @@ import { FolderOrder } from "@/components/settings/folder-order";
 import { ImageExceptionsList } from "@/components/settings/image-exceptions-list";
 import { IdentitiesSection } from "@/components/accounts/identities-section";
 import { DavAccountsSection } from "@/components/accounts/dav-account-card";
-import { EmojiPicker } from "@/components/settings/unified-setup";
+import { EmojiPicker } from "@/components/common/emoji-picker";
+import { CategoryHeader } from "@/components/settings/blocks";
 
 import {
   useAccounts,
@@ -796,7 +797,7 @@ export function AccountsPage() {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col gap-4 p-6">
+      <div className="flex flex-col gap-4">
         <Skeleton className="h-8 w-48" />
         {Array.from({ length: 3 }).map((_, i) => (
           <Skeleton key={i} className="h-48 w-full" />
@@ -806,36 +807,38 @@ export function AccountsPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Accounts</h1>
-        <Dialog
-          open={dialogOpen}
-          onOpenChange={(open) => {
-            setDialogOpen(open);
-            if (!open) setEditingAccount(undefined);
-          }}
-        >
-          <DialogTrigger render={<Button />}>
-            <Plus className="mr-1 h-4 w-4" />
-            Add Account
-          </DialogTrigger>
-          <DialogContent size="lg">
-            <DialogHeader>
-              <DialogTitle>
-                {editingAccount ? "Edit Account" : "Add Account"}
-              </DialogTitle>
-            </DialogHeader>
-            <AccountForm
-              account={editingAccount}
-              onClose={() => {
-                setDialogOpen(false);
-                setEditingAccount(undefined);
-              }}
-            />
-          </DialogContent>
-        </Dialog>
-      </div>
+    <div className="flex flex-col gap-6">
+      <CategoryHeader
+        title="Accounts"
+        actions={
+          <Dialog
+            open={dialogOpen}
+            onOpenChange={(open) => {
+              setDialogOpen(open);
+              if (!open) setEditingAccount(undefined);
+            }}
+          >
+            <DialogTrigger render={<Button />}>
+              <Plus className="mr-1 h-4 w-4" />
+              Add Account
+            </DialogTrigger>
+            <DialogContent size="lg">
+              <DialogHeader>
+                <DialogTitle>
+                  {editingAccount ? "Edit Account" : "Add Account"}
+                </DialogTitle>
+              </DialogHeader>
+              <AccountForm
+                account={editingAccount}
+                onClose={() => {
+                  setDialogOpen(false);
+                  setEditingAccount(undefined);
+                }}
+              />
+            </DialogContent>
+          </Dialog>
+        }
+      />
 
       {accounts?.length === 0 && (
         <div className="flex flex-col items-center gap-3 py-12 text-muted-foreground">

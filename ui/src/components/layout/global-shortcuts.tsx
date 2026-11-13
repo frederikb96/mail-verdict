@@ -2,6 +2,8 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useIsAdmin } from "@/hooks/use-me";
+import { useToast } from "@/hooks/use-toast";
 import { useSidebar } from "@/components/ui/sidebar";
 import { useShortcutBindings } from "@/lib/shortcut-bindings";
 import { matchAction, yieldsToField, type ShortcutActionId } from "@/lib/shortcuts";
@@ -16,10 +18,13 @@ const ROUTES: Partial<Record<ShortcutActionId, string>> = {
   go_orders: "/orders",
   go_spam_review: "/spam-review",
   go_search: "/search",
-  go_accounts: "/accounts",
-  go_pipeline: "/pipeline",
+  go_accounts: "/settings/accounts",
+  go_pipeline: "/admin/processing",
   go_settings: "/settings",
 };
+
+/** Shortcuts whose page is the administrators' alone. */
+const ADMIN_ROUTES: ReadonlySet<ShortcutActionId> = new Set(["go_pipeline"]);
 
 /** The go-to and sidebar shortcuts, from any page. Focusing the search
  * field and the cheat sheet are handled by the components they open. */
@@ -27,6 +32,8 @@ export function GlobalShortcuts() {
   const router = useRouter();
   const { toggleSidebar } = useSidebar();
   const bindings = useShortcutBindings();
+  const isAdmin = useIsAdmin();
+  const { push: pushToast } = useToast();
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -41,12 +48,16 @@ export function GlobalShortcuts() {
       const target = ROUTES[action];
       if (!target) return;
       event.preventDefault();
+      if (ADMIN_ROUTES.has(action) && !isAdmin) {
+        pushToast("Administrators only", "info");
+        return;
+      }
       router.push(target);
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [router, toggleSidebar, bindings]);
+  }, [router, toggleSidebar, bindings, isAdmin, pushToast]);
 
   return null;
 }

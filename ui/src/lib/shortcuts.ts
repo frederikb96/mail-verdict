@@ -171,7 +171,7 @@ export const SHORTCUT_ACTIONS = [
   { id: "go_spam_review", label: "Go to spam review", scope: "global", default: ctrlAlt("Digit5") },
   { id: "go_search", label: "Go to the search page", scope: "global", default: ctrlAlt("Digit6") },
   { id: "go_accounts", label: "Go to accounts", scope: "global", default: ctrlAlt("Digit7") },
-  { id: "go_pipeline", label: "Go to the pipeline", scope: "global", default: ctrlAlt("Digit8") },
+  { id: "go_pipeline", label: "Go to admin processing", scope: "global", default: ctrlAlt("Digit8") },
   { id: "go_settings", label: "Go to settings", scope: "global", default: ctrlAlt("Digit9") },
   { id: "focus_search", label: "Focus search", scope: "global", default: chord("/") },
   { id: "toggle_sidebar", label: "Show or hide the sidebar", scope: "global", default: chord("KeyB", { ctrl: true }) },

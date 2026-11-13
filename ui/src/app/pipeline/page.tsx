@@ -1,10 +1,10 @@
-import { AdminOnly } from "@/components/common/admin-only";
 import { PipelinePage } from "@/components/pipeline/pipeline-page";
+import { SettingsShell } from "@/components/settings/settings-shell";
 
 export default function PipelineRoute() {
   return (
-    <AdminOnly>
+    <SettingsShell area="admin" category="processing">
       <PipelinePage />
-    </AdminOnly>
+    </SettingsShell>
   );
 }

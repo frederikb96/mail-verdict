@@ -8,10 +8,11 @@
 
 import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
-import { Keyboard, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ClientOnly } from "@/components/client-only";
+import { CategoryHeader } from "@/components/settings/blocks";
 import { ShortcutKeys } from "@/components/layout/shortcuts-overlay";
 import { shortcutOverridesAtom } from "@/lib/shortcut-bindings";
 import {
@@ -86,14 +87,11 @@ function ShortcutsEditor() {
   const changed = Object.keys(overrides).length > 0;
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <h1 className="flex items-center gap-2 text-2xl font-semibold">
-            <Keyboard className="h-6 w-6" />
-            Keyboard shortcuts
-          </h1>
-          <p className="max-w-2xl text-sm text-muted-foreground">
+    <div className="flex flex-col gap-6">
+      <CategoryHeader
+        title="Keyboard shortcuts"
+        description={
+          <>
             Letters follow what is printed on your keyboard, whatever its layout: <ShortcutKeys>z</ShortcutKeys>{" "}
             is the key labelled Z on a German keyboard as much as on a US one. Changes apply at once and
             are kept in this browser.
@@ -103,21 +101,23 @@ function ShortcutsEditor() {
                 <ShortcutKeys>{formatChord(bindings.show_shortcuts)}</ShortcutKeys> shows them all from any page.
               </>
             )}
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!changed}
-          onClick={() => {
-            setOverrides({});
-            setRecording(null);
-          }}
-        >
-          <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-          Reset all
-        </Button>
-      </div>
+          </>
+        }
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!changed}
+            onClick={() => {
+              setOverrides({});
+              setRecording(null);
+            }}
+          >
+            <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+            Reset all
+          </Button>
+        }
+      />
 
       {SCOPE_ORDER.map((scope) => (
         <Card key={scope}>

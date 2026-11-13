@@ -494,7 +494,7 @@ export function OrdersPage() {
                   variant="outline"
                   size="sm"
                   className="mt-2"
-                  render={<Link href="/accounts" />}
+                  render={<Link href="/settings/accounts" />}
                 >
                   Open accounts
                 </Button>

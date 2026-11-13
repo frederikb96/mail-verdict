@@ -271,7 +271,7 @@ def test_no_account_enabled_shows_the_no_orders_yet_state(
     expect(page.get_by_text("Switch it on for", exact=False)).to_be_visible()
     open_accounts = page.get_by_role("link", name="Open accounts", exact=True)
     expect(open_accounts).to_be_visible(timeout=15_000)
-    expect(open_accounts).to_have_attribute("href", "/accounts")
+    expect(open_accounts).to_have_attribute("href", "/settings/accounts")
 
 
 def test_sidebar_entry_and_a_row_shows_its_five_things(
@@ -719,11 +719,9 @@ def test_account_form_orders_switch_and_settings_filter_json(
     expect(checkbox_after_reload).to_be_checked()
     page.get_by_role("button", name="Cancel", exact=True).click()
 
-    page.goto(f"{app_server}/settings")
-    page.get_by_role("tab", name="Orders", exact=True).click()
-    filter_field = page.get_by_text("First filter (patterns)", exact=True).locator(
-        "xpath=following-sibling::textarea",
-    )
+    page.goto(f"{app_server}/settings/mail")
+    page.get_by_role("button", name="Show patterns", exact=True).click(timeout=15_000)
+    filter_field = page.get_by_label("Patterns", exact=True)
     expect(filter_field).to_be_visible(timeout=15_000)
 
     current_filter = api_client.get("/api/settings/orders").json()["filter"]
@@ -733,7 +731,7 @@ def test_account_form_orders_switch_and_settings_filter_json(
         *edited_filter["include"]["subject"], "kind_of_test_marker_pattern",
     ]
     filter_field.fill(json.dumps(edited_filter, indent=2))
-    page.get_by_role("button", name="Save", exact=True).click()
+    page.get_by_test_id("settings-save-bar").get_by_role("button", name="Save", exact=True).click()
 
     def _filter_saved() -> dict[str, Any] | None:
         resp = api_client.get("/api/settings/orders")

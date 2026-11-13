@@ -186,7 +186,7 @@ class TestUnifiedViewIdentifiesEachAccount:
         link = page.get_by_role("link", name="Create one in Settings")
         expect(link).to_be_visible()
         link.click()
-        expect(page).to_have_url(re.compile(r"/settings$"))
+        expect(page).to_have_url(re.compile(r"/settings/views$"))
 
     def test_unified_folder_row_shows_both_accounts_and_both_messages(
         self,

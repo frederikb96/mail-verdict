@@ -168,6 +168,23 @@ export interface SearchResponse {
   total: number;
 }
 
+/** GET /api/embeddings/status -- coverage of one embedding model. */
+export interface EmbeddingStatusResponse {
+  model: string;
+  in_scope: number;
+  encoded: number;
+  pending: number;
+  failed: number;
+  reachable: number;
+  unreachable: number;
+  shadowed: number;
+  coverage: number;
+  active: boolean;
+  outstanding: number;
+  cutover_ready: boolean | null;
+  cutover_blocked_reason: string | null;
+}
+
 export interface SemanticSearchResponse {
   results: SemanticSearchHit[];
   query: string;
@@ -1597,6 +1614,12 @@ export interface UsageExportStatus {
   last_error_at: string | null;
   pending: number;
 }
+
+/** GET /api/settings/schema -- who may write each settings key. */
+export type SettingsSchema = Record<
+  string,
+  Record<string, { scope: "admin" | "user"; type: string }>
+>;
 
 export interface ProvidersStatus {
   providers: Record<string, ProviderKeyStatus>;

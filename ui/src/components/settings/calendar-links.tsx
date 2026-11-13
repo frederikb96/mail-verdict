@@ -16,9 +16,9 @@
  */
 
 import { useEffect, useState } from "react";
-import { Code, Loader2, MoreVertical, Save, Table2 } from "lucide-react";
+import { Code, Loader2, MailCheck, MoreVertical, Save, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { SectionCard } from "@/components/settings/blocks";
 import { Truncate } from "@/components/ui/truncate";
 import { Label } from "@/components/ui/label";
 import {
@@ -172,29 +172,19 @@ export function CalendarLinksCard() {
 
   if (isLoading || !links) {
     return (
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Calendar invitations</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Skeleton className="h-32 w-full" />
-        </CardContent>
-      </Card>
+      <SectionCard icon={MailCheck} title="Calendar invitations">
+        <Skeleton className="h-32 w-full" />
+      </SectionCard>
     );
   }
 
   if (rows.length === 0) {
     return (
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Calendar invitations</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            No sending identities yet -- add one on the Accounts page to link it to a calendar.
-          </p>
-        </CardContent>
-      </Card>
+      <SectionCard icon={MailCheck} title="Calendar invitations">
+        <p className="text-sm text-muted-foreground">
+          No sending identities yet -- add one under Accounts to link it to a calendar.
+        </p>
+      </SectionCard>
     );
   }
 
@@ -274,9 +264,11 @@ export function CalendarLinksCard() {
   }
 
   return (
-    <Card>
-      <CardHeader className="flex-row items-center justify-between pb-3">
-        <CardTitle className="text-base">Calendar invitations</CardTitle>
+    <SectionCard
+      icon={MailCheck}
+      title="Calendar invitations"
+      description="Which calendar an invitation sent to each of your addresses is added to."
+      action={
         <DropdownMenu>
           <DropdownMenuTrigger
             render={<Button variant="ghost" size="icon-sm" />}
@@ -295,8 +287,8 @@ export function CalendarLinksCard() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+      }
+    >
         {!rawMode ? (
           <>
             {Array.from(groupedByAccount.entries()).map(([accountId, identityRows]) => (
@@ -353,7 +345,6 @@ export function CalendarLinksCard() {
             </Button>
           </div>
         )}
-      </CardContent>
-    </Card>
+    </SectionCard>
   );
 }

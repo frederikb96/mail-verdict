@@ -90,9 +90,9 @@ podman compose --env-file .prod.env up -d
 ```
 
 The UI is then on <http://localhost:8080>, behind the authenticating proxy that signs a browser in
-and forwards its token ([Access](#access)). Add an account under *Accounts*; PostIMAP starts
-syncing it right away and mail appears as it arrives. Then set a provider key and pick the models
-under *Settings*.
+and forwards its token ([Access](#access)). Add an account under *Settings → Accounts*; PostIMAP starts
+syncing it right away and mail appears as it arrives. An administrator then sets a provider key
+and picks the models under *Admin → Providers & keys* and *Admin → Models*.
 
 On Kubernetes, a Helm chart is published with every release:
 
@@ -115,11 +115,12 @@ repeat it. Configuration comes from that file, then a sparse override file, then
 variables, and the app refuses to start on anything missing rather than quietly substituting a
 fallback.
 
-Anything that changes at runtime is a **setting**, stored in the database and edited on the
-Settings page or through the API: the AI providers and models, spam behaviour, rules, and provider
-API keys (stored encrypted). The machinery (models, providers, queues, secrets, webhooks) belongs
-to admins; each user has their own mail, calendar, undo-send and orders preferences, and an
-admin's own preferences are theirs alone.
+Anything that changes at runtime is a **setting**, stored in the database and edited in the web
+UI or through the API. Each setting is the instance's or a user's own: the machinery (the AI
+providers and models, provider API keys stored encrypted, queues, secrets, webhooks) belongs to
+admins and sits under *Admin*, which only administrators see; each user has their own mail,
+calendar, undo-send and orders preferences under *Settings*, and an admin's own preferences are
+theirs alone.
 
 - **One provider and model per AI task:** spam verdicts (`ai`), embeddings (`semantic`), the
   order-matching, order-text and image-reading calls (`orders`' `decide_*`, `write_*` and `read_*`
@@ -128,7 +129,7 @@ admin's own preferences are theirs alone.
   name; a custom server's address is set on the task that uses it (`ai.base_url`,
   `semantic.base_url`, `orders.decide_base_url`, ...).
 - A key is stored once per provider and shared by every task that names it, so mail that must stay
-  private can sit on one provider while order analysis uses another. The Settings page states
+  private can sit on one provider while order analysis uses another. The Models page states
   beside each task which mail it reads; [docs/features.md](docs/features.md#privacy) has the
   details.
 - A provider that runs out of credit, or rejects its key, pauses its tasks until it answers again,
@@ -136,7 +137,7 @@ admin's own preferences are theirs alone.
 - **Token usage:** the tokens of every paid model response are recorded locally with their
   purpose, provider and model, and pushed to an Elasticsearch data stream once
   `usage_export.elasticsearch_url` is set and an API key for it is stored
-  (`elastic_usage_api_key`, written like a provider key). The Settings page shows how the push is
+  (`elastic_usage_api_key`, written like a provider key). *Admin → System* shows how the push is
   going.
 
 A handful of values stay environment variables, because they gate config loading itself or are the

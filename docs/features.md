@@ -149,7 +149,7 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
 - Conditions over incoming mail with actions that move, tag, flag or delete it, or send it to a
   webhook.
 - **Webhooks:** the message's raw source is posted to a URL, with a header that can take its value
-  from a named secret stored encrypted in the database (set from Settings, never shown again). A
+  from a named secret stored encrypted in the database (set under Admin → Secrets, never shown again). A
   delivery is queued, retried when the receiver is unavailable, never repeated once it succeeded,
   and raises an alert when it gives up. Mail that predates a rule can be sent once, oldest first,
   through the API. Only an administrator may write a webhook rule.
@@ -184,7 +184,7 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
 - **New mail:** raises a bell with a durable, dismissable list, and — once notifications are turned
   on for a device — a system notification that reaches it even with no MailVerdict page open,
   using the browser's own Web Push. Which folders alert is a per-device setting; every registered
-  device can be reviewed and removed from Settings.
+  device can be reviewed and removed under Settings → Notifications.
 - Web Push requires a home-screen install on iOS and iPadOS, and stops the moment the browser
   itself is quit on a desktop. The durable list is what a closed tab or a declined permission falls
   back to.
@@ -255,11 +255,21 @@ mail client: a `mailto:` link opens the composer filled in from the link.
   listed in. A user who has not changed one gets its default.
 - An admin's own preferences are theirs alone; changing them changes nothing for anyone else.
 - Anyone else is refused the machinery outright.
+- Settings shows one category at a time, each at an address of its own: Appearance, Mail (filing,
+  undo send, how orders are summarised and closed), Unified views, Notifications, Calendar,
+  Accounts and Keyboard shortcuts. On a phone the list of categories is a screen of its own.
+- Folders are chosen with one picker, for a unified view and for the folders that raise a
+  notification: a filter, a switch hiding system folders (Drafts, Sent, Trash, Junk and folders
+  the sidebar hides), and a collapsible group per account whose checkbox ticks everything it lists.
+- *Admin* is a sidebar entry for administrators only. It holds the machinery: Models (one row per
+  AI task with provider, model, reasoning effort and token budget), Providers & keys, Processing,
+  Secrets and System (usage export, semantic index coverage, queue tuning). Anyone else who opens
+  an Admin address is told it is for administrators.
 
 ## Keyboard shortcuts
 
 - From any page, `Ctrl+Alt+1` to `Ctrl+Alt+9` jump to mail, calendar, contacts, orders & tickets,
-  spam review, the search page, accounts, the pipeline and settings, in the sidebar's order. `/`
+  spam review, the search page, accounts, admin processing (administrators only) and settings. `/`
   focuses search, `Ctrl+B` shows or hides the sidebar, and `?` lists every shortcut.
 - The calendar has its own (`t` today, `d`/`w`/`m`/`a` views, `n` new event, `j`/`k` and the
   arrows for the next and previous period), and orders & tickets step through the list with

@@ -475,21 +475,17 @@ class TestBadgeSetting:
                 page.goto(base)
             expect(page.get_by_test_id("bell-badge")).to_have_text("4", timeout=15_000)
 
-            page.goto(f"{base}/settings")
-            # The mail category's generic renderer ties no label to its
-            # input, so the row is found by the label's own text.
-            checkbox = (
-                page.locator("div")
-                .filter(has=page.get_by_text("Bell badge counts new mail", exact=True))
-                .last.locator('input[type="checkbox"]')
-            )
-            expect(checkbox).to_be_checked(timeout=15_000)
-            checkbox.uncheck()
+            page.goto(f"{base}/settings/notifications")
+            bell_switch = page.get_by_role("switch", name="Count new mail on the bell")
+            expect(bell_switch).to_be_checked(timeout=15_000)
+            bell_switch.click()
             with page.expect_response(
                 lambda resp: "/api/settings/mail" in resp.url and resp.request.method == "PUT",
                 timeout=15_000,
             ):
-                page.get_by_role("button", name="Save", exact=True).click()
+                page.get_by_test_id("settings-save-bar").get_by_role(
+                    "button", name="Save", exact=True,
+                ).click()
 
             # The write failure and the stuck send are system notifications,
             # which the setting never takes out of the badge.
@@ -569,6 +565,21 @@ class TestOpeningAMessageDismissesItsAlert:
         page.keyboard.press("Escape")
 
 
+def _open_folder_group(page: Page, account_email: str, *, show_system: bool = False) -> Locator:
+    """Customize the notification folders and open this account's group in
+    the picker, which collapses every group once there is more than one
+    account. System folders (Sent, Drafts, ...) stay hidden unless asked for."""
+    page.get_by_role("button", name="Customize", exact=True).click(timeout=15_000)
+    picker = page.get_by_test_id("folder-picker")
+    if show_system:
+        picker.get_by_role("button", name="Hide system folders", exact=True).click()
+    group = picker.get_by_test_id("folder-picker-account").filter(has_text=account_email)
+    collapsed = group.get_by_role("button", expanded=False)
+    if collapsed.count():
+        collapsed.click()
+    return group
+
+
 class TestPushSubscriptionSettings:
     """Enabling and disabling push in Settings -- the subscribe/register
     round trip, with the browser's own PushManager stubbed (see the
@@ -595,7 +606,7 @@ class TestPushSubscriptionSettings:
                 lambda resp: "/api/alerts/subscriptions" in resp.url
                 and resp.request.method == "GET",
             ):
-                page.goto(f"{app_server_with_encryption_key}/settings")
+                page.goto(f"{app_server_with_encryption_key}/settings/notifications")
 
             enable = page.get_by_role("button", name="Enable", exact=True)
             expect(enable).to_be_visible(timeout=15_000)
@@ -658,7 +669,7 @@ class TestPushSubscriptionSettings:
                 lambda resp: "/api/alerts/subscriptions" in resp.url
                 and resp.request.method == "GET",
             ):
-                page.goto(f"{app_server_with_encryption_key}/settings")
+                page.goto(f"{app_server_with_encryption_key}/settings/notifications")
 
             # Waits on the registration response itself rather than
             # polling the DOM for the "Disable" button it eventually
@@ -678,15 +689,9 @@ class TestPushSubscriptionSettings:
 
             # Other tests in this module seed their own "INBOX" folders
             # under other accounts, so "Inbox" alone is ambiguous once
-            # this checklist spans more than one -- this account's own
-            # name is what the checklist groups its rows under
-            # (alert-settings.tsx).
-            group = (
-                page.locator("div")
-                .filter(has_text=account_email)
-                .filter(has_text="Inbox")
-                .last
-            )
+            # the picker spans more than one -- this account's own name
+            # is what the picker groups its rows under.
+            group = _open_folder_group(page, account_email)
             folder_checkbox = group.locator("label", has_text="Inbox").get_by_role("checkbox")
             expect(folder_checkbox).to_be_visible(timeout=15_000)
 
@@ -714,7 +719,7 @@ class TestPushSubscriptionSettings:
         context = browser.new_context()
         page = context.new_page()
         try:
-            page.goto(f"{app_server_with_encryption_key}/settings")
+            page.goto(f"{app_server_with_encryption_key}/settings/notifications")
             row = page.get_by_test_id("push-device").filter(has_text=label)
             expect(row).to_be_visible(timeout=15_000)
             expect(row.get_by_text("Phone", exact=True)).to_be_visible()
@@ -748,20 +753,14 @@ class TestPushSubscriptionSettings:
         page = context.new_page()
         try:
             page.add_init_script(_STUB_SERVICE_WORKER_SCRIPT)
-            page.goto(f"{app_server_with_encryption_key}/settings")
+            page.goto(f"{app_server_with_encryption_key}/settings/notifications")
 
             # An earlier test in this module seeded its own Inbox/Sent
             # pair under a different account, so "Inbox" alone is
             # ambiguous once more than one account has folders -- this
-            # account's own name is what the checklist groups its rows
-            # under (alert-settings.tsx), and no more deeply nested
-            # element than that group also carries both texts.
-            group = (
-                page.locator("div")
-                .filter(has_text=account_email)
-                .filter(has_text="Inbox")
-                .last
-            )
+            # account's own name is what the picker groups its rows
+            # under. Sent is a system folder, hidden until asked for.
+            group = _open_folder_group(page, account_email, show_system=True)
             inbox_checkbox = group.locator("label", has_text="Inbox").get_by_role("checkbox")
             sent_checkbox = group.locator("label", has_text="Sent").get_by_role("checkbox")
             expect(inbox_checkbox).to_be_visible(timeout=15_000)
