@@ -202,7 +202,8 @@ async def test_the_application_reads_the_migrated_blob_through_its_settings_serv
     from mail_verdict.settings.service import SettingsService
 
     await _seed(db_at_previous, ai=_AI, orders={"model": "Qwen/Qwen3.8-27B-FP8"})
-    await _upgrade(db_at_previous, _REVISION)
+    # The service also reads user_settings, which the application always has.
+    await _upgrade(db_at_previous, "head")
 
     db = DatabaseConnection(
         DatabaseConfig(

@@ -24,12 +24,14 @@ from mail_verdict.settings.credentials import (
     PROVIDER_ENV_VARS,
     ProviderCredentialRepository,
 )
+from tests.helpers.auth import act_as, owner_scope
 
 
 @pytest.fixture()
 def client() -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(router)
+    act_as(app, owner_scope())
     with TestClient(app) as c:
         yield c
 
