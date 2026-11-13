@@ -91,9 +91,9 @@ def _intake_state(prefs: CalendarPrefs | None) -> CalendarIntakeState:
 
 
 def _calendar_settings(scope: Scope) -> dict[str, Any]:
-    """The calendar defaults a calendar's own reminder prefs fall back to.
-    The instance view for now; the per-user view once it exists."""
-    return get_settings_service().get("calendar")
+    """The calendar defaults a calendar's own reminder prefs fall back to:
+    the caller's own."""
+    return get_settings_service().get_for_user("calendar", scope.user_id)
 
 
 def _to_response(
