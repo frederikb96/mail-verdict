@@ -8,7 +8,8 @@ PostIMAP-owned tables: accounts, folders, messages, attachments, sync_state,
   consumer contract -- see postimap/contract.py for the version this
   projection is built against)
 
-MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
+MailVerdict-owned tables: users, user_identities, account_owners,
+  dav_account_owners, user_settings, verdicts, mail_tags, settings, image_exceptions,
   account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings,
   identities, calendar_prefs, calendar_intake, calendar_replies,
   calendar_links_revision, pending_sends, pending_send_attachments, alerts,
@@ -759,6 +760,89 @@ class DavNotification(Base):
 # in queries rather than via an ORM relationship.
 
 
+class User(Base):
+    """A person (or a machine acting as one) using this instance.
+
+    Identified by user_identities, never by email: one user may sign in under
+    several token subjects. OWNER_USER_ID (auth/principal.py) is the row the
+    0050 migration created and handed every pre-existing account; the
+    auth.owner_subjects config resolves to it whatever this table says.
+    Users are never deleted; `disabled` refuses every request they make.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False, default="user", server_default="user")
+    disabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (CheckConstraint("role IN ('admin', 'user')", name="ck_users_role"),)
+
+
+class UserIdentity(Base):
+    """One token subject (`sub` claim) and the user it signs in as."""
+
+    __tablename__ = "user_identities"
+
+    subject: Mapped[str] = mapped_column(Text, primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (Index("ix_user_identities_user_id", "user_id"),)
+
+
+class AccountOwner(Base):
+    """Which user owns a mail account. account_id has no foreign key onto
+    PostIMAP's accounts (see the module docstring); the row is written in
+    the same transaction as the account itself (api/accounts.py)."""
+
+    __tablename__ = "account_owners"
+
+    account_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+    __table_args__ = (Index("ix_account_owners_user_id", "user_id"),)
+
+
+class DavAccountOwner(Base):
+    """Which user owns a CalDAV/CardDAV account -- AccountOwner's twin."""
+
+    __tablename__ = "dav_account_owners"
+
+    dav_account_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+    __table_args__ = (Index("ix_dav_account_owners_user_id", "user_id"),)
+
+
+class UserSetting(Base):
+    """One user's own values of one settings category -- the per-user
+    counterpart of Setting, holding only the keys a user may set."""
+
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    category: Mapped[str] = mapped_column(String(100), primary_key=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=func.now(),
+    )
+
+
 class AccountPrefs(Base):
     """Per-account MailVerdict preferences (not in PostIMAP)."""
 
@@ -1077,10 +1161,16 @@ class UnifiedView(Base):
     __tablename__ = "unified_views"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     emoji: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Sidebar order, ascending.
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_unified_views_user_name"),
+        Index("ix_unified_views_user_id", "user_id"),
+    )
 
 
 class UnifiedViewFolder(Base):
@@ -1374,13 +1464,13 @@ class CalendarReply(Base):
 
 
 class CalendarLinksRevision(Base):
-    """Single-row optimistic-concurrency counter for PUT /api/calendar/links,
+    """Per-user optimistic-concurrency counter for PUT /api/calendar/links,
     the same base_revision idea GET/PUT /api/pipeline uses -- see api/calendars.py.
     """
 
     __tablename__ = "calendar_links_revision"
 
-    singleton: Mapped[bool] = mapped_column(Boolean, primary_key=True, default=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
@@ -1595,6 +1685,9 @@ class PipelineRevision(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    __table_args__ = (Index("ix_pipeline_revisions_user_revision", "user_id", "revision"),)
 
 
 class PipelineFolderState(Base):
@@ -1699,6 +1792,7 @@ class OutboxSubmission(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
 class MessageActionSubmission(Base):
@@ -1729,6 +1823,7 @@ class MessageActionSubmission(Base):
     heartbeat_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
 class Alert(Base):
@@ -1781,8 +1876,12 @@ class Alert(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
     )
+    # Whose alert this is. NULL for a condition of the instance itself
+    # (provider_unavailable), which only admins see.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     __table_args__ = (
+        Index("ix_alerts_user_id", "user_id"),
         # What the dispatcher's claim query (SELECT ... FOR UPDATE SKIP
         # LOCKED, the same shape PendingSend's idx_pending_sends_due
         # supports) scans: due, not-yet-delivered rows. A delivered row
@@ -1850,8 +1949,10 @@ class PushSubscription(Base):
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     __table_args__ = (
+        Index("ix_push_subscriptions_user_id", "user_id"),
         CheckConstraint("transport IN ('webpush', 'apns')", name="ck_push_subscriptions_transport"),
         CheckConstraint(
             "transport <> 'webpush' OR "
@@ -1976,8 +2077,10 @@ class Order(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
     )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     __table_args__ = (
+        Index("ix_orders_user_id", "user_id"),
         CheckConstraint("open_set_by IN ('ai', 'user', 'auto')", name="ck_orders_open_set_by"),
         CheckConstraint("kind IN ('ticket', 'order', 'other')", name="ck_orders_kind"),
         CheckConstraint("kind_set_by IN ('ai', 'user')", name="ck_orders_kind_set_by"),
@@ -2384,8 +2487,14 @@ class LlmUsage(Base):
     cache_read_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     cache_write_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Who the call was made for, where an account was in hand; NULL for a
+    # call made for nobody in particular.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
-    __table_args__ = (Index("ix_llm_usage_created_at", "created_at"),)
+    __table_args__ = (
+        Index("ix_llm_usage_created_at", "created_at"),
+        Index("ix_llm_usage_user_id", "user_id"),
+    )
 
 
 class UsageExportState(Base):

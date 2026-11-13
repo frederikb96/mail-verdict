@@ -195,16 +195,22 @@ networkPolicy:
 # set of available keys, defaults and comments. Only set what you want to
 # change; everything else falls back to the image's built-in defaults.
 #
-# Unlike PostIMAP's chart, this section has no required key: the image's
+# The one required section is `auth:` -- the OpenID Connect issuer whose
+# tokens the API accepts and the instance owner's subjects; the app refuses
+# to start without it (see the chart README's Access section). The image's
 # bundled config.yaml already resolves `database.url` from
 # `${MAIL_VERDICT_DATABASE_URL}` and `security.encryption_key` from
 # `${ENCRYPTION_KEY}` -- both wired from the Secret below, not duplicated
-# here. Set values here only to change something else, e.g.
-# `server.cors_origins` or `database.pool_size`.
+# here.
 #
 # This is intentionally freeform: when new config sections are added to the
 # app, set them the same way -- no chart changes needed to use them.
 config: {}
+# auth:
+#   issuer: https://login.example.com
+#   jwks_url: https://login.example.com/oauth/v2/keys
+#   audiences: ["<web client id>", "<api audience>"]
+#   owner_subjects: ["<your own sub claim>"]
 # server:
 #   log_level: INFO
 #   cors_origins: []

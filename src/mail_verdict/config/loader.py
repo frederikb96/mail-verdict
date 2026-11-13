@@ -1,7 +1,7 @@
 """
 Infrastructure Configuration for MailVerdict.
 
-Loads ONLY infrastructure config: server, database. Application settings
+Loads ONLY infrastructure config: server, auth, database. Application settings
 (AI, spam, rules, retry) are stored in the database (see settings/).
 
 Loading order (highest priority wins):
@@ -233,6 +233,46 @@ class ServerConfig(BaseModel):
     cors_origins: list[str] = Field(default_factory=list)
 
 
+class AuthConfig(BaseModel):
+    """Token validation and the instance owner -- see config.yaml's `auth:`
+    for what each one does. Nothing here may be empty that a request needs:
+    an empty issuer would not mean "auth off", it would mean every request
+    is refused, so the app refuses to start instead."""
+
+    issuer: str
+    jwks_url: str
+    audiences: list[str]
+    owner_subjects: list[str]
+    auto_provision: bool
+    leeway_seconds: float
+    jwks_cache_seconds: float
+    request_timeout_seconds: float
+    token_cache_seconds: float
+    principal_cache_seconds: float
+    native_client_id: str
+    native_scopes: str
+    native_redirect_uri: str
+
+    @field_validator("issuer", "jwks_url")
+    @classmethod
+    def _must_be_set(cls, value: str) -> str:
+        """Reject an empty issuer or key set URL rather than running without one."""
+        if not value:
+            raise ValueError(
+                "must be set -- MailVerdict validates every request's token itself "
+                "(see auth: in config.yaml)"
+            )
+        return value
+
+    @field_validator("audiences", "owner_subjects")
+    @classmethod
+    def _must_not_be_empty(cls, value: list[str]) -> list[str]:
+        """Reject an empty audience set or owner list; neither has a safe default."""
+        if not value:
+            raise ValueError("must name at least one entry (see auth: in config.yaml)")
+        return value
+
+
 class SecurityConfig(BaseModel):
     """Encryption key for provider API keys stored in the database."""
 
@@ -390,6 +430,7 @@ class InfraConfig(BaseModel):
     """
 
     server: ServerConfig
+    auth: AuthConfig
     security: SecurityConfig
     outbox: OutboxConfig
     providers: ProvidersConfig
@@ -407,6 +448,24 @@ class InfraConfig(BaseModel):
 _config_instance: InfraConfig | None = None
 
 
+def get_database_config() -> DatabaseConfig:
+    """
+    Only the database section -- what running migrations needs, without
+    requiring every other section (the auth issuer among them) to be set.
+
+    Raises:
+        ConfigError: If the database section is missing or invalid
+    """
+    database_cfg = dict(_ensure_config().get("database") or {})
+    db_url = database_cfg.get("url")
+    if db_url:
+        database_cfg["url"] = _fix_db_url(db_url)
+    try:
+        return DatabaseConfig(**database_cfg)
+    except ValidationError as exc:
+        raise ConfigError(f"Invalid configuration: {exc}") from exc
+
+
 def get_config() -> InfraConfig:
     """
     Get the global infrastructure configuration instance.
@@ -419,21 +478,18 @@ def get_config() -> InfraConfig:
     global _config_instance
     if _config_instance is None:
         cfg = _ensure_config()
-
-        database_cfg = dict(cfg.get("database") or {})
-        db_url = database_cfg.get("url")
-        if db_url:
-            database_cfg["url"] = _fix_db_url(db_url)
+        database = get_database_config()
 
         try:
             _config_instance = InfraConfig(
                 server=ServerConfig(**(cfg.get("server") or {})),
+                auth=AuthConfig(**(cfg.get("auth") or {})),
                 security=SecurityConfig(**(cfg.get("security") or {})),
                 outbox=OutboxConfig(**(cfg.get("outbox") or {})),
                 providers=ProvidersConfig(**(cfg.get("providers") or {})),
                 usage_export=UsageExportConfig(**(cfg.get("usage_export") or {})),
                 mail_actions=MailActionsConfig(**(cfg.get("mail_actions") or {})),
-                database=DatabaseConfig(**database_cfg),
+                database=database,
                 search=SearchConfig(**(cfg.get("search") or {})),
                 push=PushConfig(**(cfg.get("push") or {})),
                 glacier=GlacierConfig(**(cfg.get("glacier") or {})),

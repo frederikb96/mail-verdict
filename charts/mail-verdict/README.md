@@ -121,11 +121,26 @@ Four values, one Secret:
 
 ### Access
 
-MailVerdict has no login page and no auth mechanism of its own -- it checks nothing on `/api/*` or
-`/mcp`. The deployment model is an authenticating proxy in front of it: put whatever
-authentication a browser needs (OIDC, basic auth, an internal SSO) at the ingress, so people never
-handle application credentials directly. No identity provider is hard-coded into this chart --
-`ingress.annotations` is free-form.
+Every request to `/api/*` and `/mcp` needs an OpenID Connect JWT, which MailVerdict validates itself
+against the issuer's published keys; only `/api/health` and `/api/auth/config` answer without one.
+Configure the issuer under `config.auth` (see `values.yaml` and the `auth:` section of
+`config/config.yaml`); the pod refuses to start without it. Values that live in a Secret -- a
+client id used as an audience, say -- go in as environment variables instead, through `extraEnv`;
+Kubernetes expands `$(NAME)` from variables defined before it, so several can be joined into the
+one comma-separated list:
+
+```yaml
+extraEnv:
+  - name: WEB_CLIENT_ID
+    valueFrom: {secretKeyRef: {name: oauth2-proxy-secrets, key: client-id}}
+  - name: MAIL_VERDICT_AUTH_AUDIENCES
+    value: "$(WEB_CLIENT_ID),<api audience>"
+```
+
+A browser cannot hold a token by itself, so the web UI sits behind an authenticating proxy that
+signs the browser in and forwards its ID token as `Authorization: Bearer ...` (oauth2-proxy with
+`--pass-authorization-header`, for example). Native apps and agents send their own access token.
+No identity provider is hard-coded into this chart -- `ingress.annotations` is free-form.
 
 A worked Traefik example, assuming [traefik/traefik](https://github.com/traefik/traefik-helm-chart)
 with the CRD provider and some ForwardAuth-capable service already running at
@@ -141,7 +156,7 @@ spec:
   forwardAuth:
     address: https://auth.example.com/verify
     authResponseHeaders:
-      - X-Forwarded-User
+      - Authorization
 ```
 
 Attach it on the Ingress with the standard Traefik annotation:
@@ -154,9 +169,9 @@ ingress:
 
 `apiIngress` is a second, independent Ingress for programmatic clients (MCP clients, scripts) that
 can't do an interactive browser login flow. Route it at a host/path the ForwardAuth middleware
-above doesn't intercept, and put whatever mechanism suits a machine client in front of it instead
--- mTLS, a static bearer token verified by a different ForwardAuth service, an IP allowlist.
-Entirely a proxy-level decision; the application enforces nothing itself either way.
+above doesn't intercept; such a client sends its own token from the same issuer, which the
+application validates like any other. `/api/auth/config` is what a native app reads before it
+holds a token, so a proxy that gates everything needs to let that one path through.
 
 ### Liveness and readiness probes
 

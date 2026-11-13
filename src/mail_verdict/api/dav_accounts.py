@@ -15,14 +15,23 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.schemas import (
     DavAccountCreateRequest,
     DavAccountResponse,
     DavAccountUpdateRequest,
     DavCollectionSummary,
 )
+from mail_verdict.auth.ownership import (
+    account_display_name,
+    forget_dav_account_owner,
+    owned_account_name,
+    owner_of_dav_account,
+    set_dav_account_owner,
+)
+from mail_verdict.auth.scope import Scope
 from mail_verdict.calendar.repository import DavAccountRepository
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import DavAccount, DavCollection
@@ -57,7 +66,7 @@ async def _require_support() -> None:
 def _to_response(account: DavAccount, collections: list[DavCollection]) -> DavAccountResponse:
     return DavAccountResponse(
         id=account.id,
-        name=account.name,
+        name=account_display_name(account.name),
         discovery_url=account.url,
         username=account.username,
         is_active=account.is_active,
@@ -104,16 +113,21 @@ async def get_dav_account(dav_account_id: uuid.UUID) -> DavAccountResponse:
 
 
 @router.post("", response_model=DavAccountResponse, status_code=201)
-async def create_dav_account_endpoint(request: DavAccountCreateRequest) -> DavAccountResponse:
-    """Add a CalDAV/CardDAV server. PostIMAP discovers the principal and
-    the two homes, then backfills every collection it finds."""
+async def create_dav_account_endpoint(
+    request: DavAccountCreateRequest, scope: Scope = Depends(current_scope),
+) -> DavAccountResponse:
+    """Add a CalDAV/CardDAV server, owned by the caller. PostIMAP discovers
+    the principal and the two homes, then backfills every collection it
+    finds. The owner row is written in the same transaction."""
     await _require_support()
+    owner = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
         account = await create_dav_account(
-            session, name=request.name, url=request.discovery_url,
+            session, name=owned_account_name(owner, request.name), url=request.discovery_url,
             username=request.username, password=request.password,
         )
+        await set_dav_account_owner(session, account.id, owner)
         return _to_response(account, [])
 
 
@@ -136,6 +150,11 @@ async def update_dav_account_endpoint(
     was_active = existing.is_active
 
     async with db.session() as session:
+        if "name" in values:
+            # Renamed inside the owner's own namespace (auth/ownership.py).
+            owner = await owner_of_dav_account(session, dav_account_id)
+            if owner is not None:
+                values["name"] = owned_account_name(owner, values["name"])
         await update_dav_account(session, dav_account_id, **values)
 
     if credentials_changed and was_active:
@@ -162,6 +181,7 @@ async def delete_dav_account_endpoint(dav_account_id: uuid.UUID) -> None:
     if await repo.get_by_id(dav_account_id) is None:
         raise HTTPException(status_code=404, detail="DAV account not found")
     async with db.session() as session:
+        await forget_dav_account_owner(session, dav_account_id)
         await delete_dav_account(session, dav_account_id)
 
 

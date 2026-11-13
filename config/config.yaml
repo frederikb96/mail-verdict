@@ -23,6 +23,54 @@ server:
   log_level: INFO
   cors_origins: []            # same-origin serving by default; empty disables CORS
 
+# Who is calling. Every request under /api and /mcp carries an OIDC JWT in
+# `Authorization: Bearer ...` -- the ID token an authenticating proxy forwards
+# for a browser, or an access token a native app or an agent sends itself --
+# and the app validates it against the issuer's published keys. Only
+# /api/health and /api/auth/config answer without one. There is no "auth off":
+# the app refuses to start without an issuer, a key set, an audience and an
+# owner subject.
+auth:
+  # The issuer URL, compared exactly against the token's `iss` claim.
+  issuer: ""
+  # Where the issuer publishes its signing keys (JWKS).
+  jwks_url: ""
+  # A token is accepted when its `aud` names at least one of these: typically
+  # the web client id the proxy signs in with, the project or API audience
+  # machine tokens carry, and the native app's client id. Comma-separated in
+  # MAIL_VERDICT_AUTH_AUDIENCES.
+  audiences: []
+  # Subjects (`sub` claims) that are the instance owner: the first user, who
+  # owns every account that existed before users did and is admin whatever
+  # the users table says. Every subject listed here is the SAME user -- list
+  # one person's own identities (their login, their machine tokens), never
+  # two people. Comma-separated in MAIL_VERDICT_AUTH_OWNER_SUBJECTS.
+  owner_subjects: []
+  # Whether a valid token whose subject is unknown creates a new ordinary user
+  # on first request. With false, users exist only once an admin adds them
+  # (POST /api/admin/users) and anyone else gets 403 unknown_user -- the
+  # issuer's own access control is then not the only gate.
+  auto_provision: true
+  # Clock skew tolerated on exp/nbf/iat.
+  leeway_seconds: 60
+  # How long a fetched key set is used before it is fetched again. A token
+  # signed by a key not in the set triggers an earlier refetch.
+  jwks_cache_seconds: 3600
+  # How long one request to the issuer may take.
+  request_timeout_seconds: 10
+  # How long a validated token is remembered (never past its own expiry), so
+  # a busy client is not re-verified on every request.
+  token_cache_seconds: 60
+  # How long who-a-subject-is is remembered. A user disabled or made admin
+  # takes effect within this, or at once on the replica that made the change.
+  principal_cache_seconds: 30
+  # Served unauthenticated by GET /api/auth/config so a native app can start
+  # a sign-in before it holds a token. An empty client id means this server
+  # offers no native sign-in.
+  native_client_id: ""
+  native_scopes: "openid profile email offline_access"
+  native_redirect_uri: "mailverdict://auth/callback"
+
 security:
   # AES-256-GCM key (64 hex characters / 32 bytes) encrypting provider API
   # keys stored via the Settings API. Empty disables storing a key that

@@ -96,6 +96,27 @@ fails immediately, naming the build command, if `ui/build` doesn't exist or is o
 
 The `llm` layer asserts its keys are present and fails loudly without them.
 
+### Who a test acts as
+
+The application validates a token on every API request, so every test session runs its own token
+issuer: `tests/setup/auth.py` generates a key, serves its key set on a loopback port, and points
+the application's `auth:` config at it through the environment, with `OWNER_SUBJECT` as the
+instance owner. Mint a token for any subject with the `auth_issuer` fixture
+(`auth_issuer.mint("someone")`); a new subject becomes an ordinary user on its first request.
+
+- `e2e`: `app_client` sends the owner's token by default; pass `headers=bearer(token)` to act as
+  someone else.
+- `ui`: the app is served so that a request without a token acts as the owner -- the browser
+  cannot add a header to every request it makes, its event stream included.
+- `pg` tests mount bare routers with no gate in front: `act_as(app, owner_scope(...))` from
+  `tests/helpers/auth.py` answers every `Depends(current_scope)`, and `as_principal(...)` covers
+  code that resolves its own scope (MCP tools called through an in-memory client).
+- MCP tools called over HTTP, with a token per call: `tests/helpers/mcp_http.py`.
+
+`tests/e2e/test_multiuser_isolation.py` checks every route and MCP tool as one user against
+another's data; [architecture.md](architecture.md#access) describes the model, and
+`tests/e2e/isolation/__init__.py` how to classify a new route.
+
 The orders prompts are measured separately, by hand: `scripts/eval_orders.py` runs known-answer cases
 against real models and `tests/eval/orders/README.md` explains the harness and how to change a prompt
 with it. CI scores the recorded answers offline (`tests/unit/test_eval_scorer.py`).
@@ -110,6 +131,12 @@ podman compose --env-file .dev.env -f compose.dev.yaml up -d
 This brings up MailVerdict with hot reload, PostIMAP, PostgreSQL, and a throwaway mail world:
 Dovecot as the mail server and Mailpit as an SMTP sink that shows you what was actually sent. The
 interface is on <http://localhost:18080>.
+
+The application validates an OpenID Connect token on every API request and has no way to switch
+that off, so this stack needs an issuer: set `MAIL_VERDICT_AUTH_ISSUER`, `..._JWKS_URL`,
+`..._AUDIENCES` and `..._OWNER_SUBJECTS` in `.dev.env`, and reach the API with a token from that
+issuer. `scripts/devstack.py` (below) needs none of that -- it runs its own issuer -- and is the
+quicker way to a working stack.
 
 The production compose file (`compose.yaml`, port 8080) runs the same application without the fake
 mail world, against real accounts. The two can run at once.
@@ -160,6 +187,7 @@ file:
 ```bash
 python scripts/devstack.py
 python scripts/devstack.py --to bob@test.local
+python scripts/devstack.py --as second
 ```
 
 This starts Postgres, Dovecot, Mailpit and PostIMAP on a private network with random host ports —
@@ -170,6 +198,12 @@ and removes every container it started; nothing it creates is shared with anothe
 including one started from the same checkout a second time. It warns rather than failing if
 `ui/build` doesn't exist, since the API alone is often enough — build the frontend first if you
 need pages to render.
+
+It runs its own token issuer, and serves the application so that a request without a token -- the
+browser's, or a plain `curl` -- acts as one user: the instance owner (admin) by default, or an
+ordinary second user with `--as second`. The seeded accounts belong to that user. Both users'
+tokens are printed at startup; a request carrying one as `Authorization: Bearer ...` acts as that
+user instead, which is how to look at the same stack as the other one.
 
 ### A corpus the size of a real account
 

@@ -19,9 +19,10 @@ from __future__ import annotations
 import re
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.events import broadcast_event, get_event_ring
 from mail_verdict.api.schemas import (
     AddressbookCreateRequest,
@@ -34,6 +35,7 @@ from mail_verdict.api.schemas import (
     CalendarResponse,
     CalendarUpdateRequest,
 )
+from mail_verdict.auth.scope import Scope
 from mail_verdict.calendar.prefs import calendar_is_enabled, resolve_default_reminder
 from mail_verdict.calendar.repository import (
     CalendarLinksRevisionRepository,
@@ -290,7 +292,7 @@ async def create_addressbook(request: AddressbookCreateRequest) -> AddressbookSu
 
 
 @links_router.get("", response_model=CalendarLinksOut)
-async def get_calendar_links() -> CalendarLinksOut:
+async def get_calendar_links(scope: Scope = Depends(current_scope)) -> CalendarLinksOut:
     """The whole mapping as one document: every identity, the calendars
     linked to it, and which one (if any) receives its invitations."""
     await _require_support()
@@ -306,7 +308,7 @@ async def get_calendar_links() -> CalendarLinksOut:
         if prefs.identity_id is not None:
             by_identity.setdefault(prefs.identity_id, []).append(prefs)
 
-    revision = await CalendarLinksRevisionRepository(db).current()
+    revision = await CalendarLinksRevisionRepository(db).current(scope.require_user())
     rows = [
         CalendarLinkRowOut(
             identity_id=identity.id,
@@ -323,14 +325,16 @@ async def get_calendar_links() -> CalendarLinksOut:
 
 
 @links_router.put("", response_model=CalendarLinksOut)
-async def update_calendar_links(request: CalendarLinksUpdateRequest) -> CalendarLinksOut:
+async def update_calendar_links(
+    request: CalendarLinksUpdateRequest, scope: Scope = Depends(current_scope),
+) -> CalendarLinksOut:
     """Replace the whole mapping document. Every identity with linked
     calendars must name exactly one as receives_invitations_calendar_id;
     a calendar named by more than one identity is rejected outright."""
     await _require_support()
     db = get_db_connection()
     revision_repo = CalendarLinksRevisionRepository(db)
-    current_revision = await revision_repo.current()
+    current_revision = await revision_repo.current(scope.require_user())
     if request.base_revision != current_revision:
         raise HTTPException(
             status_code=409,
@@ -393,7 +397,7 @@ async def update_calendar_links(request: CalendarLinksUpdateRequest) -> Calendar
                 link_prefs.intake = calendar_id == row.receives_invitations_calendar_id
         await session.flush()
 
-        await revision_repo.bump(session)
+        await revision_repo.bump(session, scope.require_user())
 
     # calendar_prefs and the revision counter are both MailVerdict's own, so
     # nothing upstream tells a second open browser the mapping changed --
@@ -405,4 +409,4 @@ async def update_calendar_links(request: CalendarLinksUpdateRequest) -> Calendar
     if event_ring is not None:
         await broadcast_event(db, event_ring, "calendar.links_changed", {})
 
-    return await get_calendar_links()
+    return await get_calendar_links(scope)

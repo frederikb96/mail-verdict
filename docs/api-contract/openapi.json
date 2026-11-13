@@ -646,6 +646,238 @@
         "title": "AddressbookSummaryResponse",
         "type": "object"
       },
+      "AdminAccountResponse": {
+        "description": "A mail or DAV account as an admin sees it: its name and owner.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "owner_user_id",
+          "is_active",
+          "state"
+        ],
+        "title": "AdminAccountResponse",
+        "type": "object"
+      },
+      "AdminOwnerRequest": {
+        "description": "The user an account is given to.",
+        "properties": {
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "AdminOwnerRequest",
+        "type": "object"
+      },
+      "AdminUserCreateRequest": {
+        "description": "A user added ahead of their first sign-in, so an account can be given\nto them first. `subject` is the `sub` claim their tokens will carry.",
+        "properties": {
+          "display_name": {
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "role": {
+            "default": "user",
+            "enum": [
+              "admin",
+              "user"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "subject": {
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "display_name"
+        ],
+        "title": "AdminUserCreateRequest",
+        "type": "object"
+      },
+      "AdminUserResponse": {
+        "description": "A user as an admin sees them: who, which subjects sign in as them, and\nhow many accounts they own -- nothing inside those accounts.",
+        "properties": {
+          "account_count": {
+            "title": "Account Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dav_account_count": {
+            "title": "Dav Account Count",
+            "type": "integer"
+          },
+          "disabled": {
+            "title": "Disabled",
+            "type": "boolean"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_owner": {
+            "title": "Is Owner",
+            "type": "boolean"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At"
+          },
+          "role": {
+            "enum": [
+              "admin",
+              "user"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "subjects": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Subjects",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "role",
+          "disabled",
+          "is_owner",
+          "subjects",
+          "account_count",
+          "dav_account_count",
+          "created_at",
+          "last_seen_at"
+        ],
+        "title": "AdminUserResponse",
+        "type": "object"
+      },
+      "AdminUserUpdateRequest": {
+        "description": "The fields an admin may change on a user.",
+        "properties": {
+          "disabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disabled"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "admin",
+                  "user"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          }
+        },
+        "title": "AdminUserUpdateRequest",
+        "type": "object"
+      },
       "AlertBadgeResponse": {
         "description": "The notification badge -- see alerts/badge.py for what it counts.",
         "properties": {
@@ -874,6 +1106,42 @@
           "id"
         ],
         "title": "AttachmentSummary",
+        "type": "object"
+      },
+      "AuthConfigResponse": {
+        "description": "Sign-in parameters. `client_id` is null when this server offers no\nnative sign-in (auth.native_client_id unset).",
+        "properties": {
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "issuer": {
+            "title": "Issuer",
+            "type": "string"
+          },
+          "redirect_uri": {
+            "title": "Redirect Uri",
+            "type": "string"
+          },
+          "scopes": {
+            "title": "Scopes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issuer",
+          "client_id",
+          "scopes",
+          "redirect_uri"
+        ],
+        "title": "AuthConfigResponse",
         "type": "object"
       },
       "Body_add_file_orders_files_post": {
@@ -4193,6 +4461,52 @@
           "from_addr"
         ],
         "title": "InvitationResponse",
+        "type": "object"
+      },
+      "MeResponse": {
+        "description": "The signed-in user. `role` is the effective one: the owner is admin\nwhatever the users table says.",
+        "properties": {
+          "disabled": {
+            "title": "Disabled",
+            "type": "boolean"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "role": {
+            "enum": [
+              "admin",
+              "user"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "email",
+          "display_name",
+          "role",
+          "disabled"
+        ],
+        "title": "MeResponse",
         "type": "object"
       },
       "MessageActionRequest": {
@@ -9614,7 +9928,7 @@
         ]
       },
       "post": {
-        "description": "Create a new IMAP account.\n\nCredentials are written in the contract's consumer format (plaintext,\n0x00-prefixed) via postimap/actions.py; PostIMAP re-encrypts them\nitself once it picks the account up.",
+        "description": "Create a new IMAP account, owned by the caller.\n\nCredentials are written in the contract's consumer format (plaintext,\n0x00-prefixed) via postimap/actions.py; PostIMAP re-encrypts them\nitself once it picks the account up. The owner row is written in the\nsame transaction, so the account is never visible without one.",
         "operationId": "create_account_accounts_post",
         "requestBody": {
           "content": {
@@ -10916,6 +11230,286 @@
         ]
       }
     },
+    "/admin/accounts": {
+      "get": {
+        "description": "Every mail account, by display name, with its owner.",
+        "operationId": "list_accounts_admin_accounts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdminAccountResponse"
+                  },
+                  "title": "Response List Accounts Admin Accounts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Accounts",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/accounts/{account_id}/owner": {
+      "put": {
+        "description": "Give a mail account to another user. Its stored name moves into the\nnew owner's namespace in the same transaction; 409 if they already have\nan account by that name.",
+        "operationId": "set_owner_admin_accounts__account_id__owner_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminOwnerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAccountResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Owner",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/dav-accounts": {
+      "get": {
+        "description": "Every CalDAV/CardDAV account, by display name, with its owner.",
+        "operationId": "list_dav_accounts_admin_dav_accounts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdminAccountResponse"
+                  },
+                  "title": "Response List Dav Accounts Admin Dav Accounts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Dav Accounts",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/dav-accounts/{dav_account_id}/owner": {
+      "put": {
+        "description": "Give a CalDAV/CardDAV account to another user, as set_owner does for mail.",
+        "operationId": "set_dav_owner_admin_dav_accounts__dav_account_id__owner_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dav_account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dav Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminOwnerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAccountResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Dav Owner",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/users": {
+      "get": {
+        "description": "Every user.",
+        "operationId": "list_users_admin_users_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdminUserResponse"
+                  },
+                  "title": "Response List Users Admin Users Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Users",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Add a user ahead of their first sign-in. 409 if the subject already\nsigns in as someone.",
+        "operationId": "create_user_admin_users_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create User",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/users/{user_id}": {
+      "patch": {
+        "description": "Rename a user, change their role, or disable or enable them. The owner\ncan be neither demoted nor disabled -- the configuration makes them admin\nregardless, so either change would only make this table lie.",
+        "operationId": "update_user_admin_users__user_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update User",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/alerts": {
       "get": {
         "description": "The durable alert list, newest first -- not account-scoped, the\nsame as the SSE stream itself: an installed application watches every\naccount from one page. \"Which folders alert\" is scoped the same way\nfor this list as it already is for the SSE and push paths: the\ncaller passes its own effective folder scope (use-push.ts's\nuseEffectiveAlertFolderIds) rather than the server guessing at one.",
@@ -11537,6 +12131,28 @@
         "summary": "Dismiss Alert",
         "tags": [
           "alerts"
+        ]
+      }
+    },
+    "/auth/config": {
+      "get": {
+        "description": "The issuer and native client a sign-in starts from.",
+        "operationId": "get_auth_config_auth_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Auth Config",
+        "tags": [
+          "auth"
         ]
       }
     },
@@ -12758,7 +13374,7 @@
         ]
       },
       "post": {
-        "description": "Add a CalDAV/CardDAV server. PostIMAP discovers the principal and\nthe two homes, then backfills every collection it finds.",
+        "description": "Add a CalDAV/CardDAV server, owned by the caller. PostIMAP discovers\nthe principal and the two homes, then backfills every collection it\nfinds. The owner row is written in the same transaction.",
         "operationId": "create_dav_account_endpoint_dav_accounts_post",
         "requestBody": {
           "content": {
@@ -13690,6 +14306,28 @@
         "summary": "Get Message Verdict",
         "tags": [
           "verdicts"
+        ]
+      }
+    },
+    "/me": {
+      "get": {
+        "description": "The signed-in user.",
+        "operationId": "get_me_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Me",
+        "tags": [
+          "auth"
         ]
       }
     },

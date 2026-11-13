@@ -14,13 +14,17 @@ building anything nontrivial on top of this API; the worked examples below assum
 
 ## Access
 
-There is no authentication of any kind on this API. No key, no header, no session — every
-endpoint answers whoever can reach it. The deployment model is an authenticating proxy in front
-of the whole application (OIDC, basic auth, an internal SSO), handling sign-in before a request
-ever reaches MailVerdict, so the application itself never checks a credential and never stores
-one. See the [chart README](../charts/mail-verdict/README.md) for a worked proxy example. A
-client talking to a production instance needs to authenticate to *that proxy*, in whatever way
-it requires — MailVerdict has nothing of its own to add on top.
+Every request under `/api` and to the MCP server at `/mcp` carries an OpenID Connect JWT from the
+configured issuer as `Authorization: Bearer <token>`; without a valid one the answer is `401` with
+`WWW-Authenticate: Bearer`. Two routes answer without a token: `GET /api/health` (readiness) and
+`GET /api/auth/config` (the issuer, the native client id, scopes and redirect URI a native app
+starts its sign-in with). A user an admin has disabled gets `403` with detail `user_disabled`;
+with `auth.auto_provision` off, a subject no user has gets `403` `unknown_user`. Any other `403`
+is a request for something the caller does not own.
+
+`GET /api/me` says who the token signs in as and whether they are admin. A caller sees and acts
+on the accounts they added, and only those; `/api/admin` (admins only) manages users and who owns
+which account. [docs/architecture.md](architecture.md#access) has the model.
 
 ## Two ways a write can be wrong, and they behave differently
 
@@ -50,7 +54,8 @@ that distinction matters.
 ## Quickstart
 
 Every example assumes the API is reachable at `http://localhost:8080/api` (production compose)
-or `http://localhost:18080/api` (dev compose) with no auth in front, per above.
+or `http://localhost:18080/api` (dev compose), with a token in `$TOKEN`; each `curl` below
+carries `-H "Authorization: Bearer $TOKEN"`, left out for brevity.
 
 ### Add an account and watch its first sync
 
@@ -318,6 +323,8 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 
 | Group | Prefix | What it's for |
 |---|---|---|
+| Identity | `/me`, `/auth/config` | Who the token signs in as (`user_id`, `email`, `display_name`, `role`); the sign-in parameters a native app starts from, answered without a token |
+| Admin | `/admin` | Admins only: users (`GET`, `POST` one ahead of their first sign-in by token `subject`, `PATCH` `display_name`/`role`/`disabled`; the owner can be neither demoted nor disabled), every mail and DAV account with its owner, and `PUT /admin/accounts/{id}/owner` / `PUT /admin/dav-accounts/{id}/owner` to give an account to another user (`409` if they already have one by that name). Nothing here returns mail, events or contacts |
 | Accounts | `/accounts` | Create, update, delete, list; folder listing; sync status and manual sync trigger. `PATCH` accepts `glacier_enabled`/`glacier_auto_days` (`409` disabling while it still holds mail); folder listing includes the one synthetic glacier folder (`kind: "glacier"`) once enabled; `glacier_sweep_last_refusal` names why the automatic sweep's last tick skipped this account, null once a tick actually proceeds — see [architecture.md](architecture.md#glacier-storage) |
 | Identities | `/identities` | An account's addresses to send as — create, update, delete, list (optionally scoped by `account_id`); at most one default per account, enforced at the database level. `POST /outbox`'s `identity_id` resolves through these |
 | DAV accounts | `/dav-accounts` | CalDAV/CardDAV server connections, mirrored the same way a mail account is — create, update, delete, list with each account's collections, manual sync trigger. The discovery URL goes under `discovery_url` (see the Quickstart example below — the underlying `dav_accounts.url` column is named differently). Every route under this and the four groups below answers `501` until PostIMAP reports `service_version >= 1.6.0` |

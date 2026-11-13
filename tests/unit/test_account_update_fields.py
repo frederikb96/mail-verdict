@@ -59,6 +59,7 @@ def test_update_account_never_forwards_insert_only_imap_fields(
 ) -> None:
     """A request naming imap_host/imap_port/imap_user must not pass them through."""
     account_id = uuid.uuid4()
+    owner = uuid.uuid4()
     account = _make_account(account_id)
 
     session = AsyncMock()
@@ -74,6 +75,9 @@ def test_update_account_never_forwards_insert_only_imap_fields(
 
     with (
         patch("mail_verdict.api.accounts.get_db_connection", return_value=db),
+        patch(
+            "mail_verdict.api.accounts.owner_of_account", new=AsyncMock(return_value=owner)
+        ),
         patch(
             "mail_verdict.api.accounts.postimap_update_account", new=AsyncMock()
         ) as mocked_update,
@@ -94,7 +98,8 @@ def test_update_account_never_forwards_insert_only_imap_fields(
     assert "imap_host" not in kwargs
     assert "imap_port" not in kwargs
     assert "imap_user" not in kwargs
-    assert kwargs.get("name") == "renamed"
+    # Stored inside the owner's namespace (auth/ownership.py).
+    assert kwargs.get("name") == f"{owner}/renamed"
 
 
 def test_account_update_request_has_no_insert_only_imap_fields() -> None:

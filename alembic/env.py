@@ -20,7 +20,7 @@ from alembic import context
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from mail_verdict.config import get_config  # noqa: E402
+from mail_verdict.config.loader import get_database_config  # noqa: E402
 from mail_verdict.database.models import Base  # noqa: E402
 
 config = context.config
@@ -47,9 +47,9 @@ def include_object(
 
 
 def get_database_url() -> str:
-    """Get database URL from MailVerdict config."""
-    mv_config = get_config()
-    return mv_config.database.url
+    """Get database URL from MailVerdict config -- the database section
+    alone, so migrations run without the application's other settings."""
+    return get_database_config().url
 
 
 def run_migrations_offline() -> None:

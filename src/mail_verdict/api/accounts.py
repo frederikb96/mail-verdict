@@ -21,11 +21,11 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import case, select, text
 from sqlalchemy import func as sa_func
 
-from mail_verdict.api.deps import get_account_prefs_repo
+from mail_verdict.api.deps import current_scope, get_account_prefs_repo
 from mail_verdict.api.events import broadcast_event, get_event_ring
 from mail_verdict.api.schemas import (
     AccountCreateRequest,
@@ -35,6 +35,14 @@ from mail_verdict.api.schemas import (
     SyncStatusResponse,
 )
 from mail_verdict.api.unified import view_ids_by_folder
+from mail_verdict.auth.ownership import (
+    account_display_name,
+    forget_account_owner,
+    owned_account_name,
+    owner_of_account,
+    set_account_owner,
+)
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
@@ -74,7 +82,7 @@ def _build_account_response(
     """
     return AccountResponse(
         id=account.id,
-        name=account.name,
+        name=account_display_name(account.name),
         imap_host=account.imap_host,
         imap_port=account.imap_port,
         imap_user=account.imap_user,
@@ -115,18 +123,22 @@ async def list_accounts() -> list[AccountResponse]:
 
 
 @router.post("", response_model=AccountResponse, status_code=201)
-async def create_account(request: AccountCreateRequest) -> AccountResponse:
-    """Create a new IMAP account.
+async def create_account(
+    request: AccountCreateRequest, scope: Scope = Depends(current_scope),
+) -> AccountResponse:
+    """Create a new IMAP account, owned by the caller.
 
     Credentials are written in the contract's consumer format (plaintext,
     0x00-prefixed) via postimap/actions.py; PostIMAP re-encrypts them
-    itself once it picks the account up.
+    itself once it picks the account up. The owner row is written in the
+    same transaction, so the account is never visible without one.
     """
+    owner = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
         account = await postimap_create_account(
             session,
-            name=request.name,
+            name=owned_account_name(owner, request.name),
             imap_host=request.imap_host,
             imap_port=request.imap_port,
             imap_user=request.imap_user,
@@ -137,6 +149,7 @@ async def create_account(request: AccountCreateRequest) -> AccountResponse:
             smtp_password=request.smtp_password,
             is_active=request.is_active,
         )
+        await set_account_owner(session, account.id, owner)
 
         prefs = AccountPrefs(
             account_id=account.id,
@@ -256,6 +269,11 @@ async def update_account(
             raise HTTPException(status_code=404, detail="Account not found")
         was_active = account.is_active
 
+        if "name" in account_values:
+            # Renamed inside the owner's own namespace (auth/ownership.py).
+            owner = await owner_of_account(session, account_id)
+            if owner is not None:
+                account_values["name"] = owned_account_name(owner, account_values["name"])
         if account_values:
             await postimap_update_account(session, account_id, **account_values)
 
@@ -344,6 +362,7 @@ async def delete_account(account_id: uuid.UUID) -> None:
             )
 
         order_changes = await orders_delete_for_account(session, account_id)
+        await forget_account_owner(session, account_id)
         await postimap_delete_account(session, account_id)
 
     event_ring = get_event_ring()

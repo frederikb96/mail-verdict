@@ -2,6 +2,7 @@
 
 from mail_verdict.config.loader import (
     MCP_TRANSPORT,
+    AuthConfig,
     ConfigError,
     DatabaseConfig,
     InfraConfig,
@@ -12,6 +13,7 @@ from mail_verdict.config.loader import (
 )
 
 __all__ = [
+    "AuthConfig",
     "ConfigError",
     "DatabaseConfig",
     "InfraConfig",

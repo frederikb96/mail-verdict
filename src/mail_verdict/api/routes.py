@@ -10,7 +10,9 @@ from fastapi import APIRouter
 
 from mail_verdict.api.account_order import router as account_order_router
 from mail_verdict.api.accounts import router as accounts_router
+from mail_verdict.api.admin import router as admin_router
 from mail_verdict.api.alerts import router as alerts_router
+from mail_verdict.api.auth_config import router as auth_config_router
 from mail_verdict.api.calendar_events import router as calendar_events_router
 from mail_verdict.api.calendars import addressbooks_router
 from mail_verdict.api.calendars import links_router as calendar_links_router
@@ -25,6 +27,7 @@ from mail_verdict.api.image_exceptions import router as image_exceptions_router
 from mail_verdict.api.invitations import router as invitations_router
 from mail_verdict.api.mails import account_router as mails_account_router
 from mail_verdict.api.mails import router as mails_router
+from mail_verdict.api.me import router as me_router
 from mail_verdict.api.notifications import all_accounts_router as all_notifications_router
 from mail_verdict.api.notifications import router as notifications_router
 from mail_verdict.api.orders import router as orders_router
@@ -43,6 +46,9 @@ from mail_verdict.api.webhooks import router as webhooks_router
 
 # Aggregate all API routers
 all_routers: list[APIRouter] = [
+    auth_config_router,
+    me_router,
+    admin_router,
     mails_router,
     mails_account_router,
     notifications_router,

@@ -1,11 +1,18 @@
 """
 API dependency accessors.
 
-Provides access to database repositories and services initialized during lifespan.
+Provides access to database repositories and services initialized during
+lifespan, and the caller's identity: current_scope() is what every route,
+MCP tool and the SSE endpoint asks for before touching a user's data (see
+auth/scope.py for the rules it carries).
 """
 
 from __future__ import annotations
 
+from fastapi import Depends, HTTPException
+
+from mail_verdict.auth.principal import Principal, current_principal
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.repository import (
     AccountPrefsRepository,
@@ -69,3 +76,29 @@ def get_alert_repo() -> AlertRepository:
 def get_push_subscription_repo() -> PushSubscriptionRepository:
     """Get PushSubscriptionRepository using the global DB connection."""
     return PushSubscriptionRepository(get_db_connection())
+
+
+def require_principal() -> Principal:
+    """The signed-in caller. 401 if the request carries none -- which the gate
+    in front of /api and /mcp makes impossible there, so reaching this means
+    code ran outside a request (or a test app without the gate)."""
+    principal = current_principal()
+    if principal is None:
+        raise HTTPException(status_code=401, detail="not_authenticated")
+    return principal
+
+
+async def current_scope() -> Scope:
+    """
+    The caller's Scope: who they are and which accounts they own.
+
+    A FastAPI dependency (`scope: Scope = Depends(current_scope)`), resolved
+    once per request; MCP tools and the SSE endpoint await it directly.
+    """
+    return await Scope.for_principal(get_db_connection(), require_principal())
+
+
+async def require_admin(scope: Scope = Depends(current_scope)) -> Scope:
+    """current_scope(), refusing (403) anyone who is not admin."""
+    scope.require_admin()
+    return scope
