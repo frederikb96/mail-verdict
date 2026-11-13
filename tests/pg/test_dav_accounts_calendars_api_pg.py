@@ -272,7 +272,7 @@ class TestCalendars:
         assert updated.status_code == 200, updated.text
 
         new_events = client.portal.call(
-            event_ring.replay_from, seq_before, str(dav_account_id),
+            event_ring.replay_from, seq_before, {str(dav_account_id)},
         )
         matching = [e for e in new_events if e["event_type"] == "calendar.collection"]
         assert len(matching) == 1, (

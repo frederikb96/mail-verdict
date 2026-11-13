@@ -27,7 +27,7 @@ from sqlalchemy import func as sa_func
 
 from mail_verdict.api.access import owned_account
 from mail_verdict.api.deps import current_scope, get_account_prefs_repo
-from mail_verdict.api.events import broadcast_event, get_event_ring
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import (
     AccountCreateRequest,
     AccountResponse,
@@ -53,6 +53,7 @@ from mail_verdict.database.models import (
     Message,
     SyncState,
 )
+from mail_verdict.orders.announce import announce as announce_order
 from mail_verdict.orders.repository import delete_for_account as orders_delete_for_account
 from mail_verdict.postimap.actions import create_account as postimap_create_account
 from mail_verdict.postimap.actions import delete_account as postimap_delete_account
@@ -367,16 +368,13 @@ async def delete_account(account_id: uuid.UUID) -> None:
                 ),
             )
 
+        owner = await owner_of_account(session, account_id)
         order_changes = await orders_delete_for_account(session, account_id)
         await forget_account_owner(session, account_id)
         await postimap_delete_account(session, account_id)
 
-    event_ring = get_event_ring()
-    if event_ring is not None:
-        for order_id, change in order_changes:
-            await broadcast_event(
-                db, event_ring, "order.updated", {"order_id": str(order_id), "change": change},
-            )
+    for order_id, change in order_changes:
+        await announce_order(get_event_ring(), owner, order_id, change)
 
 
 @router.get(

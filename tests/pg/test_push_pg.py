@@ -14,14 +14,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from mail_verdict.auth.principal import OWNER_USER_ID
+from mail_verdict.auth.scope import ADMIN_RING_KEY
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Alert
 from mail_verdict.database.repository import PushSubscriptionRepository
 from mail_verdict.push.send import dispatch_push_for_alert
 from mail_verdict.push.vapid import VapidKeyRepository, VapidUnavailableError
+from tests.helpers.pipeline_pg import insert_user
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
 
 _ENCRYPTION_KEY = "00" * 32
+# Every device below is the instance owner's unless a test says otherwise.
+_OWNER = OWNER_USER_ID
+_OWNER_DEVICES = str(OWNER_USER_ID)
 _OTHER_ENCRYPTION_KEY = "11" * 32
 
 
@@ -88,11 +94,13 @@ class TestPushSubscriptionRepository:
     ) -> None:
         repo = PushSubscriptionRepository(migrated_db)
         endpoint = f"https://push.example/{uuid.uuid4()}"
-        first = await repo.upsert(endpoint=endpoint, p256dh="p1", auth="a1", label="First")
-        second = await repo.upsert(endpoint=endpoint, p256dh="p2", auth="a2", label="Second")
+        first = await repo.upsert(_OWNER, endpoint=endpoint, p256dh="p1", auth="a1", label="First")
+        second = await repo.upsert(
+            _OWNER, endpoint=endpoint, p256dh="p2", auth="a2", label="Second",
+        )
 
         assert first.id == second.id
-        rows = [s for s in await repo.list_all() if s.endpoint == endpoint]
+        rows = [s for s in await repo.list_for_user(_OWNER) if s.endpoint == endpoint]
         assert len(rows) == 1
         assert rows[0].p256dh == "p2"
         assert rows[0].auth == "a2"
@@ -104,7 +112,8 @@ class TestPushSubscriptionRepository:
         repo = PushSubscriptionRepository(migrated_db)
         folder_id = uuid.uuid4()
         sub = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
         await repo.update_prefs(sub.id, alert_folder_ids=[folder_id])
 
@@ -121,7 +130,8 @@ class TestPushSubscriptionRepository:
     ) -> None:
         repo = PushSubscriptionRepository(migrated_db)
         sub = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
         await repo.update_prefs(sub.id, alert_folder_ids=[uuid.uuid4()])
         updated = await repo.update_prefs(sub.id, alert_folder_ids=None)
@@ -141,7 +151,8 @@ class TestPushSubscriptionRepository:
     ) -> None:
         repo = PushSubscriptionRepository(migrated_db)
         sub = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
         assert await repo.delete(sub.id) is True
         assert await repo.delete(sub.id) is False
@@ -152,7 +163,8 @@ class TestPushSubscriptionRepository:
     ) -> None:
         repo = PushSubscriptionRepository(migrated_db)
         sub = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
         await repo.mark_failed(sub.id)
         failed = await repo.get(sub.id)
@@ -169,18 +181,21 @@ class TestPushSubscriptionRepository:
         repo = PushSubscriptionRepository(migrated_db)
         folder_a, folder_b = uuid.uuid4(), uuid.uuid4()
         every_folder = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="all",
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label="all",
         )
         scoped_a = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="a",
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label="a",
         )
         await repo.update_prefs(scoped_a.id, alert_folder_ids=[folder_a])
         scoped_b = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="b",
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label="b",
         )
         await repo.update_prefs(scoped_b.id, alert_folder_ids=[folder_b])
 
-        matched = await repo.list_for_alert(kind="mail", folder_id=folder_a)
+        matched = await repo.list_for_alert(_OWNER_DEVICES, kind="mail", folder_id=folder_a)
         matched_ids = {s.id for s in matched}
         assert every_folder.id in matched_ids
         assert scoped_a.id in matched_ids
@@ -192,14 +207,16 @@ class TestPushSubscriptionRepository:
     ) -> None:
         repo = PushSubscriptionRepository(migrated_db)
         every_folder = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="all",
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label="all",
         )
         scoped = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="s",
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label="s",
         )
         await repo.update_prefs(scoped.id, alert_folder_ids=[uuid.uuid4()])
 
-        matched = await repo.list_for_alert(kind="mail", folder_id=None)
+        matched = await repo.list_for_alert(_OWNER_DEVICES, kind="mail", folder_id=None)
         matched_ids = {s.id for s in matched}
         assert every_folder.id in matched_ids
         assert scoped.id not in matched_ids
@@ -221,15 +238,21 @@ class TestPushSubscriptionRepository:
 
         repo = PushSubscriptionRepository(migrated_db)
         null_scope = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="null",
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label="null",
         )
         scoped_to_junk = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="junk",
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label="junk",
         )
         await repo.update_prefs(scoped_to_junk.id, alert_folder_ids=[junk_id])
 
-        for_inbox = {s.id for s in await repo.list_for_alert(kind="mail", folder_id=inbox_id)}
-        for_junk = {s.id for s in await repo.list_for_alert(kind="mail", folder_id=junk_id)}
+        for_inbox = {
+            s.id for s in await repo.list_for_alert(_OWNER_DEVICES, kind="mail", folder_id=inbox_id)
+        }
+        for_junk = {
+            s.id for s in await repo.list_for_alert(_OWNER_DEVICES, kind="mail", folder_id=junk_id)
+        }
 
         assert null_scope.id in for_inbox
         assert null_scope.id not in for_junk
@@ -242,14 +265,16 @@ class TestPushSubscriptionRepository:
     ) -> None:
         repo = PushSubscriptionRepository(migrated_db)
         enabled = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="e",
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label="e",
         )
         disabled = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="d",
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label="d",
         )
         await repo.update_prefs(disabled.id, reminders_enabled=False)
 
-        matched = await repo.list_for_alert(kind="reminder", folder_id=None)
+        matched = await repo.list_for_alert(_OWNER_DEVICES, kind="reminder", folder_id=None)
         matched_ids = {s.id for s in matched}
         assert enabled.id in matched_ids
         assert disabled.id not in matched_ids
@@ -275,7 +300,8 @@ class TestDispatchPushForAlert:
     ) -> None:
         repo = PushSubscriptionRepository(migrated_db)
         sub = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
 
         sent: list[str] = []
@@ -288,7 +314,7 @@ class TestDispatchPushForAlert:
         )
 
         await dispatch_push_for_alert(
-            migrated_db, vapid_repo, _fake_alert(), folder_id=None, relay=None,
+            migrated_db, vapid_repo, _fake_alert(), _OWNER_DEVICES, folder_id=None, relay=None,
         )
 
         # Not asserted as the only send: the migrated_db fixture is shared
@@ -310,7 +336,8 @@ class TestDispatchPushForAlert:
 
         repo = PushSubscriptionRepository(migrated_db)
         sub = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
 
         class _Resp:
@@ -324,7 +351,7 @@ class TestDispatchPushForAlert:
         )
 
         await dispatch_push_for_alert(
-            migrated_db, vapid_repo, _fake_alert(), folder_id=None, relay=None,
+            migrated_db, vapid_repo, _fake_alert(), _OWNER_DEVICES, folder_id=None, relay=None,
         )
 
         assert await repo.get(sub.id) is None
@@ -338,7 +365,8 @@ class TestDispatchPushForAlert:
 
         repo = PushSubscriptionRepository(migrated_db)
         sub = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
 
         class _Resp:
@@ -352,7 +380,7 @@ class TestDispatchPushForAlert:
         )
 
         await dispatch_push_for_alert(
-            migrated_db, vapid_repo, _fake_alert(), folder_id=None, relay=None,
+            migrated_db, vapid_repo, _fake_alert(), _OWNER_DEVICES, folder_id=None, relay=None,
         )
 
         row = await repo.get(sub.id)
@@ -365,14 +393,16 @@ class TestDispatchPushForAlert:
     ) -> None:
         repo = PushSubscriptionRepository(migrated_db)
         await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
         never_called = AsyncMock()
         monkeypatch.setattr("mail_verdict.push.send.webpush_async", never_called)
 
         no_key_repo = VapidKeyRepository(migrated_db, "")
         await dispatch_push_for_alert(
-            migrated_db, no_key_repo, _fake_alert(), folder_id=None, relay=None,
+            migrated_db, no_key_repo, _fake_alert(), _OWNER_DEVICES, folder_id=None,
+            relay=None,
         )
 
         never_called.assert_not_called()
@@ -390,7 +420,8 @@ class TestDispatchPushForAlert:
         repo = PushSubscriptionRepository(migrated_db)
         other_folder = uuid.uuid4()
         sub = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            _OWNER, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
         await repo.update_prefs(sub.id, alert_folder_ids=[other_folder])
 
@@ -405,8 +436,96 @@ class TestDispatchPushForAlert:
 
         target_folder = uuid.uuid4()
         await dispatch_push_for_alert(
-            migrated_db, vapid_repo, _fake_alert(kind="mail"), folder_id=target_folder,
-            relay=None,
+            migrated_db, vapid_repo, _fake_alert(kind="mail"), _OWNER_DEVICES,
+            folder_id=target_folder, relay=None,
         )
 
         assert sub.endpoint not in called_endpoints
+
+
+class TestADeviceIsItsUsers:
+    """A device belongs to whoever registered it last, and an alert is
+    pushed to its own audience's devices alone (alerts/audience.py)."""
+
+    @staticmethod
+    async def _device(repo: PushSubscriptionRepository, user_id: uuid.UUID) -> uuid.UUID:
+        sub = await repo.upsert(
+            user_id, endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a",
+            label=None,
+        )
+        return sub.id
+
+    @pytest.mark.asyncio
+    async def test_a_users_devices_are_listed_and_pushed_to_them_alone(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        a, b = await insert_user(migrated_db), await insert_user(migrated_db)
+        repo = PushSubscriptionRepository(migrated_db)
+        a_device, b_device = await self._device(repo, a), await self._device(repo, b)
+
+        assert [s.id for s in await repo.list_for_user(a)] == [a_device]
+        for_a = {s.id for s in await repo.list_for_alert(str(a), kind="mail", folder_id=None)}
+        assert for_a == {a_device}
+        assert b_device not in for_a
+
+    @pytest.mark.asyncio
+    async def test_an_instance_alert_reaches_admin_devices_only(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        admin, user = await insert_user(migrated_db, role="admin"), await insert_user(migrated_db)
+        repo = PushSubscriptionRepository(migrated_db)
+        admin_device, owner_device = await self._device(repo, admin), await self._device(
+            repo, OWNER_USER_ID,
+        )
+        user_device = await self._device(repo, user)
+
+        matched = {
+            s.id for s in await repo.list_for_alert(
+                ADMIN_RING_KEY, kind="provider_unavailable", folder_id=None,
+            )
+        }
+        native = {s.id for s in await repo.list_native(str(user))}
+
+        assert {admin_device, owner_device} <= matched
+        assert user_device not in matched
+        assert native == set()
+
+    @pytest.mark.asyncio
+    async def test_a_browser_someone_else_signs_in_on_becomes_theirs(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        a, b = await insert_user(migrated_db), await insert_user(migrated_db)
+        repo = PushSubscriptionRepository(migrated_db)
+        endpoint = f"https://push.example/{uuid.uuid4()}"
+
+        first = await repo.upsert(a, endpoint=endpoint, p256dh="p", auth="a", label=None)
+        again = await repo.upsert(b, endpoint=endpoint, p256dh="p", auth="a", label=None)
+
+        assert again.id == first.id and again.user_id == b
+        assert await repo.list_for_user(a) == []
+
+    @pytest.mark.asyncio
+    async def test_dispatch_reaches_only_the_audiences_devices(
+        self, migrated_db: DatabaseConnection, vapid_repo: VapidKeyRepository,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        a, b = await insert_user(migrated_db), await insert_user(migrated_db)
+        repo = PushSubscriptionRepository(migrated_db)
+        await self._device(repo, a)
+        b_sub = await repo.get(await self._device(repo, b))
+        assert b_sub is not None
+        sent: list[str] = []
+
+        async def fake_webpush(**kwargs: object) -> None:
+            sent.append(kwargs["subscription_info"]["endpoint"])  # type: ignore[index]
+
+        monkeypatch.setattr(
+            "mail_verdict.push.send.webpush_async", AsyncMock(side_effect=fake_webpush),
+        )
+
+        await dispatch_push_for_alert(
+            migrated_db, vapid_repo, _fake_alert(), str(a), folder_id=None, relay=None,
+        )
+
+        assert len(sent) == 1
+        assert b_sub.endpoint not in sent

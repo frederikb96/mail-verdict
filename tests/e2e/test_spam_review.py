@@ -305,7 +305,7 @@ class TestSpamReview:
         )
         assert resp.status_code == 200, resp.text
 
-        new_events = await event_ring.replay_from(seq_before, str(account_id))
+        new_events = await event_ring.replay_from(seq_before, {str(account_id)})
         matching = [
             e for e in new_events
             if e["event_type"] == "verdict.issued" and e["data"]["message_id"] == str(message_id)

@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from sqlalchemy import delete, select, text, update
 
+from mail_verdict.alerts.audience import alert_audience
 from mail_verdict.alerts.resolve import resolve_alert, resolve_staged
 from mail_verdict.database.models import Alert, Message
 from mail_verdict.database.msg_key import compute_msg_key
@@ -221,24 +222,29 @@ async def _deliver(
     """Push alert.new over SSE and hand the alert to a background push
     dispatch -- the part of turning a row into a live notification that is
     the same whichever path (immediate or staged-then-finalized) produced
-    a delivered row."""
+    a delivered row. Both reach only the alert's audience
+    (alerts/audience.py); an alert with none is announced nowhere."""
+    audience = alert_audience(alert)
+    if audience is None:
+        return
     if vapid_repo is not None:
         # Fire-and-forget: _dispatch_push_safe never lets an exception
         # escape, so there is nothing for a caller to await.
         push_task = asyncio.create_task(
-            _dispatch_push_safe(db, vapid_repo, alert, folder_id=alert.folder_id)
+            _dispatch_push_safe(db, vapid_repo, alert, audience, folder_id=alert.folder_id)
         )
         _background_push_tasks.add(push_task)
         push_task.add_done_callback(_background_push_tasks.discard)
 
-    if event_ring is None or alert.account_id is None:
+    if event_ring is None:
         return
 
     await event_ring.add(
-        alert.account_id, "alert.new",
+        audience, "alert.new",
         {
             "id": str(alert.id), "kind": alert.kind, "title": alert.title,
-            "body": alert.body, "url": alert.url, "account_id": str(alert.account_id),
+            "body": alert.body, "url": alert.url,
+            "account_id": str(alert.account_id) if alert.account_id else None,
             "folder_id": str(alert.folder_id) if alert.folder_id else None,
         },
     )
@@ -259,6 +265,7 @@ async def _dispatch_push_safe(
     db: DatabaseConnection,
     vapid_repo: VapidKeyRepository,
     alert: Alert,
+    audience: str,
     *,
     folder_id: uuid.UUID | None,
 ) -> None:
@@ -268,7 +275,8 @@ async def _dispatch_push_safe(
     was never retrieved" log line with no context."""
     try:
         await dispatch_push_for_alert(
-            db, vapid_repo, alert, folder_id=folder_id, relay=get_relay_client_if_ready(),
+            db, vapid_repo, alert, audience, folder_id=folder_id,
+            relay=get_relay_client_if_ready(),
         )
     except Exception:
         logger.exception("Push dispatch failed for alert %s", alert.id)
@@ -302,9 +310,6 @@ async def _finalize_pending_mail_alerts_once(
     replica ever reaches this query at a time) but costs nothing and
     keeps the two periodic dispatchers the same shape.
     """
-    mail_settings = settings_service.get("mail") if settings_service.has_category("mail") else {}
-    bound_seconds = float(mail_settings.get("notify_wait_seconds", 120.0))
-
     delivered_alerts: list[Alert] = []
     async with db.session() as session:
         # Mail read while its alert was still staged is resolved rather
@@ -314,13 +319,12 @@ async def _finalize_pending_mail_alerts_once(
             await session.execute(
                 text(
                     """
-                    SELECT a.id AS alert_id, m.id AS current_message_id,
+                    SELECT a.id AS alert_id, a.user_id, m.id AS current_message_id,
                            m.folder_id AS current_folder_id, m.expunged_at, m.is_draft,
                            coalesce(fp.special_use_override, f.special_use, '')
                                AS effective_special_use,
                            pr.status AS pipeline_status,
-                           (a.created_at <= now() - make_interval(secs => :bound_seconds))
-                               AS bound_expired
+                           extract(epoch FROM now() - a.created_at) AS age_seconds
                     FROM alerts a
                     LEFT JOIN messages m ON m.id = a.message_id AND m.account_id = a.account_id
                     LEFT JOIN folders f ON f.id = m.folder_id
@@ -334,7 +338,7 @@ async def _finalize_pending_mail_alerts_once(
                     FOR UPDATE OF a SKIP LOCKED
                     """
                 ),
-                {"bound_seconds": bound_seconds, "batch": _FINALIZE_BATCH_SIZE},
+                {"batch": _FINALIZE_BATCH_SIZE},
             )
         ).all()
 
@@ -351,7 +355,12 @@ async def _finalize_pending_mail_alerts_once(
                 "pending", "claimed",
             )
             never_eligible = row.is_draft or row.effective_special_use in _SKIP_FOLDER_SPECIAL_USE
-            if terminal or never_eligible or row.bound_expired:
+            # The bound is the owner's own mail.notify_wait_seconds.
+            bound_seconds = float(
+                settings_service.get_for_user("mail", row.user_id)["notify_wait_seconds"]
+            )
+            bound_expired = float(row.age_seconds) >= bound_seconds
+            if terminal or never_eligible or bound_expired:
                 to_deliver.append((row.alert_id, row.current_folder_id))
 
         for alert_id in to_drop:

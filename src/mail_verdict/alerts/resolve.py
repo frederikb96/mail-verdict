@@ -26,11 +26,12 @@ later resync of the same message from alerting again.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
-from mail_verdict.api.events import broadcast_event
+from mail_verdict.alerts.audience import audiences_of
 from mail_verdict.push.relay import get_relay_client_if_ready
 
 if TYPE_CHECKING:
@@ -126,16 +127,20 @@ async def resolve_all(session: AsyncSession) -> list[uuid.UUID]:
     return await _resolve(session, "true", {})
 
 
-async def announce_alerts_dismissed(db: DatabaseConnection, event_ring: EventRing | None) -> None:
-    """alert.dismissed to every open page, so a bell showing an alert that
-    was just dismissed or resolved drops it without polling -- and a
-    throttled silent push to every native device, which has no open
-    stream to hear it on (push/relay.py's read-sync)."""
-    if event_ring is not None:
-        await broadcast_event(db, event_ring, "alert.dismissed", {})
+async def announce_alerts_dismissed(
+    db: DatabaseConnection, event_ring: EventRing | None, alert_ids: Collection[uuid.UUID],
+) -> None:
+    """alert.dismissed to every open page of whoever these alerts are for,
+    so a bell showing an alert that was just dismissed or resolved drops it
+    without polling -- and a throttled silent push to each of their native
+    devices, which have no open stream to hear it on (push/relay.py's
+    read-sync)."""
     relay = get_relay_client_if_ready()
-    if relay is not None:
-        relay.schedule_read_sync(db)
+    for audience in await audiences_of(db, alert_ids):
+        if event_ring is not None:
+            await event_ring.add(audience, "alert.dismissed", {})
+        if relay is not None:
+            relay.schedule_read_sync(db, audience)
 
 
 async def resolve_for_message_event(
@@ -159,5 +164,5 @@ async def resolve_for_message_event(
     async with db.session() as session:
         resolved = await resolve_for_messages(session, [message_uuid])
     if resolved:
-        await announce_alerts_dismissed(db, event_ring)
+        await announce_alerts_dismissed(db, event_ring, resolved)
     return resolved

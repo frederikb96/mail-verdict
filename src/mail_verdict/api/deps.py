@@ -2,9 +2,10 @@
 API dependency accessors.
 
 Provides access to database repositories and services initialized during
-lifespan, and the caller's identity: current_scope() is what every route,
-MCP tool and the SSE endpoint asks for before touching a user's data (see
-auth/scope.py for the rules it carries).
+lifespan, and the caller's identity: current_scope() is what every route
+and MCP tool asks for before touching a user's data (see auth/scope.py for
+the rules it carries). The SSE endpoint builds the same Scope from the
+principal itself, again whenever ownership changes (api/events.py).
 """
 
 from __future__ import annotations
@@ -93,7 +94,7 @@ async def current_scope() -> Scope:
     The caller's Scope: who they are and which accounts they own.
 
     A FastAPI dependency (`scope: Scope = Depends(current_scope)`), resolved
-    once per request; MCP tools and the SSE endpoint await it directly.
+    once per request; MCP tools await it directly.
     """
     return await Scope.for_principal(get_db_connection(), require_principal())
 

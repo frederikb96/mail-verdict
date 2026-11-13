@@ -98,49 +98,49 @@ class TestEventRingReplay:
         await ring.add(account_id, "calendar.links_changed", {"synced": 10})
         await ring.add(account_id, "calendar.links_changed", {"synced": 20})
 
-        events = await ring.replay_from(1, acct_str)
+        events = await ring.replay_from(1, {acct_str})
         assert len(events) == 2
         assert events[0]["data"]["synced"] == 10
         assert events[1]["data"]["synced"] == 20
 
     @pytest.mark.asyncio
-    async def test_replay_from_returns_empty_for_gap(self) -> None:
-        """replay_from() returns empty if the ID is too old (fell off ring)."""
-        ring = EventRing(max_size=3)
+    async def test_replay_from_unknown_key(self) -> None:
+        """replay_from() returns empty for a key nothing was added to."""
+        ring = EventRing()
+        events = await ring.replay_from(0, {str(uuid.uuid4())})
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_replay_merges_exactly_the_given_keys_in_order(self) -> None:
+        """A replay over several keys returns each of their events once, by
+        global id, and nothing of any key it was not given."""
+        ring = EventRing()
+        acct, user, other = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+        await ring.add(acct, "mail.new", {"n": 1})
+        await ring.add(other, "mail.new", {"n": "other"})
+        await ring.add(user, "order.updated", {"n": 2})
+        await ring.add(acct, "mail.new", {"n": 3})
+
+        events = await ring.replay_from(0, {str(acct), str(user)})
+
+        assert [e["data"]["n"] for e in events] == [1, 2, 3]
+        assert [e["id"] for e in events] == [1, 3, 4]
+
+    @pytest.mark.asyncio
+    async def test_a_lone_string_is_refused_as_a_key_set(self) -> None:
+        """A key passed as a bare string would iterate as one-character keys
+        and match nothing -- a stream gone silent with no error."""
+        ring = EventRing()
         account_id = uuid.uuid4()
-        acct_str = str(account_id)
+        await ring.add(account_id, "mail.new", {})
 
-        for i in range(5):
-            await ring.add(account_id, "calendar.links_changed", {"synced": i})
-
-        # ID 1 is no longer in the ring (evicted)
-        events = await ring.replay_from(1, acct_str)
-        assert events == []
-
-    @pytest.mark.asyncio
-    async def test_replay_from_unknown_account(self) -> None:
-        """replay_from() returns empty for unknown account."""
-        ring = EventRing()
-        events = await ring.replay_from(0, str(uuid.uuid4()))
-        assert events == []
-
-    @pytest.mark.asyncio
-    async def test_replay_all_accounts(self) -> None:
-        """replay_from() without account_id replays across all accounts."""
-        ring = EventRing()
-        acct1 = uuid.uuid4()
-        acct2 = uuid.uuid4()
-
-        await ring.add(acct1, "calendar.account", {"phase": "idle"})
-        await ring.add(acct2, "calendar.account", {"phase": "syncing"})
-        await ring.add(acct1, "calendar.links_changed", {"synced": 10})
-
-        events = await ring.replay_from(0)
-        assert len(events) == 3
-        # Should be sorted by global ID
-        assert events[0]["id"] == 1
-        assert events[1]["id"] == 2
-        assert events[2]["id"] == 3
+        with pytest.raises(TypeError):
+            await ring.replay_from(0, str(account_id))
+        with pytest.raises(TypeError):
+            ring.has_events_after(0, str(account_id))
+        with pytest.raises(TypeError):
+            ring.register_waiter(str(account_id))
 
 
 class TestEventRingHasEventsAfter:
@@ -156,7 +156,7 @@ class TestEventRingHasEventsAfter:
         await ring.add(account_id, "calendar.account", {"phase": "idle"})
         await ring.add(account_id, "calendar.links_changed", {"synced": 10})
 
-        assert ring.has_events_after(1, acct_str) is True
+        assert ring.has_events_after(1, {acct_str}) is True
 
     @pytest.mark.asyncio
     async def test_has_events_for_old_id(self) -> None:
@@ -168,43 +168,69 @@ class TestEventRingHasEventsAfter:
         await ring.add(account_id, "calendar.account", {"phase": "idle"})
         await ring.add(account_id, "calendar.links_changed", {"synced": 10})
         await ring.add(account_id, "calendar.links_changed", {"synced": 20})
+        # IDs 1 and 2 evicted: a client that saw ID 1 missed ID 2 for good;
+        # one that saw ID 2 still gets everything after it.
+        await ring.add(account_id, "calendar.links_changed", {"synced": 30})
 
-        # ID 1 evicted, oldest is ID 2
-        assert ring.has_events_after(1, acct_str) is False
+        assert ring.has_events_after(1, {acct_str}) is False
+        assert ring.has_events_after(2, {acct_str}) is True
 
-    def test_has_events_unknown_account(self) -> None:
-        """Returns False for unknown account."""
+    def test_has_events_unknown_key(self) -> None:
+        """A key nothing was ever added to has nothing missing."""
         ring = EventRing()
-        assert ring.has_events_after(0, str(uuid.uuid4())) is False
+        assert ring.has_events_after(0, {str(uuid.uuid4())}) is True
 
     @pytest.mark.asyncio
-    async def test_global_check_is_defeated_by_a_busy_account_alone(self) -> None:
-        """A quiet account whose ring still reaches back past last_event_id
-        must not green-light a global replay on its own -- a busier
-        account may have already evicted ids in between, and replaying
+    async def test_a_key_whose_first_event_came_later_is_still_complete(self) -> None:
+        """A ring that never dropped anything replays completely, even when
+        its first event is newer than the client's id -- only an eviction
+        makes a replay incomplete."""
+        ring = EventRing(max_size=3)
+        quiet, fresh = uuid.uuid4(), uuid.uuid4()
+
+        last_event_id = await ring.add(quiet, "calendar.account", {"n": 1})
+        await ring.add(fresh, "calendar.account", {"n": 2})
+
+        assert ring.has_events_after(last_event_id, {str(quiet), str(fresh)}) is True
+
+    @pytest.mark.asyncio
+    async def test_check_is_defeated_by_a_busy_key_alone(self) -> None:
+        """A quiet key whose ring still reaches back past last_event_id
+        must not green-light a replay on its own -- a busier key of the
+        same stream may have already evicted ids in between, and replaying
         only misses them silently."""
         ring = EventRing(max_size=3)
         quiet, busy = uuid.uuid4(), uuid.uuid4()
 
-        # Client's last-seen id, from back when both accounts were quiet.
+        # Client's last-seen id, from back when both keys were quiet.
         await ring.add(quiet, "calendar.account", {"n": 1})  # id 1
         last_event_id = await ring.add(busy, "calendar.account", {"n": 1})  # id 2
 
-        # The busy account then evicts ids 2 through the ring's whole
+        # The busy key then evicts ids 2 through the ring's whole
         # capacity while the quiet one produces nothing further.
         for i in range(2, 6):
             await ring.add(busy, "calendar.links_changed", {"n": i})  # ids 3..6
 
-        # The quiet account's ring alone would still say "safe to replay"
-        # (its oldest id, 1, is <= last_event_id) -- that is exactly the
-        # false green light the global check must not give.
-        assert ring.has_events_after(last_event_id, str(quiet)) is True
-        assert ring.has_events_after(last_event_id, None) is False
+        assert ring.has_events_after(last_event_id, {str(quiet)}) is True
+        assert ring.has_events_after(last_event_id, {str(quiet), str(busy)}) is False
 
     @pytest.mark.asyncio
-    async def test_global_check_passes_when_every_account_still_covers_the_gap(self) -> None:
+    async def test_another_streams_eviction_does_not_force_a_resync(self) -> None:
+        """Only the stream's own keys count: a key it does not read having
+        dropped events says nothing about its replay."""
+        ring = EventRing(max_size=2)
+        mine, theirs = uuid.uuid4(), uuid.uuid4()
+
+        last_event_id = await ring.add(mine, "calendar.account", {"n": 1})
+        for i in range(5):
+            await ring.add(theirs, "calendar.account", {"n": i})
+
+        assert ring.has_events_after(last_event_id, {str(mine)}) is True
+
+    @pytest.mark.asyncio
+    async def test_check_passes_when_every_key_still_covers_the_gap(self) -> None:
         """The ordinary case: nothing has been evicted anywhere, so a
-        global replay from last_event_id is complete."""
+        replay from last_event_id is complete."""
         ring = EventRing()
         acct_a, acct_b = uuid.uuid4(), uuid.uuid4()
 
@@ -212,7 +238,7 @@ class TestEventRingHasEventsAfter:
         last_event_id = await ring.add(acct_b, "calendar.account", {"n": 1})  # id 2
         await ring.add(acct_a, "calendar.links_changed", {"n": 2})  # id 3, after last_event_id
 
-        assert ring.has_events_after(last_event_id, None) is True
+        assert ring.has_events_after(last_event_id, {str(acct_a), str(acct_b)}) is True
 
 
 class TestEventRingWaiters:
@@ -225,23 +251,33 @@ class TestEventRingWaiters:
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
-        waiter = ring.register_waiter(acct_str)
+        waiter = ring.register_waiter({acct_str})
         assert not waiter.is_set()
 
         await ring.add(account_id, "calendar.account", {"phase": "idle"})
         assert waiter.is_set()
 
     @pytest.mark.asyncio
-    async def test_global_waiter_notified(self) -> None:
-        """Global waiter (no account) gets set on any event."""
+    async def test_waiter_notified_by_any_of_its_keys(self) -> None:
+        """A waiter over several keys wakes for an event on any of them."""
         ring = EventRing()
-        account_id = uuid.uuid4()
+        acct, user = uuid.uuid4(), uuid.uuid4()
 
-        waiter = ring.register_waiter()
-        assert not waiter.is_set()
+        waiter = ring.register_waiter({str(acct), str(user)})
+        await ring.add(user, "order.updated", {})
 
-        await ring.add(account_id, "calendar.account", {"phase": "idle"})
         assert waiter.is_set()
+
+    @pytest.mark.asyncio
+    async def test_wake_all_sets_every_waiter(self) -> None:
+        """wake_all() wakes every stream, whatever its keys."""
+        ring = EventRing()
+        first = ring.register_waiter({str(uuid.uuid4())})
+        second = ring.register_waiter({str(uuid.uuid4()), "admin"})
+
+        ring.wake_all()
+
+        assert first.is_set() and second.is_set()
 
     @pytest.mark.asyncio
     async def test_unregister_waiter(self) -> None:
@@ -250,8 +286,8 @@ class TestEventRingWaiters:
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
-        waiter = ring.register_waiter(acct_str)
-        ring.unregister_waiter(waiter, acct_str)
+        waiter = ring.register_waiter({acct_str})
+        ring.unregister_waiter(waiter, {acct_str})
 
         await ring.add(account_id, "calendar.account", {"phase": "idle"})
         assert not waiter.is_set()
@@ -261,7 +297,7 @@ class TestEventRingWaiters:
         """Unregistering an unknown waiter does not raise."""
         ring = EventRing()
         waiter = asyncio.Event()
-        ring.unregister_waiter(waiter)  # Should not raise
+        ring.unregister_waiter(waiter, {str(uuid.uuid4())})  # Should not raise
 
 
 class TestEventRingClearAccount:
@@ -319,8 +355,8 @@ class TestEventRingAccountIsolation:
         id_b1 = await ring.add(acct_b, "mail.new", {"uid": 100})
 
         # Replay from the first event's ID to get subsequent events
-        events_a = await ring.replay_from(id_a1, str(acct_a))
-        events_b = await ring.replay_from(id_b1, str(acct_b))
+        events_a = await ring.replay_from(id_a1, {str(acct_a)})
+        events_b = await ring.replay_from(id_b1, {str(acct_b)})
 
         # Account A: only uid=2 (after id_a1)
         assert len(events_a) == 1
@@ -329,13 +365,9 @@ class TestEventRingAccountIsolation:
         # Account B: no events after id_b1
         assert len(events_b) == 0
 
-        # Verify account B never sees account A events
-        all_b = await ring.replay_from(id_b1 - 1, str(acct_b))
-        assert len(all_b) == 0  # id_b1-1 < oldest_id in B's ring, gap detected
-
-        # Verify global replay shows all accounts
-        global_events = await ring.replay_from(id_a1, None)
-        assert len(global_events) == 2  # uid=2 from A, uid=100 from B
+        # Account B never sees account A's events, from any id
+        all_b = await ring.replay_from(0, {str(acct_b)})
+        assert [e["data"]["uid"] for e in all_b] == [100]
 
     @pytest.mark.asyncio
     async def test_waiter_not_notified_for_other_account(self) -> None:
@@ -344,7 +376,7 @@ class TestEventRingAccountIsolation:
         acct_a = uuid.uuid4()
         acct_b = uuid.uuid4()
 
-        waiter_a = ring.register_waiter(str(acct_a))
+        waiter_a = ring.register_waiter({str(acct_a)})
         assert not waiter_a.is_set()
 
         await ring.add(acct_b, "mail.new", {"uid": 1})
@@ -369,7 +401,7 @@ class TestEventRingAccountIsolation:
         assert str(acct_a) not in ring._rings
 
         # Account B ring still has its event
-        events_b = await ring.replay_from(id_b, str(acct_b))
+        events_b = await ring.replay_from(id_b, {str(acct_b)})
         # id_b is the only event, replay_from returns events AFTER id_b
         assert len(events_b) == 0
         assert str(acct_b) in ring._rings

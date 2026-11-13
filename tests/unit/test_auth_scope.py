@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
 from mail_verdict.auth.ownership import account_display_name, owned_account_name
-from mail_verdict.auth.scope import ADMIN_RING_KEY, Scope, ScopeDenied
+from mail_verdict.auth.scope import ADMIN_RING_KEY, EVERYONE_RING_KEY, Scope, ScopeDenied
 from mail_verdict.database.models import Message
 
 MINE, THEIRS, DAV = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
@@ -86,8 +86,10 @@ def test_ring_keys_carry_owned_accounts_the_user_and_admin_only_for_admins() -> 
     user = _scope()
     admin = _scope(is_admin=True)
 
-    assert user.ring_keys() == {str(MINE), str(DAV), str(user.user_id)}
-    assert admin.ring_keys() == {str(MINE), str(DAV), str(admin.user_id), ADMIN_RING_KEY}
+    assert user.ring_keys() == {str(MINE), str(DAV), str(user.user_id), EVERYONE_RING_KEY}
+    assert admin.ring_keys() == {
+        str(MINE), str(DAV), str(admin.user_id), ADMIN_RING_KEY, EVERYONE_RING_KEY,
+    }
 
 
 def test_a_stored_account_name_is_shown_without_its_owner_prefix() -> None:

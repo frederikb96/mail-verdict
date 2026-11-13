@@ -19,6 +19,7 @@ from sqlalchemy import select, text
 
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.outbox import router as outbox_router
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Alert
 from mail_verdict.outbox.stalled import (
@@ -26,7 +27,7 @@ from mail_verdict.outbox.stalled import (
     raise_stalled_outbox_alerts_once,
     resolve_stalled_for_outbox_event,
 )
-from tests.helpers.auth import act_as_owner_of_everything
+from tests.helpers.auth import act_as_owner_of_everything, owner_scope
 from tests.pg.test_outbox_stalled_pg import (
     _THRESHOLD,
     _alerts_for,
@@ -145,7 +146,7 @@ class TestStalledAlertResolves:
         assert len(resolved) == 1
         assert alerts[resolved[0]].body is not None and "Sent now" in alerts[resolved[0]].body
         assert [a.dismissed_at is None for a in alerts.values()].count(True) == 1
-        ring.add.assert_any_await(account_id, "alert.dismissed", {})
+        ring.add.assert_any_await(str(OWNER_USER_ID), "alert.dismissed", {})
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", ["dead", "failed", "processing"])
@@ -216,5 +217,7 @@ class TestUndoClearsTheStalledAlert:
         assert resp.status_code == 204, resp.text
 
         assert client.portal.call(_stalled_alert_dismissed, migrated_db, pending_id)
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(
+            event_ring.replay_from, seq_before, owner_scope([account_id]).ring_keys(),
+        )
         assert any(e["event_type"] == "alert.dismissed" for e in new_events), new_events

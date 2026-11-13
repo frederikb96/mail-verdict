@@ -217,7 +217,7 @@ async def resolve_stalled_for_outbox_event(
     async with db.session() as session:
         resolved = await resolve_settled_stalled_alerts(session, outbox_uuid)
     if resolved:
-        await announce_alerts_dismissed(db, event_ring)
+        await announce_alerts_dismissed(db, event_ring, resolved)
     return resolved
 
 
@@ -234,7 +234,7 @@ async def raise_stalled_outbox_alerts_once(
     async with db.session() as session:
         resolved = await resolve_settled_stalled_alerts(session)
     if resolved:
-        await announce_alerts_dismissed(db, event_ring)
+        await announce_alerts_dismissed(db, event_ring, resolved)
 
     repo = AlertRepository(db)
     for row in await _find_stalled(db, threshold):

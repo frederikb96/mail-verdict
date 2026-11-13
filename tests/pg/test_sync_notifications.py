@@ -153,7 +153,7 @@ async def test_acknowledging_one_announces_itself(migrated_db: DatabaseConnectio
     with patch(_NOTIFICATIONS_EVENT_RING_TARGET, return_value=event_ring):
         await acknowledge(account_id, notification_id)
 
-    new_events = await event_ring.replay_from(seq_before, str(account_id))
+    new_events = await event_ring.replay_from(seq_before, {str(account_id)})
     matching = [e for e in new_events if e["event_type"] == "notification.new"]
     assert len(matching) == 1, f"expected one notification.new event, got {new_events!r}"
 
@@ -172,7 +172,7 @@ async def test_acknowledging_all_announces_itself(migrated_db: DatabaseConnectio
     with patch(_NOTIFICATIONS_EVENT_RING_TARGET, return_value=event_ring):
         await acknowledge_all(account_id)
 
-    new_events = await event_ring.replay_from(seq_before, str(account_id))
+    new_events = await event_ring.replay_from(seq_before, {str(account_id)})
     matching = [e for e in new_events if e["event_type"] == "notification.new"]
     assert len(matching) == 1, f"expected one notification.new event, got {new_events!r}"
 

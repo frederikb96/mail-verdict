@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -18,8 +17,6 @@ from mail_verdict.api.account_order import router as account_order_router
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
 from tests.helpers.auth import act_as, owner_scope, user_scope
-
-_TARGET = "mail_verdict.api.account_order.get_db_connection"
 
 
 @pytest.fixture()
@@ -56,8 +53,7 @@ class TestAccountOrder:
     ) -> None:
         act_as(app, owner_scope())
         _start(client, migrated_db)
-        with patch(_TARGET, return_value=migrated_db):
-            resp = client.get("/account-order")
+        resp = client.get("/account-order")
         assert resp.status_code == 200, resp.text
         assert resp.json() == {"order": []}
 
@@ -67,12 +63,11 @@ class TestAccountOrder:
         ids = [uuid.uuid4(), uuid.uuid4()]
         act_as(app, owner_scope(ids))
         _start(client, migrated_db)
-        with patch(_TARGET, return_value=migrated_db):
-            put_resp = client.put("/account-order", json={"order": [str(i) for i in ids]})
-            assert put_resp.status_code == 200, put_resp.text
-            assert put_resp.json()["order"] == [str(i) for i in ids]
+        put_resp = client.put("/account-order", json={"order": [str(i) for i in ids]})
+        assert put_resp.status_code == 200, put_resp.text
+        assert put_resp.json()["order"] == [str(i) for i in ids]
 
-            get_resp = client.get("/account-order")
+        get_resp = client.get("/account-order")
         assert get_resp.status_code == 200, get_resp.text
         assert get_resp.json()["order"] == [str(i) for i in ids]
 
@@ -82,10 +77,9 @@ class TestAccountOrder:
         ids = [uuid.uuid4(), uuid.uuid4()]
         act_as(app, owner_scope(ids))
         _start(client, migrated_db)
-        with patch(_TARGET, return_value=migrated_db):
-            client.put("/account-order", json={"order": [str(ids[0])]})
-            client.put("/account-order", json={"order": [str(ids[1]), str(ids[0])]})
-            resp = client.get("/account-order")
+        client.put("/account-order", json={"order": [str(ids[0])]})
+        client.put("/account-order", json={"order": [str(ids[1]), str(ids[0])]})
+        resp = client.get("/account-order")
         assert resp.status_code == 200, resp.text
         assert resp.json()["order"] == [str(ids[1]), str(ids[0])]
 
@@ -95,14 +89,13 @@ class TestAccountOrder:
         mine, theirs = uuid.uuid4(), uuid.uuid4()
         other = client.portal.call(_add_user, migrated_db)  # type: ignore[union-attr]
         _start(client, migrated_db)
-        with patch(_TARGET, return_value=migrated_db):
-            act_as(app, owner_scope([mine]))
-            client.put("/account-order", json={"order": [str(mine)]})
-            act_as(app, user_scope(other, [theirs]))
-            before = client.get("/account-order").json()
-            client.put("/account-order", json={"order": [str(theirs)]})
-            act_as(app, owner_scope([mine]))
-            owner_after = client.get("/account-order").json()
+        act_as(app, owner_scope([mine]))
+        client.put("/account-order", json={"order": [str(mine)]})
+        act_as(app, user_scope(other, [theirs]))
+        before = client.get("/account-order").json()
+        client.put("/account-order", json={"order": [str(theirs)]})
+        act_as(app, owner_scope([mine]))
+        owner_after = client.get("/account-order").json()
         assert before == {"order": []}
         assert owner_after == {"order": [str(mine)]}
 
@@ -112,9 +105,8 @@ class TestAccountOrder:
         mine, foreign = uuid.uuid4(), uuid.uuid4()
         act_as(app, owner_scope([mine]))
         _start(client, migrated_db)
-        with patch(_TARGET, return_value=migrated_db):
-            put = client.put("/account-order", json={"order": [str(foreign), str(mine)]})
-            get = client.get("/account-order")
+        put = client.put("/account-order", json={"order": [str(foreign), str(mine)]})
+        get = client.get("/account-order")
         assert put.json() == {"order": [str(mine)]}
         assert get.json() == {"order": [str(mine)]}
         stored = client.portal.call(  # type: ignore[union-attr]

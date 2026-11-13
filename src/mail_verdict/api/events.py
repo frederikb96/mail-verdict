@@ -2,13 +2,21 @@
 Server-Sent Events (SSE) endpoint for real-time updates.
 
 GET /api/events — SSE stream with Last-Event-ID replay support.
-Supports ?account_id=<uuid> query parameter to filter events by account.
+
+A stream carries the events of the caller's own ring keys and nothing else
+(Scope.ring_keys: their mail and DAV accounts, their user key, the admin
+key for an admin, and the key every stream receives). ?account_id=<uuid>
+narrows the account keys to that one account, if it is the caller's; the
+caller's user, admin and everyone keys stay. The keys are resolved again
+whenever an account changes owner (auth/ownership.py), so an account added,
+removed or given away mid-stream starts or stops reaching it at once.
 
 On fresh connect: sends connected event, then streams live events.
-On reconnect (Last-Event-ID header): replays missed events from EventRing,
-falls back to a resync event -- telling the client to invalidate every
-cache rather than trust one that may now be stale -- if the ID is too old
-to replay or was issued by another process (see EventRing.epoch).
+On reconnect (Last-Event-ID header): replays missed events of the caller's
+keys from EventRing, falls back to a resync event -- telling the client to
+invalidate every cache rather than trust one that may now be stale -- if
+the ID is too old to replay or was issued by another process (see
+EventRing.epoch).
 
 PostIMAP integration: postimap/listener.py listens on postimap_events and
 pushes parsed events into the EventRing.
@@ -20,15 +28,17 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
-from mail_verdict.database.models import Account
+from mail_verdict.auth.ownership import on_ownership_change, ownership_generation
+from mail_verdict.auth.principal import Principal, current_principal
+from mail_verdict.auth.scope import EVERYONE_RING_KEY, Scope
+from mail_verdict.database.connection import get_db_connection
 
 if TYPE_CHECKING:
     from mail_verdict.api.event_ring import EventRing
@@ -107,6 +117,14 @@ def get_event_ring() -> EventRing | None:
     return _event_ring
 
 
+def _wake_streams() -> None:
+    if _event_ring is not None:
+        _event_ring.wake_all()
+
+
+on_ownership_change(_wake_streams)
+
+
 async def push_verdict_event(
     mail_id: uuid.UUID,
     is_spam: bool,
@@ -126,7 +144,7 @@ async def push_verdict_event(
         return
 
     await _event_ring.add(
-        account_id=account_id,
+        account_id,
         event_type="verdict.issued",
         data={
             "message_id": str(mail_id),
@@ -142,31 +160,24 @@ async def broadcast_event(
     db: DatabaseConnection, event_ring: EventRing, event_type: str, data: dict[str, Any],
 ) -> None:
     """
-    Push one event to every account's ring.
+    Push one event to every open stream, whoever's it is.
 
-    EventRing keys everything by account_id, but some of what MailVerdict
-    itself owns is not account-scoped at all -- the pipeline document and
-    the global settings categories are each one row shared by the whole
-    instance, not one per account. The browser's own SSE connection has
-    no account filter either (useSSE() is called with none), so any one
-    account's ring reaches it; broadcasting to all of them is what stays
-    correct if a per-account filtered connection is ever added later.
+    Only for an event that carries nothing of anyone's: a resync, or a bare
+    "something of this kind changed" every client answers by refetching its
+    own view. Anything naming a user's data goes on that user's key.
 
     Args:
-        db: Database connection to read the account list from
+        db: Not read: nothing about who receives it needs looking up
         event_ring: Ring buffer to push the event into
         event_type: SSE event type
-        data: Payload to send with every copy of the event
+        data: Payload, the same for every stream
     """
-    async with db.session() as session:
-        account_ids = (await session.execute(select(Account.id))).scalars().all()
-    for account_id in account_ids:
-        await event_ring.add(account_id, event_type, data)
+    await event_ring.add(EVERYONE_RING_KEY, event_type, data)
 
 
 async def broadcast_resync(db: DatabaseConnection, event_ring: EventRing) -> None:
     """
-    Push a resync event to every account.
+    Push a resync event to every open stream.
 
     The postimap_events listener's own reconnect calls this once a
     connection loss ends: any NOTIFY fired during the gap is gone for
@@ -177,7 +188,7 @@ async def broadcast_resync(db: DatabaseConnection, event_ring: EventRing) -> Non
     at all, and would otherwise keep showing what they had before the gap.
 
     Args:
-        db: Database connection to read the account list from
+        db: Database connection
         event_ring: Ring buffer to push the event into
     """
     await broadcast_event(db, event_ring, "resync", {})
@@ -204,9 +215,13 @@ def _format_sse(event_id: str, event_type: str, data: dict[str, Any]) -> str:
     return f"id: {event_id}\nevent: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+# Resolves the ring keys a stream may read, as of now.
+KeyResolver = Callable[[], Awaitable[frozenset[str]]]
+
+
 async def _sse_generator(
     event_ring: EventRing,
-    account_id: str | None,
+    resolve_keys: KeyResolver,
     last_event_id: int | None,
     request: Request,
 ) -> AsyncGenerator[str, None]:
@@ -216,14 +231,18 @@ async def _sse_generator(
     On first connect (no Last-Event-ID): sends connected event, then live.
     On reconnect (with Last-Event-ID): replays missed events, then live.
     Sends a `ping` heartbeat event every KEEPALIVE_INTERVAL_S while idle.
+    Only ever reads the keys `resolve_keys` returns, asked again before the
+    next read whenever ownership_generation() has moved.
 
     Args:
         event_ring: Ring buffer to read events from
-        account_id: Optional account filter
+        resolve_keys: The keys this stream may read
         last_event_id: Last-Event-ID from reconnecting client
         request: Starlette request for disconnect detection
     """
-    waiter = event_ring.register_waiter(account_id)
+    generation = ownership_generation()
+    keys = await resolve_keys()
+    waiter = event_ring.register_waiter(keys)
     try:
         last_seen: int
         if last_event_id is not None:
@@ -233,10 +252,10 @@ async def _sse_generator(
             # only a previous process could have handed out.
             replayable = (
                 0 <= last_event_id <= event_ring.get_latest_seq()
-                and event_ring.has_events_after(last_event_id, account_id)
+                and event_ring.has_events_after(last_event_id, keys)
             )
             if replayable:
-                missed = await event_ring.replay_from(last_event_id, account_id)
+                missed = await event_ring.replay_from(last_event_id, keys)
                 for event in missed:
                     yield _format_sse(
                         event_ring.format_event_id(event["id"]), event["event_type"], event["data"],
@@ -263,6 +282,20 @@ async def _sse_generator(
             yield _format_sse(event_ring.format_event_id(seq), "connected", {})
             last_seen = seq
 
+        async def _current_keys() -> frozenset[str]:
+            # Ownership changed since the keys were read: read them again
+            # before the ring, so an account given away is never read once
+            # more and one just added is read from here on.
+            nonlocal generation, keys, waiter
+            if generation != ownership_generation():
+                generation = ownership_generation()
+                fresh = await resolve_keys()
+                if fresh != keys:
+                    event_ring.unregister_waiter(waiter, keys)
+                    keys = fresh
+                    waiter = event_ring.register_waiter(keys)
+            return keys
+
         # Stream live events
         while True:
             if await request.is_disconnected():
@@ -275,14 +308,14 @@ async def _sse_generator(
             # this generator is mid-yield is never discarded outright, only
             # ever picked up a little later than it could have been.
             waiter.clear()
-            new_events = await event_ring.replay_from(last_seen, account_id)
+            new_events = await event_ring.replay_from(last_seen, await _current_keys())
             if not new_events:
                 try:
                     await asyncio.wait_for(waiter.wait(), timeout=KEEPALIVE_INTERVAL_S)
                 except asyncio.TimeoutError:
                     yield PING_FRAME
                     continue
-                new_events = await event_ring.replay_from(last_seen, account_id)
+                new_events = await event_ring.replay_from(last_seen, await _current_keys())
 
             for event in new_events:
                 yield _format_sse(
@@ -293,7 +326,26 @@ async def _sse_generator(
     except asyncio.CancelledError:
         return
     finally:
-        event_ring.unregister_waiter(waiter, account_id)
+        event_ring.unregister_waiter(waiter, keys)
+
+
+async def _scope_of(principal: Principal) -> Scope:
+    """The scope a stream of `principal` reads, as of now."""
+    return await Scope.for_principal(get_db_connection(), principal)
+
+
+def stream_keys(scope: Scope, account_id: uuid.UUID | None) -> frozenset[str]:
+    """
+    The ring keys a stream of `scope` reads: all of Scope.ring_keys(), or,
+    with an account filter, those with every mail and DAV account key but
+    that one account's dropped -- an account that is not the caller's
+    leaves none.
+    """
+    keys = scope.ring_keys()
+    if account_id is None:
+        return keys
+    accounts = {str(a) for a in scope.account_ids} | {str(d) for d in scope.dav_account_ids}
+    return (keys - accounts) | ({str(account_id)} & accounts)
 
 
 async def _with_preamble(stream: AsyncGenerator[str, None]) -> AsyncGenerator[str, None]:
@@ -316,9 +368,9 @@ async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
     """
     SSE endpoint handler.
 
-    Supports ?account_id=<uuid> for per-account filtering.
-    Supports Last-Event-ID header (auto-reconnect) and ?last_event_id query
-    parameter (manual reconnect) for replay.
+    Supports ?account_id=<uuid> to narrow the stream to one of the caller's
+    accounts (stream_keys). Supports Last-Event-ID header (auto-reconnect)
+    and ?last_event_id query parameter (manual reconnect) for replay.
     """
     if _event_ring is None:
         return StreamingResponse(
@@ -326,19 +378,20 @@ async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
             media_type="text/event-stream",
             status_code=503,
         )
+    principal = current_principal()
+    if principal is None:
+        return JSONResponse({"detail": "not_authenticated"}, status_code=401)
 
-    # Parse optional account_id filter
-    filter_account_id: str | None = None
+    filter_account_id: uuid.UUID | None = None
     raw_account_id = request.query_params.get("account_id")
     if raw_account_id:
         try:
-            # Canonical (lowercase, hyphenated) form -- EventRing keys its
-            # per-account rings on str(uuid.UUID), so keeping the client's
-            # raw casing here would never match, and the client would see
-            # nothing but keepalives with no error anywhere.
-            filter_account_id = str(uuid.UUID(raw_account_id))
+            filter_account_id = uuid.UUID(raw_account_id)
         except ValueError:
             pass
+
+    async def resolve_keys() -> frozenset[str]:
+        return stream_keys(await _scope_of(principal), filter_account_id)
 
     # Parse Last-Event-ID from header (auto-reconnect) or query param (manual reconnect)
     last_event_id: int | None = None
@@ -352,7 +405,7 @@ async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
         last_event_id = FOREIGN_EVENT_ID if parsed is None else parsed
 
     return StreamingResponse(
-        _with_preamble(_sse_generator(_event_ring, filter_account_id, last_event_id, request)),
+        _with_preamble(_sse_generator(_event_ring, resolve_keys, last_event_id, request)),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

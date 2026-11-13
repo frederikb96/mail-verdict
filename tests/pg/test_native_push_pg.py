@@ -25,15 +25,17 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from mail_verdict.alerts.badge import badge_count
 from mail_verdict.api.alerts import router as alerts_router
 from mail_verdict.api.notifications import all_accounts_router as all_notifications_router
+from mail_verdict.auth.principal import OWNER_USER_ID
+from mail_verdict.auth.scope import Scope
 from mail_verdict.config.loader import PushConfig
 from mail_verdict.core.encryption import decrypt
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Alert, PushSubscription
+from mail_verdict.database.models import Account, Alert, PushSubscription
 from mail_verdict.database.repository import AlertRepository, PushSubscriptionRepository
 from mail_verdict.push.envelope import open_payload
 from mail_verdict.push.relay import RelayClient
@@ -44,12 +46,20 @@ from mail_verdict.settings.service import (
     init_settings_service,
     reset_settings_service,
 )
-from tests.helpers.auth import act_as_owner_of_everything
+from tests.helpers.auth import act_as_owner_of_everything, owner_scope
+from tests.helpers.pipeline_pg import insert_user, own_account
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
 from tests.pg.test_sync_notifications import _seed_notification
 
 _ENCRYPTION_KEY = "00" * 32
 _RELAY = "https://relay.example"
+# Every device below is the instance owner's unless a test says otherwise.
+_OWNER_DEVICES = str(OWNER_USER_ID)
+
+
+async def _owner(db: DatabaseConnection) -> Scope:
+    """The instance owner's scope as a push to their device resolves it."""
+    return await Scope.for_user(db, OWNER_USER_ID)
 
 
 class _FakeRelay:
@@ -73,8 +83,8 @@ def _relay_client(fake: _FakeRelay, encryption_key: str = _ENCRYPTION_KEY) -> Re
     return RelayClient(
         encryption_key=encryption_key,
         config=PushConfig(
-            apns_relay_urls=[_RELAY], read_sync_min_interval_seconds=600.0,
-            relay_timeout_seconds=5.0,
+            apns_relay_urls=[_RELAY], relay_app="mailverdict",
+            read_sync_min_interval_seconds=600.0, relay_timeout_seconds=5.0,
         ),
         transport=httpx.MockTransport(fake.handler),
     )
@@ -108,12 +118,12 @@ class _Device:
 
 async def _register(
     db: DatabaseConnection, relay: RelayClient, *, muted: list[str] | None = None,
-    relay_url: str = _RELAY,
+    relay_url: str = _RELAY, user_id: uuid.UUID = OWNER_USER_ID,
 ) -> _Device:
     ticket, key = f"ticket-{uuid.uuid4()}", os.urandom(32)
     encrypted_ticket, encrypted_key = relay.seal_credentials(ticket, key)
     sub = await PushSubscriptionRepository(db).upsert_native(
-        installation_id=uuid.uuid4(), relay_url=relay_url,
+        user_id, installation_id=uuid.uuid4(), relay_url=relay_url,
         encrypted_relay_ticket=encrypted_ticket, encrypted_content_key=encrypted_key,
         label=None, muted_channels=muted,
     )
@@ -151,19 +161,25 @@ class TestWhoIsSentTo:
         account_id, inbox_id, _junk = await _inbox_and_junk(migrated_db)
         repo = PushSubscriptionRepository(migrated_db)
         browser = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            OWNER_USER_ID, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
         muted_browser = await repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            OWNER_USER_ID, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
         await repo.update_prefs(muted_browser.id, muted_channels=["mail"])
         phone = await _register(migrated_db, fake_relay.client)
         mail_muted = await _register(migrated_db, fake_relay.client, muted=["mail"])
         system_muted = await _register(migrated_db, fake_relay.client, muted=["system"])
 
-        for_mail = {s.id for s in await repo.list_for_alert(kind="mail", folder_id=inbox_id)}
+        for_mail = {
+            s.id for s in await repo.list_for_alert(_OWNER_DEVICES, kind="mail", folder_id=inbox_id)
+        }
         for_system = {
-            s.id for s in await repo.list_for_alert(kind="outbox_stalled", folder_id=None)
+            s.id for s in await repo.list_for_alert(
+                _OWNER_DEVICES, kind="outbox_stalled", folder_id=None,
+            )
         }
 
         assert {browser.id, phone.sub.id, system_muted.sub.id} <= for_mail
@@ -185,7 +201,8 @@ class TestWhoIsSentTo:
 
         vapid = VapidKeyRepository(migrated_db, _ENCRYPTION_KEY)
         await dispatch_push_for_alert(
-            migrated_db, vapid, alert, folder_id=inbox_id, relay=fake_relay.client,
+            migrated_db, vapid, alert, _OWNER_DEVICES, folder_id=inbox_id,
+            relay=fake_relay.client,
         )
 
         [request] = fake_relay.for_ticket(phone.ticket)
@@ -210,7 +227,8 @@ class TestWhoIsSentTo:
         """A VAPID key that cannot be made must stop browser rows only."""
         account_id, inbox_id, _junk = await _inbox_and_junk(migrated_db)
         await PushSubscriptionRepository(migrated_db).upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            OWNER_USER_ID, endpoint=f"https://push.example/{uuid.uuid4()}",
+            p256dh="p", auth="a", label=None,
         )
         phone = await _register(migrated_db, fake_relay.client)
         never_called = AsyncMock()
@@ -218,8 +236,8 @@ class TestWhoIsSentTo:
 
         no_vapid = VapidKeyRepository(migrated_db, "")
         await dispatch_push_for_alert(
-            migrated_db, no_vapid, _mail_alert(account_id, inbox_id), folder_id=inbox_id,
-            relay=fake_relay.client,
+            migrated_db, no_vapid, _mail_alert(account_id, inbox_id), _OWNER_DEVICES,
+            folder_id=inbox_id, relay=fake_relay.client,
         )
 
         assert len(fake_relay.for_ticket(phone.ticket)) == 1
@@ -237,7 +255,8 @@ class TestWhoIsSentTo:
 
         await dispatch_push_for_alert(
             migrated_db, VapidKeyRepository(migrated_db, _ENCRYPTION_KEY),
-            _mail_alert(account_id, inbox_id), folder_id=inbox_id, relay=fake_relay.client,
+            _mail_alert(account_id, inbox_id), _OWNER_DEVICES, folder_id=inbox_id,
+            relay=fake_relay.client,
         )
 
         assert fake_relay.for_ticket(stranded.ticket) == []
@@ -261,7 +280,8 @@ class TestRelayAnswers:
 
         await dispatch_push_for_alert(
             migrated_db, VapidKeyRepository(migrated_db, _ENCRYPTION_KEY),
-            _mail_alert(account_id, inbox_id), folder_id=inbox_id, relay=fake_relay.client,
+            _mail_alert(account_id, inbox_id), _OWNER_DEVICES, folder_id=inbox_id,
+            relay=fake_relay.client,
         )
 
         repo = PushSubscriptionRepository(migrated_db)
@@ -282,12 +302,13 @@ class TestRelayAnswers:
             title="read", body=None, folder_id=inbox_id,
         )
         assert read_elsewhere is not None
-        await alerts.dismiss(read_elsewhere.id)
+        await alerts.dismiss(owner_scope(), read_elsewhere.id)
         phone = await _register(migrated_db, fake_relay.client)
 
         await dispatch_push_for_alert(
             migrated_db, VapidKeyRepository(migrated_db, _ENCRYPTION_KEY),
-            _mail_alert(account_id, inbox_id), folder_id=inbox_id, relay=fake_relay.client,
+            _mail_alert(account_id, inbox_id), _OWNER_DEVICES, folder_id=inbox_id,
+            relay=fake_relay.client,
         )
 
         [request] = fake_relay.for_ticket(phone.ticket)
@@ -306,12 +327,25 @@ class TestReadSync:
         )
         fake_relay.status_by_ticket[gone.ticket] = 410
 
-        await fake_relay.client._read_sync(migrated_db)
+        await fake_relay.client._read_sync(migrated_db, _OWNER_DEVICES)
 
         [wake] = fake_relay.for_ticket(phone.ticket)
         assert wake["type"] == "background" and "blob" not in wake
         assert fake_relay.for_ticket(retired.ticket) == []
         assert await PushSubscriptionRepository(migrated_db).get(gone.sub.id) is None
+
+    @pytest.mark.asyncio
+    async def test_a_read_sync_wakes_only_the_audiences_phones(
+        self, migrated_db: DatabaseConnection, fake_relay: _FakeRelay,
+    ) -> None:
+        mine = await _register(migrated_db, fake_relay.client)
+        someone = await insert_user(migrated_db)
+        theirs = await _register(migrated_db, fake_relay.client, user_id=someone)
+
+        await fake_relay.client._read_sync(migrated_db, _OWNER_DEVICES)
+
+        assert len(fake_relay.for_ticket(mine.ticket)) == 1
+        assert fake_relay.for_ticket(theirs.ticket) == []
 
 
 class TestBadge:
@@ -326,7 +360,9 @@ class TestBadge:
         write failure counts on an inactive account as on an active one."""
         account_id, inbox_id, junk_id = await _inbox_and_junk(migrated_db)
         phone = await _register(migrated_db, fake_relay.client)
-        before = await badge_count(migrated_db, settings_service, subscription=phone.sub)
+        before = await badge_count(
+            migrated_db, settings_service, await _owner(migrated_db), subscription=phone.sub,
+        )
 
         alerts = AlertRepository(migrated_db)
         for folder_id in (inbox_id, junk_id):
@@ -349,11 +385,17 @@ class TestBadge:
                 ),
                 {"id": inactive, "name": f"inactive-{inactive}"},
             )
+            await session.execute(
+                text("INSERT INTO account_owners (account_id, user_id) VALUES (:a, :u)"),
+                {"a": inactive, "u": OWNER_USER_ID},
+            )
             await _seed_notification(session, account_id=account_id)
             await _seed_notification(session, account_id=inactive)
             await session.commit()
 
-        after = await badge_count(migrated_db, settings_service, subscription=phone.sub)
+        after = await badge_count(
+            migrated_db, settings_service, await _owner(migrated_db), subscription=phone.sub,
+        )
         assert after - before == 1 + 1 + 2
 
     @pytest.mark.asyncio
@@ -361,9 +403,14 @@ class TestBadge:
         self, migrated_db: DatabaseConnection, settings_service: SettingsService,
     ) -> None:
         account_id, inbox_id, _junk = await _inbox_and_junk(migrated_db)
-        await settings_service.update("mail", {"bell_badge_counts_new_mail": False})
+        owner = await _owner(migrated_db)
+        await settings_service.update_for_user(
+            "mail", OWNER_USER_ID, {"bell_badge_counts_new_mail": False}, is_admin=True,
+        )
         try:
-            before = await badge_count(migrated_db, settings_service, folder_ids=[inbox_id])
+            before = await badge_count(
+                migrated_db, settings_service, owner, folder_ids=[inbox_id],
+            )
             alerts = AlertRepository(migrated_db)
             await alerts.create_mail_alert(
                 account_id=account_id, message_id=uuid.uuid4(), msg_key=f"k-{uuid.uuid4()}",
@@ -373,10 +420,36 @@ class TestBadge:
                 account_id=account_id, dedupe_key=f"outbox-stalled:{uuid.uuid4()}", title="t",
                 body="b",
             )
-            after = await badge_count(migrated_db, settings_service, folder_ids=[inbox_id])
+            after = await badge_count(migrated_db, settings_service, owner, folder_ids=[inbox_id])
             assert after - before == 1
         finally:
-            await settings_service.update("mail", {"bell_badge_counts_new_mail": True})
+            await settings_service.update_for_user(
+                "mail", OWNER_USER_ID, {"bell_badge_counts_new_mail": True}, is_admin=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_badge_counts_its_own_users_alerts_and_failures_only(
+        self, migrated_db: DatabaseConnection, settings_service: SettingsService,
+    ) -> None:
+        """Deltas again: another user's alert and write failure leave the
+        owner's badge alone."""
+        someone = await insert_user(migrated_db)
+        account_id, inbox_id, _junk = await _inbox_and_junk(migrated_db)
+        await own_account(migrated_db, account_id, someone)
+        owner = await _owner(migrated_db)
+        before = await badge_count(migrated_db, settings_service, owner, folder_ids=None)
+
+        await AlertRepository(migrated_db).create_mail_alert(
+            account_id=account_id, message_id=uuid.uuid4(), msg_key=f"k-{uuid.uuid4()}",
+            title="t", body=None, folder_id=inbox_id,
+        )
+        async with migrated_db.session() as session:
+            await _seed_notification(session, account_id=account_id)
+            await session.commit()
+
+        assert await badge_count(migrated_db, settings_service, owner, folder_ids=None) == before
+        theirs = await Scope.for_user(migrated_db, someone)
+        assert await badge_count(migrated_db, settings_service, theirs, folder_ids=None) == 2
 
 
 class TestRegistration:
@@ -389,14 +462,16 @@ class TestRegistration:
         installation = uuid.uuid4()
         first_ticket, first_key = relay.seal_credentials("first", bytes(32))
         first = await repo.upsert_native(
-            installation_id=installation, relay_url=_RELAY, encrypted_relay_ticket=first_ticket,
+            OWNER_USER_ID, installation_id=installation, relay_url=_RELAY,
+            encrypted_relay_ticket=first_ticket,
             encrypted_content_key=first_key, label="Phone", muted_channels=["system"],
         )
         await repo.mark_failed(first.id)
 
         second_ticket, second_key = relay.seal_credentials("second", bytes(32))
         second = await repo.upsert_native(
-            installation_id=installation, relay_url=_RELAY, encrypted_relay_ticket=second_ticket,
+            OWNER_USER_ID, installation_id=installation, relay_url=_RELAY,
+            encrypted_relay_ticket=second_ticket,
             encrypted_content_key=second_key, label=None, muted_channels=None,
         )
 
@@ -547,7 +622,8 @@ class TestNativeEndpoints:
 
         async def _eligible() -> set[uuid.UUID]:
             repo = PushSubscriptionRepository(migrated_db)
-            return {s.id for s in await repo.list_for_alert(kind="mail", folder_id=None)}
+            eligible = await repo.list_for_alert(_OWNER_DEVICES, kind="mail", folder_id=None)
+            return {s.id for s in eligible}
 
         assert uuid.UUID(created["id"]) not in client.portal.call(_eligible)
 
@@ -555,8 +631,9 @@ class TestNativeEndpoints:
         self, client: TestClient, api_ready: _FakeRelay, migrated_db: DatabaseConnection,
     ) -> None:
         async def _seed() -> uuid.UUID:
+            account_id, _inbox, _junk = await _inbox_and_junk(migrated_db)
             alert = await AlertRepository(migrated_db).create_mail_alert(
-                account_id=uuid.uuid4(), message_id=uuid.uuid4(), msg_key=f"k-{uuid.uuid4()}",
+                account_id=account_id, message_id=uuid.uuid4(), msg_key=f"k-{uuid.uuid4()}",
                 title="t", body=None,
             )
             assert alert is not None
@@ -581,7 +658,10 @@ class TestNativeEndpoints:
             assert sub is not None
             service = SettingsService(migrated_db)
             await service.load()
-            return await badge_count(migrated_db, service, subscription=sub)
+            async with migrated_db.session() as session:
+                every_account = (await session.execute(select(Account.id))).scalars().all()
+            scope = owner_scope(every_account)
+            return await badge_count(migrated_db, service, scope, subscription=sub)
 
         response = client.get("/alerts/badge", params={"subscription_id": created["id"]})
         assert response.json() == {"count": client.portal.call(_expected)}

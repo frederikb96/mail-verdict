@@ -399,7 +399,7 @@ class TestIdentityChangeAnnouncesItself:
         assert resp.status_code == 201, resp.text
 
         new_events = client.portal.call(
-            event_ring.replay_from, seq_before, str(account_id),
+            event_ring.replay_from, seq_before, {str(account_id)},
         )
         matching = [e for e in new_events if e["event_type"] == "identity.changed"]
         assert len(matching) == 1, f"expected one identity.changed event, got {new_events!r}"
@@ -429,7 +429,7 @@ class TestIdentityChangeAnnouncesItself:
         assert resp.status_code == 200, resp.text
 
         new_events = client.portal.call(
-            event_ring.replay_from, seq_before, str(account_id),
+            event_ring.replay_from, seq_before, {str(account_id)},
         )
         matching = [e for e in new_events if e["event_type"] == "identity.changed"]
         assert len(matching) == 1, f"expected one identity.changed event, got {new_events!r}"
@@ -457,7 +457,7 @@ class TestIdentityChangeAnnouncesItself:
         assert resp.status_code == 204, resp.text
 
         new_events = client.portal.call(
-            event_ring.replay_from, seq_before, str(account_id),
+            event_ring.replay_from, seq_before, {str(account_id)},
         )
         matching = [e for e in new_events if e["event_type"] == "identity.changed"]
         assert len(matching) == 1, f"expected one identity.changed event, got {new_events!r}"

@@ -209,9 +209,9 @@ async def _seed_owned_rows(postgres_url: str, rows: dict[str, Any]) -> None:
             )
             await conn.execute(
                 text(
-                    "INSERT INTO alerts (id, kind, deliver_at, dedupe_key, account_id, "
-                    "message_id, folder_id, title, user_id) VALUES (:id, 'mail', now(), "
-                    ":key, :account, :message, :folder, :title, :b)"
+                    "INSERT INTO alerts (id, kind, deliver_at, delivered_at, dedupe_key, "
+                    "account_id, message_id, folder_id, title, user_id) VALUES (:id, 'mail', "
+                    "now(), now(), :key, :account, :message, :folder, :title, :b)"
                 ),
                 {
                     "id": rows["alert_id"], "key": f"isolation:{rows['alert_id']}",
@@ -476,8 +476,12 @@ def test_route(app_client: TestClient, world: World, case: RouteCase) -> None:
         assert response.status_code != 401, response.text
     elif case.kind == "own":
         response = call(_as(world.a_token))
-        assert 200 <= response.status_code < 300, response.text
+        assert 200 <= response.status_code < 300 or response.status_code in case.also, (
+            response.text
+        )
         assert not _leaked(response.text, world.b_markers)
+    elif case.kind == "stream":
+        assert call(_NO_TOKEN).status_code == 401
     elif case.kind in ("account_path", "resource_id"):
         response = call(_as(world.a_token))
         assert response.status_code in (403, 404), response.text

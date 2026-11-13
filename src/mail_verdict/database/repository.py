@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from sqlalchemy import (
+    ColumnElement,
     Text,
     and_,
     case,
@@ -34,6 +35,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from mail_verdict.alerts.audience import account_owner_of, alert_visible_to
+from mail_verdict.auth.scope import ADMIN_RING_KEY, Scope, admin_user_ids
 from mail_verdict.core.cursor import after_tier_cursor
 from mail_verdict.database.fuzzy import (
     fuzzy_token_predicate,
@@ -1682,13 +1685,13 @@ class SyncNotificationRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def unacknowledged_count_all(self) -> int:
-        """Unacknowledged notifications across every account of the instance,
-        inactive ones included -- the push badge's count, which spans every
-        user's accounts."""
+    async def unacknowledged_count_for(self, account_ids: Collection[uuid.UUID]) -> int:
+        """Unacknowledged notifications across several accounts, inactive
+        ones included -- the badge's count over one user's accounts."""
         async with self._db.session() as session:
             result = await session.execute(
                 select(func.count(SyncNotification.id)).where(
+                    SyncNotification.account_id.in_(account_ids),
                     SyncNotification.acknowledged_at.is_(None),
                 )
             )
@@ -1889,6 +1892,7 @@ class AlertRepository:
                     url=f"/?message={message_id}",
                     dedupe_key=dedupe_key,
                     account_id=account_id,
+                    user_id=account_owner_of(account_id),
                     message_id=message_id,
                     folder_id=folder_id,
                 )
@@ -1924,6 +1928,7 @@ class AlertRepository:
                     body=body,
                     dedupe_key=dedupe_key,
                     account_id=account_id,
+                    user_id=account_owner_of(account_id),
                 )
                 .on_conflict_do_nothing(constraint="uq_alerts_dedupe_key")
                 .returning(Alert)
@@ -1939,9 +1944,10 @@ class AlertRepository:
         alerts/provider_health.py.
 
         An AI provider that stayed suspended past the alert threshold. It
-        belongs to no account and no folder, so no folder filter ever hides
-        it. dedupe_key carries the breaker name and the moment it was
-        suspended, so it fires once per outage.
+        belongs to no account, no user and no folder: it is the admins'
+        (alerts/audience.py), and no folder filter ever hides it. dedupe_key
+        carries the breaker name and the moment it was suspended, so it
+        fires once per outage.
 
         Returns:
             The inserted Alert, or None if this outage was already alerted on
@@ -1997,6 +2003,7 @@ class AlertRepository:
                     url=f"/?message={message_id}",
                     dedupe_key=f"glacier-conflict:{message_id}",
                     account_id=account_id,
+                    user_id=account_owner_of(account_id),
                     message_id=message_id,
                 )
                 .on_conflict_do_nothing(constraint="uq_alerts_dedupe_key")
@@ -2035,6 +2042,7 @@ class AlertRepository:
                     url=f"/?message={message_id}" if message_id is not None else None,
                     dedupe_key=dedupe_key,
                     account_id=account_id,
+                    user_id=account_owner_of(account_id),
                     message_id=message_id,
                 )
                 .on_conflict_do_nothing(constraint="uq_alerts_dedupe_key")
@@ -2044,7 +2052,7 @@ class AlertRepository:
             return result.scalar_one_or_none()
 
     async def list_recent(
-        self, *, limit: int = 50, folder_ids: list[uuid.UUID] | None = None,
+        self, scope: Scope, *, limit: int = 50, folder_ids: list[uuid.UUID] | None = None,
         unseen_only: bool = False,
     ) -> list[Alert]:
         """
@@ -2054,6 +2062,7 @@ class AlertRepository:
         it has.
 
         Args:
+            scope: Whose alerts (alerts/audience.py's alert_visible_to)
             limit: Max rows
             folder_ids: The same "which folders alert" preference the SSE
                 and push paths already compute (use-push.ts's
@@ -2073,7 +2082,7 @@ class AlertRepository:
             Alerts ordered (delivered_at DESC, id DESC), delivered only
         """
         async with self._db.session() as session:
-            stmt = select(Alert).where(Alert.delivered_at.is_not(None))
+            stmt = select(Alert).where(Alert.delivered_at.is_not(None), alert_visible_to(scope))
             if unseen_only:
                 stmt = stmt.where(Alert.dismissed_at.is_(None))
             if folder_ids is not None:
@@ -2085,12 +2094,13 @@ class AlertRepository:
             return list(result.scalars().all())
 
     async def unseen_counts_by_kind(
-        self, *, folder_ids: list[uuid.UUID] | None = None, arrival_folders_only: bool = False,
+        self, scope: Scope, *, folder_ids: list[uuid.UUID] | None = None,
+        arrival_folders_only: bool = False,
     ) -> dict[str, int]:
         """
-        How many delivered alerts of each kind have not been dismissed yet
-        -- what the bell's badge is computed from, per kind since not every
-        kind is new mail. folder_ids is the same filter list_recent takes,
+        How many of the scope's delivered alerts of each kind have not been
+        dismissed yet -- what the bell's badge is computed from, per kind
+        since not every kind is new mail. folder_ids is the same filter list_recent takes,
         for the same reason: the badge and the list it counts must agree
         on what's in scope.
 
@@ -2103,7 +2113,10 @@ class AlertRepository:
         async with self._db.session() as session:
             stmt = (
                 select(Alert.kind, func.count(Alert.id))
-                .where(Alert.delivered_at.is_not(None), Alert.dismissed_at.is_(None))
+                .where(
+                    Alert.delivered_at.is_not(None), Alert.dismissed_at.is_(None),
+                    alert_visible_to(scope),
+                )
                 .group_by(Alert.kind)
             )
             if folder_ids is not None:
@@ -2116,23 +2129,23 @@ class AlertRepository:
                 )
             return {kind: count for kind, count in (await session.execute(stmt)).all()}
 
-    async def lookup(self, alert_ids: Sequence[uuid.UUID]) -> list[Alert]:
-        """The alerts among these ids that still exist, in any state -- a
-        device holding shown notifications asks which of them are still
-        worth showing."""
+    async def lookup(self, scope: Scope, alert_ids: Sequence[uuid.UUID]) -> list[Alert]:
+        """The scope's alerts among these ids that still exist, in any
+        state -- a device holding shown notifications asks which of them
+        are still worth showing."""
         if not alert_ids:
             return []
         async with self._db.session() as session:
-            stmt = select(Alert).where(Alert.id.in_(list(alert_ids)))
+            stmt = select(Alert).where(Alert.id.in_(list(alert_ids)), alert_visible_to(scope))
             return list((await session.execute(stmt)).scalars().all())
 
     async def recently_resolved_mail(
-        self, *, limit: int, within: timedelta,
+        self, scope: Scope, *, limit: int, within: timedelta,
     ) -> list[uuid.UUID]:
         """
-        Mail alerts dismissed or resolved within the given window, newest
-        first -- what a native push carries so a phone withdraws banners
-        for mail already read elsewhere.
+        The scope's mail alerts dismissed or resolved within the given
+        window, newest first -- what a native push carries so a phone
+        withdraws banners for mail already read elsewhere.
         """
         async with self._db.session() as session:
             stmt = (
@@ -2140,54 +2153,67 @@ class AlertRepository:
                 .where(
                     Alert.kind == "mail",
                     Alert.dismissed_at > func.now() - within,
+                    alert_visible_to(scope),
                 )
                 .order_by(desc(Alert.dismissed_at), desc(Alert.id))
                 .limit(limit)
             )
             return list((await session.execute(stmt)).scalars().all())
 
-    async def unseen_count(self, *, folder_ids: list[uuid.UUID] | None = None) -> int:
+    async def unseen_count(
+        self, scope: Scope, *, folder_ids: list[uuid.UUID] | None = None,
+    ) -> int:
         """Every kind's unseen_counts_by_kind, added up."""
-        return sum((await self.unseen_counts_by_kind(folder_ids=folder_ids)).values())
+        return sum((await self.unseen_counts_by_kind(scope, folder_ids=folder_ids)).values())
 
-    async def dismiss(self, alert_id: uuid.UUID) -> bool:
+    async def dismiss(self, scope: Scope, alert_id: uuid.UUID) -> bool:
         """
-        Mark one alert dismissed. Idempotent -- dismissing an
-        already-dismissed alert (two browsers, the same click twice) is
+        Mark one of the scope's alerts dismissed. Idempotent -- dismissing
+        an already-dismissed alert (two browsers, the same click twice) is
         not an error, it does nothing on the second call.
 
         Returns:
             True if this call is what dismissed it, False if it was
-            already dismissed or does not exist
+            already dismissed, does not exist or is not the scope's
         """
         async with self._db.session() as session:
             stmt = (
                 update(Alert)
-                .where(Alert.id == alert_id, Alert.dismissed_at.is_(None))
+                .where(
+                    Alert.id == alert_id, Alert.dismissed_at.is_(None), alert_visible_to(scope),
+                )
                 .values(dismissed_at=func.now())
             )
             result = await session.execute(stmt)
             return bool(result.rowcount > 0)  # type: ignore[attr-defined]
 
-    async def dismiss_all(self, *, kinds: list[str] | None = None) -> int:
-        """Mark every currently-undismissed, delivered alert dismissed.
+    async def dismiss_all(
+        self, scope: Scope, *, kinds: list[str] | None = None,
+    ) -> list[uuid.UUID]:
+        """Mark every currently-undismissed, delivered alert of the scope's
+        dismissed.
 
         Args:
+            scope: Whose alerts
             kinds: Only alerts of these kinds; None dismisses every kind
 
         Returns:
-            The number of rows this call dismissed
+            The ids of the alerts this call dismissed
         """
         async with self._db.session() as session:
             stmt = (
                 update(Alert)
-                .where(Alert.delivered_at.is_not(None), Alert.dismissed_at.is_(None))
+                .where(
+                    Alert.delivered_at.is_not(None), Alert.dismissed_at.is_(None),
+                    alert_visible_to(scope),
+                )
                 .values(dismissed_at=func.now())
+                .returning(Alert.id)
             )
             if kinds is not None:
                 stmt = stmt.where(Alert.kind.in_(kinds))
             result = await session.execute(stmt)
-            return int(result.rowcount)  # type: ignore[attr-defined]
+            return list(result.scalars().all())
 
 
 def _is_arrival_folder(folder_id: Any) -> Any:
@@ -2205,16 +2231,26 @@ def _is_arrival_folder(folder_id: Any) -> Any:
     return or_(effective_special_use.is_(None), effective_special_use == "inbox")
 
 
+def _subscribers_of(audience: str) -> ColumnElement[bool]:
+    """SQL: the subscription is a device of this audience (alerts/audience.py)
+    -- the user's own, or any enabled admin's for ADMIN_RING_KEY."""
+    if audience == ADMIN_RING_KEY:
+        return PushSubscription.user_id.in_(admin_user_ids())
+    return PushSubscription.user_id == uuid.UUID(audience)
+
+
 class PushSubscriptionRepository:
     """Repository for push_subscriptions -- one device's push registration,
     browser or native app, and the per-device preferences that ride along
-    on the same row (see the model's own docstring for why)."""
+    on the same row (see the model's own docstring for why). A device is
+    its user's: user_id is whoever registered it last."""
 
     def __init__(self, db: DatabaseConnection) -> None:
         self._db = db
 
     async def upsert(
         self,
+        user_id: uuid.UUID,
         *,
         endpoint: str,
         p256dh: str,
@@ -2226,7 +2262,8 @@ class PushSubscriptionRepository:
         this endpoint -- a browser re-subscribing after clearing its own
         storage, or PushManager rotating the endpoint under an
         unchanged registration, both look like this rather than a
-        second device appearing.
+        second device appearing. A browser someone else signs in on
+        becomes theirs.
 
         Returns:
             The subscription row, existing or newly inserted
@@ -2236,7 +2273,7 @@ class PushSubscriptionRepository:
                 pg_insert(PushSubscription)
                 .values(
                     endpoint=endpoint, p256dh=p256dh, auth=auth, label=label,
-                    last_seen_at=func.now(),
+                    last_seen_at=func.now(), user_id=user_id,
                 )
                 .on_conflict_do_update(
                     index_elements=["endpoint"],
@@ -2245,6 +2282,7 @@ class PushSubscriptionRepository:
                         "auth": auth,
                         "failed_at": None,
                         "last_seen_at": func.now(),
+                        "user_id": user_id,
                     },
                 )
                 .returning(PushSubscription)
@@ -2254,6 +2292,7 @@ class PushSubscriptionRepository:
 
     async def upsert_native(
         self,
+        user_id: uuid.UUID,
         *,
         installation_id: uuid.UUID,
         relay_url: str,
@@ -2265,7 +2304,8 @@ class PushSubscriptionRepository:
         """
         Register a native device, or refresh the one already registered
         under this installation id -- the app re-registers whenever its
-        device token or relay ticket changes, and at least daily.
+        device token or relay ticket changes, and at least daily. A phone
+        someone else signs in on becomes theirs.
 
         The relay address, ticket and key always take the new values. A
         label or muted_channels of None leaves a registered device's own
@@ -2281,6 +2321,7 @@ class PushSubscriptionRepository:
             "encrypted_content_key": encrypted_content_key,
             "failed_at": None,
             "last_seen_at": func.now(),
+            "user_id": user_id,
         }
         if label is not None:
             refreshed["label"] = label
@@ -2294,6 +2335,7 @@ class PushSubscriptionRepository:
                     encrypted_relay_ticket=encrypted_relay_ticket,
                     encrypted_content_key=encrypted_content_key, label=label,
                     muted_channels=muted_channels or [], last_seen_at=func.now(),
+                    user_id=user_id,
                 )
                 .on_conflict_do_update(
                     index_elements=["installation_id"],
@@ -2305,17 +2347,24 @@ class PushSubscriptionRepository:
             result = await session.execute(stmt)
             return result.scalar_one()
 
-    async def list_native(self) -> list[PushSubscription]:
-        """Every native (apns) device -- what a read-sync push goes to."""
+    async def list_native(self, audience: str) -> list[PushSubscription]:
+        """The native (apns) devices of an audience (alerts/audience.py) --
+        what a read-sync push goes to."""
         async with self._db.session() as session:
-            stmt = select(PushSubscription).where(PushSubscription.transport == "apns")
+            stmt = select(PushSubscription).where(
+                PushSubscription.transport == "apns", _subscribers_of(audience),
+            )
             return list((await session.execute(stmt)).scalars().all())
 
-    async def list_all(self) -> list[PushSubscription]:
-        """Every registered device, newest first -- the Settings page's
+    async def list_for_user(self, user_id: uuid.UUID) -> list[PushSubscription]:
+        """A user's registered devices, newest first -- the Settings page's
         own device list."""
         async with self._db.session() as session:
-            stmt = select(PushSubscription).order_by(desc(PushSubscription.created_at))
+            stmt = (
+                select(PushSubscription)
+                .where(PushSubscription.user_id == user_id)
+                .order_by(desc(PushSubscription.created_at))
+            )
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
@@ -2400,15 +2449,16 @@ class PushSubscriptionRepository:
             )
 
     async def list_for_alert(
-        self, *, kind: str, folder_id: uuid.UUID | None,
+        self, audience: str, *, kind: str, folder_id: uuid.UUID | None,
     ) -> list[PushSubscription]:
         """
-        Subscriptions eligible to receive a given alert -- the server-side
-        filter that makes "which folders alert" and "do reminders alert
-        at all" real per-device preferences rather than a client-side
-        approximation (see the model's own docstring).
+        The audience's subscriptions eligible to receive a given alert --
+        the server-side filter that makes "which folders alert" and "do
+        reminders alert at all" real per-device preferences rather than a
+        client-side approximation (see the model's own docstring).
 
         Args:
+            audience: Who the alert is for (alerts/audience.py)
             kind: "mail" or "reminder"
             folder_id: The mail alert's folder, for the alert_folder_ids
                 filter. Ignored for "reminder", which has no folder to
@@ -2430,6 +2480,7 @@ class PushSubscriptionRepository:
         """
         async with self._db.session() as session:
             stmt = select(PushSubscription).where(
+                _subscribers_of(audience),
                 not_(PushSubscription.muted_channels.any(channel_for_kind(kind))),  # type: ignore[arg-type]
             )
             if kind == "mail":
