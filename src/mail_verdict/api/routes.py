@@ -32,6 +32,7 @@ from mail_verdict.api.notifications import all_accounts_router as all_notificati
 from mail_verdict.api.notifications import router as notifications_router
 from mail_verdict.api.orders import router as orders_router
 from mail_verdict.api.outbox import router as outbox_router
+from mail_verdict.api.pipeline import admin_router as pipeline_admin_router
 from mail_verdict.api.pipeline import router as pipeline_router
 from mail_verdict.api.queues import router as queues_router
 from mail_verdict.api.runs import router as runs_router
@@ -72,6 +73,7 @@ all_routers: list[APIRouter] = [
     embeddings_router,
     runs_router,
     pipeline_router,
+    pipeline_admin_router,
     dav_accounts_router,
     calendars_router,
     calendar_links_router,

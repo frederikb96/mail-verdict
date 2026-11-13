@@ -704,6 +704,78 @@
         "title": "AdminOwnerRequest",
         "type": "object"
       },
+      "AdminPipelineUserOut": {
+        "description": "One user's pipeline document as counts -- never a rule, a condition or\na folder name.",
+        "properties": {
+          "changed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed At"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "enabled_stages": {
+            "title": "Enabled Stages",
+            "type": "integer"
+          },
+          "failed_runs": {
+            "title": "Failed Runs",
+            "type": "integer"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "stages": {
+            "title": "Stages",
+            "type": "integer"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "display_name",
+          "revision",
+          "enabled",
+          "stages",
+          "enabled_stages",
+          "changed_at",
+          "failed_runs"
+        ],
+        "title": "AdminPipelineUserOut",
+        "type": "object"
+      },
       "AdminUserCreateRequest": {
         "description": "A user added ahead of their first sign-in, so an account can be given\nto them first. `subject` is the `sub` claim their tokens will carry.",
         "properties": {
@@ -11390,6 +11462,32 @@
         ]
       }
     },
+    "/admin/pipeline/overview": {
+      "get": {
+        "description": "Every user's document as counts, with how many pipeline runs on that\nuser's accounts ended failed. A user whose document does not exist yet\n(they have not used rules) appears with a null revision.",
+        "operationId": "pipeline_overview_admin_pipeline_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdminPipelineUserOut"
+                  },
+                  "title": "Response Pipeline Overview Admin Pipeline Overview Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pipeline Overview",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/users": {
       "get": {
         "description": "Every user.",
@@ -15672,7 +15770,7 @@
     },
     "/pipeline": {
       "get": {
-        "description": "The current pipeline definition, with live folder-resolution\nwarnings folded in.",
+        "description": "The caller's current pipeline definition, with live folder-resolution\nwarnings folded in.",
         "operationId": "get_pipeline_pipeline_get",
         "responses": {
           "200": {
@@ -15734,7 +15832,7 @@
     },
     "/pipeline/assistant": {
       "post": {
-        "description": "Turn one sentence about an open mail into one proposed change to\nthe rules -- any number of rules added, changed, moved or removed.\n\nNothing is stored. Accepting the proposal is the client's own `PUT\n/pipeline` with `change.enabled` and `change.stages`, carrying\n`change.base_revision` so rules edited in the meantime get the usual\n409. The exchange stops before\nits next model call once the client has disconnected, and answers with\nan empty 204 nobody reads.",
+        "description": "Turn one sentence about an open mail into one proposed change to\nthe caller's rules -- any number of rules added, changed, moved or\nremoved. The mail must be on one of the caller's accounts.\n\nNothing is stored. Accepting the proposal is the client's own `PUT\n/pipeline` with `change.enabled` and `change.stages`, carrying\n`change.base_revision` so rules edited in the meantime get the usual\n409. The exchange stops before\nits next model call once the client has disconnected, and answers with\nan empty 204 nobody reads.",
         "operationId": "rule_assistant_pipeline_assistant_post",
         "requestBody": {
           "content": {
@@ -15776,7 +15874,7 @@
     },
     "/pipeline/health": {
       "get": {
-        "description": "Every folder reference's resolution against every account it\napplies to -- ok and not-ok alike, so a client can show the whole\npicture rather than only failures.",
+        "description": "Every folder reference's resolution against every one of the\ncaller's accounts it applies to -- ok and not-ok alike, so a client can\nshow the whole picture rather than only failures.",
         "operationId": "get_health_pipeline_health_get",
         "responses": {
           "200": {
@@ -15802,7 +15900,7 @@
     },
     "/pipeline/revisions": {
       "get": {
-        "description": "Every revision's metadata, newest first.",
+        "description": "Every revision of the caller's document -- metadata only, newest first.",
         "operationId": "list_revisions_pipeline_revisions_get",
         "responses": {
           "200": {
@@ -15828,7 +15926,7 @@
     },
     "/pipeline/revisions/{revision}/restore": {
       "post": {
-        "description": "Append a copy of an old revision as the new current one -- restore\nis itself a write, so it stays in history rather than rewinding it.",
+        "description": "Append a copy of an old revision of the caller's document as the new\ncurrent one -- restore is itself a write, so it stays in history rather\nthan rewinding it. A revision that is not the caller's does not exist\nas far as they can tell (404).",
         "operationId": "restore_revision_pipeline_revisions__revision__restore_post",
         "parameters": [
           {
@@ -16091,7 +16189,7 @@
     },
     "/pipeline/stages/{stage_id}/test": {
       "post": {
-        "description": "Dry-run one stage of the current definition against one existing\nmessage, in isolation from every other stage.",
+        "description": "Dry-run one stage of the caller's current definition against one of\ntheir messages, in isolation from every other stage.",
         "operationId": "test_stage_pipeline_stages__stage_id__test_post",
         "parameters": [
           {
@@ -16146,7 +16244,7 @@
     },
     "/pipeline/test": {
       "post": {
-        "description": "Dry-run the current pipeline definition against one existing\nmessage. Nothing is applied or persisted.",
+        "description": "Dry-run the caller's current pipeline definition against one of\ntheir messages. Nothing is applied or persisted.",
         "operationId": "test_pipeline_pipeline_test_post",
         "requestBody": {
           "content": {

@@ -28,10 +28,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from mail_verdict.api.deps import require_admin
+from mail_verdict.api.deps import current_scope, require_admin
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import WebhookDelivery
 from mail_verdict.pipeline.revisions import PipelineRevisionRepository
+from mail_verdict.pipeline.template import current_or_template
 from mail_verdict.webhooks import repository
 from mail_verdict.webhooks.backfill import (
     BackfillCursor,
@@ -94,10 +96,13 @@ class WebhookBackfillResponse(BaseModel):
     next_cursor: WebhookBackfillCursor | None
 
 
-async def _current_effect(name: str) -> Any:
-    """The webhook action `name` as the live rules define it, or None when
-    no enabled rule carries it (a retry then keeps the queued snapshot)."""
-    definition = await PipelineRevisionRepository(get_db_connection()).current()
+async def _current_effect(scope: Scope, name: str) -> Any:
+    """The webhook action `name` as the caller's own rules define it, or None
+    when no enabled rule of theirs carries it (a retry then keeps the queued
+    snapshot)."""
+    definition = await PipelineRevisionRepository(get_db_connection()).current(
+        scope.require_user()
+    )
     if definition is None:
         return None
     try:
@@ -123,7 +128,9 @@ async def list_deliveries(
 
 
 @router.post("/deliveries/{delivery_id}/retry", status_code=202)
-async def retry_delivery(delivery_id: uuid.UUID) -> dict[str, str]:
+async def retry_delivery(
+    delivery_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> dict[str, str]:
     """Re-queue a failed delivery with a fresh attempt budget, aimed at the
     rule's current URL, method and headers. Only a failed delivery moves; a
     delivered one is never sent again."""
@@ -131,7 +138,7 @@ async def retry_delivery(delivery_id: uuid.UUID) -> dict[str, str]:
         row = await session.get(WebhookDelivery, delivery_id)
     if row is None:
         raise HTTPException(status_code=409, detail="no failed delivery with that id")
-    effect = await _current_effect(row.name)
+    effect = await _current_effect(scope, row.name)
     async with get_db_connection().session() as session:
         if not await repository.requeue_failed(session, delivery_id, effect=effect):
             raise HTTPException(status_code=409, detail="no failed delivery with that id")
@@ -139,25 +146,28 @@ async def retry_delivery(delivery_id: uuid.UUID) -> dict[str, str]:
 
 
 @router.post("/{name}/retry-failed", status_code=202)
-async def retry_failed(name: str) -> dict[str, int]:
+async def retry_failed(name: str, scope: Scope = Depends(current_scope)) -> dict[str, int]:
     """Re-queue every failed delivery of one webhook, as the single retry
     does for one. Returns how many moved."""
-    effect = await _current_effect(name)
+    effect = await _current_effect(scope, name)
     async with get_db_connection().session() as session:
         return {"requeued": await repository.requeue_all_failed(session, name, effect=effect)}
 
 
 @router.post("/{name}/backfill", response_model=WebhookBackfillResponse)
-async def backfill(name: str, request: WebhookBackfillRequest) -> WebhookBackfillResponse:
+async def backfill(
+    name: str, request: WebhookBackfillRequest, scope: Scope = Depends(current_scope),
+) -> WebhookBackfillResponse:
     """Queue the named webhook for existing mail its rule matches, oldest
     first, skipping mail that already has a delivery."""
     db = get_db_connection()
-    definition = await PipelineRevisionRepository(db).current()
-    if definition is None or not definition.enabled:
+    definition = await current_or_template(PipelineRevisionRepository(db), scope.require_user())
+    if not definition.enabled:
         raise HTTPException(status_code=409, detail="the pipeline is not enabled")
     try:
         result = await backfill_webhook(
-            db, definition.stages, name, since=request.since, until=request.until,
+            db, definition.stages, name, account_ids=scope.account_ids,
+            since=request.since, until=request.until,
             limit=request.limit, dry_run=request.dry_run,
             after=(
                 BackfillCursor(request.cursor.received_at, request.cursor.message_id)

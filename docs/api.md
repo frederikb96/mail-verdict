@@ -155,7 +155,9 @@ here.
 ### Edit the pipeline: write a rule as a stage
 
 Spam classification and rules share one mechanism — see
-["The message pipeline"](architecture.md#the-message-pipeline). A rule is a `match` stage: a
+["The message pipeline"](architecture.md#the-message-pipeline). Every user edits their own
+document; a user with none starts from the template (classify, move spam to Junk, bundle orders).
+A rule is a `match` stage: a
 condition tree (`subject_contains`, `sender_domain`, `has_attachment`, `verdict_is` and more,
 combinable with `all`/`any`/`not`) plus the effects to apply when it matches. `GET
 /api/pipeline/stage-types` returns the full vocabulary as a JSON schema, so a client discovers it
@@ -193,6 +195,13 @@ Every write to `/api/pipeline` (`PUT` the whole document, or the per-stage `POST
 accepts an optional `base_revision`: supply the revision your edit was computed against and get a
 `409` on a stale write instead of silently clobbering a concurrent editor — the browser UI and an
 agent editing at the same time, most notably. Omit it to write unconditionally.
+
+A write is rejected with `400` when a stage's `accounts` names an account the caller does not own
+(`foreign_account`) or a non-admin writes a `webhook` effect (`effect_not_allowed`). A message
+named in a test or to the assistant must be on one of the caller's accounts, else `403`, and a
+revision number belonging to another user restores as `404`. `GET /api/admin/pipeline/overview`
+(admin) lists every user's document as counts: revision, enabled, stages, enabled stages, last
+change, failed runs.
 
 ### Ask the assistant for a rule
 
@@ -337,7 +346,7 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 | Outbox | `/outbox` | Send, save or edit a draft (JSON or multipart with attachments); list outbox rows for send/draft status. `identity_id` picks which of the account's identities to send as, falling back to its default identity and then to `accounts.imap_user`. `body_html`, when set, is sanitised to a small mail-safe vocabulary before it reaches the row, and requires `body_text` alongside it -- nothing derives a plain-text alternative from HTML on a producer's behalf. `inline_attachment_content_ids`, aligned 1:1 with the uploaded attachment files, names which are inline images (a matching `cid:<value>` in `body_html`) rather than plain downloads. A send (never a draft) with `settings.outbox.undo_send_seconds` above zero comes back as a pending-send object instead of an outbox row -- distinguishable by the presence of `send_after` -- listed at `GET /outbox/pending` and cancellable at `POST /outbox/pending/{id}/cancel` until its window passes. A pending send lists its attachments without their content (`content_id` set for a pasted image the body references as `cid:`); `GET /outbox/pending/{id}/attachments/{attachment_id}` serves one's content, a cancelled send's included, until the send moves into the outbox. Either way, the id returned at acceptance stays resolvable at `GET /outbox`: a still-staged send is listed there too, with `status: "pending"`, and turns into an ordinary sent/failed/dead row under the same id once its window passes. A send naming no recipient in `to`, `cc` or `bcc` is refused with a 400 rather than accepted and failed a few seconds later; a draft may of course have none. An optional `idempotency_key` (a UUID the caller generates once per composed message and kind) makes a repeat safe: the same key again returns the row the first request created, and the same key for a different kind is refused with `409`. A send naming, in `replaces_message_id`, a draft that another send is already carrying -- staged, or queued and not dead -- is refused with `409`, key or no key |
 | Search | `/search`, `/embeddings/search` | Field-scoped text search ranked by field tier, cursor-paginated, and semantic search, respectively — both scopeable to a set of folders |
 | Verdicts | `/verdicts`, `/verdicts/spam-review`, `/mails/{id}/verdict`, `/mails/{id}/feedback` | Spam verdict history, the user-correction feedback loop, and `/verdicts/spam-review` -- every message currently classified spam with no user ruling yet, cursor-paginated across every account and folder |
-| Pipeline | `/pipeline` | Read/replace the whole stage document, per-stage CRUD and reorder, stage-type schemas, revision history and restore, health, dry-run testing, and `POST /pipeline/assistant` (a rule proposed from one sentence) — see the quickstart above and [architecture.md](architecture.md#the-message-pipeline) |
+| Pipeline | `/pipeline`, `/admin/pipeline` | Read/replace the caller's own whole stage document, per-stage CRUD and reorder, stage-type schemas, revision history and restore, health, dry-run testing, and `POST /pipeline/assistant` (a rule proposed from one sentence), and for admins `GET /admin/pipeline/overview` (every user's document as counts) — see the quickstart above and [architecture.md](architecture.md#the-message-pipeline) |
 | Secrets | `/secrets` | Admin only. Named secrets, write-only: `GET` lists names and timestamps, `PUT /secrets/{name}` with `{"value": ...}` creates or replaces, `DELETE` removes (`400` without `ENCRYPTION_KEY`). No endpoint returns a value, and none is offered through MCP. A rule's webhook action references one as `{{secret:NAME}}` in a header value. |
 | Webhooks | `/webhooks` | Admin only. What a rule's webhook action has queued: `GET /webhooks/deliveries` (`name`, `status` filters), `POST /webhooks/deliveries/{id}/retry` re-queues a failed one and `POST /webhooks/{name}/retry-failed` every failed one of that webhook, and `POST /webhooks/{name}/backfill` queues the webhook for mail that predates its rule (see the quickstart). See [architecture.md](architecture.md#webhooks). |
 | Pipeline runs | `/runs`, `/mails/{id}/runs` | Per-message pipeline execution history and trace — "why did this message get that treatment"; retry a failed run |

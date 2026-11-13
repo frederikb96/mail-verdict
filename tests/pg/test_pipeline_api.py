@@ -1,10 +1,12 @@
 """
 The pipeline configuration API against a real Postgres.
 
-pipeline_revisions is process-wide state shared with every other pg test
-in this session (the container is session-scoped) -- every mutating test
-here establishes its own known baseline with an unconditional PUT before
-asserting anything, rather than assuming what a prior test left behind.
+The API acts for the instance owner unless a test says otherwise. The
+owner's pipeline_revisions history is process-wide state shared with every
+other pg test in this session (the container is session-scoped) -- every
+mutating test here establishes its own known baseline with an unconditional
+PUT before asserting anything, rather than assuming what a prior test left
+behind; a test about several users gives each a user row of its own.
 """
 
 from __future__ import annotations
@@ -21,10 +23,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from mail_verdict.api.event_ring import EventRing
-from mail_verdict.api.pipeline import router
+from mail_verdict.api.pipeline import admin_router, router
+from mail_verdict.auth.principal import OWNER_USER_ID
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.pipeline.revisions import PipelineRevisionRepository
 from mail_verdict.settings.credentials import ProviderCredentialRepository
 from mail_verdict.settings.service import SettingsService
+from tests.helpers.auth import act_as, owner_scope, user_scope
+from tests.helpers.pipeline_pg import insert_user, own_account
 
 _imap_uid_counter = itertools.count(1)
 
@@ -38,8 +45,25 @@ def client() -> Iterator[TestClient]:
     different loop' the moment a second call touches the database."""
     app = FastAPI()
     app.include_router(router)
+    app.include_router(admin_router)
+    act_as(app, owner_scope())
     with TestClient(app) as c:
         yield c
+
+
+def _act_as(client: TestClient, scope: Scope) -> None:
+    act_as(client.app, scope)  # type: ignore[arg-type]
+
+
+def _seed(client: TestClient, migrated_db: DatabaseConnection) -> tuple[uuid.UUID, uuid.UUID]:
+    """An account and INBOX owned by the owner, who from here on acts as
+    owning it (and every account an earlier call seeded)."""
+    account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
+    client.portal.call(own_account, migrated_db, account_id, OWNER_USER_ID)
+    owned = getattr(client, "owned", set()) | {account_id}
+    client.owned = owned  # type: ignore[attr-defined]
+    _act_as(client, owner_scope(owned))
+    return account_id, folder_id
 
 
 def _put(client: TestClient, migrated_db: DatabaseConnection, document: dict) -> dict:
@@ -213,7 +237,7 @@ def test_put_accepts_an_unresolved_folder_with_a_warning(
 ) -> None:
     """A folder_name that does not exist yet is accepted -- reported as a
     warning, never a rejection."""
-    account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+    account_id, _ = _seed(client, migrated_db)
     document = {
         "enabled": True, "stages": [
             {
@@ -344,7 +368,7 @@ def test_revisions_history_and_restore(client: TestClient, migrated_db: Database
 def test_health_reports_an_unresolved_folder(
     client: TestClient, migrated_db: DatabaseConnection,
 ) -> None:
-    account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+    account_id, _ = _seed(client, migrated_db)
     missing_name = "Missing-" + uuid.uuid4().hex
     _put(client, migrated_db, {
         "enabled": True, "stages": [
@@ -372,7 +396,7 @@ def test_dry_run_classifies_without_writing_anything(
     # event loop the TestClient itself dispatches requests on -- see the
     # client fixture's docstring for why mixing loops on one asyncpg pool
     # breaks.
-    account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
+    account_id, folder_id = _seed(client, migrated_db)
     client.portal.call(_seed_junk_folder, migrated_db, account_id)
     mail_id = client.portal.call(
         functools.partial(_seed_message, account_id=account_id, folder_id=folder_id),
@@ -420,7 +444,7 @@ def test_a_halting_stage_stops_the_second_matching_stage_from_running(
     halt set: the second's effects must never apply, and its trace entry
     must never even appear -- the run stops after the first, it does not
     merely record that it should have."""
-    account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
+    account_id, folder_id = _seed(client, migrated_db)
     mail_id = client.portal.call(
         functools.partial(_seed_message, account_id=account_id, folder_id=folder_id),
         migrated_db,
@@ -475,7 +499,7 @@ def test_a_halting_stage_whose_conditions_do_not_fire_never_stops_the_run(
     conditions never fire is the ordinary "did nothing" case, and must
     not silence every stage after it for every message that stage
     doesn't apply to."""
-    account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
+    account_id, folder_id = _seed(client, migrated_db)
     mail_id = client.portal.call(
         functools.partial(_seed_message, account_id=account_id, folder_id=folder_id),
         migrated_db,
@@ -539,7 +563,7 @@ def test_dry_run_reports_a_misconfigured_stage_instead_of_crashing(
     """A move to a folder that does not resolve raises StageMisconfigured
     inside the runner -- the endpoint must report it in the response
     rather than surface it as an unhandled 500."""
-    account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
+    account_id, folder_id = _seed(client, migrated_db)
     mail_id = client.portal.call(
         functools.partial(_seed_message, account_id=account_id, folder_id=folder_id),
         migrated_db,
@@ -574,9 +598,9 @@ def test_replacing_the_document_announces_itself(
     because more than one editor is expected at once -- an agent and the
     UI, most notably -- so a second editor needs the new revision pushed
     to it rather than finding out only from their own next save's 409."""
-    account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+    account_id, _ = _seed(client, migrated_db)
     event_ring = EventRing()
-    client.portal.call(event_ring.add, account_id, "connected", {})
+    client.portal.call(event_ring.add, OWNER_USER_ID, "connected", {})
     seq_before = event_ring.get_latest_seq()
 
     with (
@@ -586,7 +610,7 @@ def test_replacing_the_document_announces_itself(
         resp = client.put("/pipeline", json={"enabled": True, "stages": []})
     assert resp.status_code == 200, resp.text
 
-    new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+    new_events = client.portal.call(event_ring.replay_from, seq_before, str(OWNER_USER_ID))
     matching = [e for e in new_events if e["event_type"] == "pipeline.document_changed"]
     assert len(matching) == 1, f"expected one pipeline.document_changed event, got {new_events!r}"
 
@@ -594,10 +618,10 @@ def test_replacing_the_document_announces_itself(
 def test_adding_a_stage_announces_itself(
     client: TestClient, migrated_db: DatabaseConnection,
 ) -> None:
-    account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+    account_id, _ = _seed(client, migrated_db)
     _put(client, migrated_db, {"enabled": True, "stages": []})
     event_ring = EventRing()
-    client.portal.call(event_ring.add, account_id, "connected", {})
+    client.portal.call(event_ring.add, OWNER_USER_ID, "connected", {})
     seq_before = event_ring.get_latest_seq()
 
     with (
@@ -613,6 +637,204 @@ def test_adding_a_stage_announces_itself(
         )
     assert resp.status_code == 200, resp.text
 
-    new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+    new_events = client.portal.call(event_ring.replay_from, seq_before, str(OWNER_USER_ID))
     matching = [e for e in new_events if e["event_type"] == "pipeline.document_changed"]
     assert len(matching) == 1, f"expected one pipeline.document_changed event, got {new_events!r}"
+
+
+def test_the_announcement_reaches_the_authors_key_only(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    other = client.portal.call(insert_user, migrated_db)
+    event_ring = EventRing()
+    client.portal.call(event_ring.add, OWNER_USER_ID, "connected", {})
+    client.portal.call(event_ring.add, other, "connected", {})
+    seq_before = event_ring.get_latest_seq()
+
+    with (
+        patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db),
+        patch("mail_verdict.api.pipeline.get_event_ring", return_value=event_ring),
+    ):
+        assert client.put("/pipeline", json={"enabled": True, "stages": []}).status_code == 200
+
+    own = client.portal.call(event_ring.replay_from, seq_before, str(OWNER_USER_ID))
+    others = client.portal.call(event_ring.replay_from, seq_before, str(other))
+    assert [e["event_type"] for e in own] == ["pipeline.document_changed"]
+    assert others == []
+
+
+def _stage_doc(stage_id: str, **extra: object) -> dict:
+    return {
+        "stage_id": stage_id, "type": "match",
+        "config": {"when": {"subject_contains": "x"}, "effects": []}, **extra,
+    }
+
+
+def test_a_new_user_starts_with_the_template_and_it_is_theirs_alone(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    user_a = client.portal.call(insert_user, migrated_db)
+    user_b = client.portal.call(insert_user, migrated_db)
+
+    with patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db):
+        _act_as(client, user_scope(user_a))
+        first = client.get("/pipeline").json()
+        assert [s["stage_id"] for s in first["stages"]] == ["classify", "move-spam", "orders"]
+        assert client.get("/pipeline").json()["revision"] == first["revision"]
+        rule = _stage_doc("a-rule", name="A's rule")
+        written = client.put(
+            "/pipeline", json={"base_revision": first["revision"], "enabled": True,
+                               "stages": [*first["stages"], rule]},
+        )
+        assert written.status_code == 200, written.text
+
+        _act_as(client, user_scope(user_b))
+        b_doc = client.get("/pipeline").json()
+        assert "a-rule" not in [s["stage_id"] for s in b_doc["stages"]]
+        assert b_doc["revision"] not in (first["revision"], written.json()["revision"])
+        assert [r["revision"] for r in client.get("/pipeline/revisions").json()] == [
+            b_doc["revision"]
+        ]
+        # A's revision number exists instance-wide but is not B's to restore.
+        assert client.post(f"/pipeline/revisions/{first['revision']}/restore").status_code == 404
+        assert client.patch("/pipeline/stages/a-rule", json={"enabled": False}).status_code == 404
+        assert client.delete("/pipeline/stages/a-rule").status_code == 404
+
+        _act_as(client, user_scope(user_a))
+        assert "a-rule" in [s["stage_id"] for s in client.get("/pipeline").json()["stages"]]
+
+
+def test_a_stale_base_revision_is_the_authors_own(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    user_a = client.portal.call(insert_user, migrated_db)
+    user_b = client.portal.call(insert_user, migrated_db)
+    with patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db):
+        _act_as(client, user_scope(user_a))
+        base = client.get("/pipeline").json()["revision"]
+        _act_as(client, user_scope(user_b))
+        assert client.put("/pipeline", json={"enabled": True, "stages": []}).status_code == 200
+        _act_as(client, user_scope(user_a))
+        ok = client.put("/pipeline", json={"base_revision": base, "enabled": True, "stages": []})
+        assert ok.status_code == 200, ok.text
+
+
+def test_a_stage_may_not_name_someone_elses_account(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    mine, _ = _seed(client, migrated_db)
+    foreign, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+    _put(client, migrated_db, {"enabled": True, "stages": [_stage_doc("u")]})
+
+    with patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db):
+        before = client.get("/pipeline").json()["revision"]
+        replaced = client.put(
+            "/pipeline", json={"enabled": True, "stages": [
+                _stage_doc("s", accounts=[str(mine), str(foreign)]),
+            ]},
+        )
+        created = client.post("/pipeline/stages", json={
+            "stage_id": "t", "type": "match", "config": {}, "accounts": [str(foreign)],
+        })
+        patched = client.patch("/pipeline/stages/u", json={"accounts": [str(foreign)]})
+        assert client.get("/pipeline").json()["revision"] == before
+
+    for response in (replaced, created, patched):
+        assert response.status_code == 400
+        assert "foreign_account" in response.json()["detail"][0]
+
+
+def test_health_never_resolves_a_foreign_account(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    """A stale or planted account id in a stage is not looked at: no folder
+    name of that account can surface as a warning."""
+    mine, _ = _seed(client, migrated_db)
+    foreign, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+    document = {"enabled": True, "stages": [{
+        "stage_id": "planted", "type": "match", "accounts": [str(mine), str(foreign)],
+        "config": {"when": {}, "effects": [{"move": {"folder_name": "Nowhere"}}]},
+    }]}
+    client.portal.call(
+        functools.partial(
+            PipelineRevisionRepository(migrated_db).append, OWNER_USER_ID, document,
+            note="planted",
+        ),
+    )
+
+    with patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db):
+        entries = client.get("/pipeline/health").json()
+        warned = client.get("/pipeline").json()["warnings"]
+
+    assert {e["account_id"] for e in entries} == {str(mine)}
+    assert {w["account_id"] for w in warned} == {str(mine)}
+
+
+def test_only_an_admin_may_write_a_webhook(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    webhook = {"webhook": {"name": "canteen", "url": "https://hooks.example/in"}}
+    document = {"enabled": True, "stages": [{
+        "stage_id": "send", "type": "match",
+        "config": {"when": {"subject_contains": "x"}, "effects": [webhook]},
+    }]}
+    user = client.portal.call(insert_user, migrated_db)
+
+    with patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db):
+        _act_as(client, user_scope(user))
+        refused = client.put("/pipeline", json=document)
+        assert refused.status_code == 400
+        assert "effect_not_allowed" in refused.json()["detail"][0]
+        assert all(s["stage_id"] != "send" for s in client.get("/pipeline").json()["stages"])
+
+        _act_as(client, owner_scope())
+        assert client.put("/pipeline", json=document).status_code == 200
+
+
+def test_a_dry_run_refuses_a_message_on_someone_elses_account(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    mine, _ = _seed(client, migrated_db)
+    foreign, foreign_folder = client.portal.call(_seed_account_and_folder, migrated_db)
+    foreign_mail = client.portal.call(
+        functools.partial(_seed_message, account_id=foreign, folder_id=foreign_folder),
+        migrated_db,
+    )
+    _put(client, migrated_db, {"enabled": True, "stages": [_stage_doc("s")]})
+    settings_service = client.portal.call(_configure_fake_ai_provider, migrated_db)
+
+    with patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db), \
+         patch("mail_verdict.api.pipeline.get_settings_service", return_value=settings_service), \
+         patch(
+             "mail_verdict.api.pipeline.get_provider_credential_repo",
+             return_value=ProviderCredentialRepository(migrated_db, ""),
+         ):
+        whole = client.post("/pipeline/test", json={"message_id": str(foreign_mail)})
+        one = client.post("/pipeline/stages/s/test", json={"message_id": str(foreign_mail)})
+        asked = client.post(
+            "/pipeline/assistant", json={"message_id": str(foreign_mail), "prompt": "file it"},
+        )
+
+    assert (whole.status_code, one.status_code, asked.status_code) == (403, 403, 403)
+
+
+def test_the_admin_overview_is_counts_and_admin_only(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    user = client.portal.call(insert_user, migrated_db)
+    secret = f"secret-rule-name-{uuid.uuid4().hex}"
+    with patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db):
+        _act_as(client, user_scope(user))
+        assert client.put("/pipeline", json={"enabled": False, "stages": [
+            _stage_doc("one", name=secret), _stage_doc("two", enabled=False),
+        ]}).status_code == 200
+        assert client.get("/admin/pipeline/overview").status_code == 403
+
+        _act_as(client, owner_scope())
+        response = client.get("/admin/pipeline/overview")
+
+    assert response.status_code == 200
+    row = next(r for r in response.json() if r["user_id"] == str(user))
+    assert (row["enabled"], row["stages"], row["enabled_stages"]) == (False, 2, 1)
+    assert row["revision"] > 0 and row["failed_runs"] == 0
+    assert secret not in response.text

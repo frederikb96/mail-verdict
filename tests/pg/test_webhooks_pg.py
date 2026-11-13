@@ -589,7 +589,8 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
     since = _NOW - timedelta(days=1)
 
     dry = await backfill_webhook(
-        migrated_db, (stage,), "canteen", since=since, until=None, limit=100, dry_run=True)
+        migrated_db, (stage,), "canteen", account_ids=frozenset({account_id}), since=since,
+        until=None, limit=100, dry_run=True)
     assert (dry.matched, dry.queued, dry.already_queued) == (4, 4, 0)
     async with migrated_db.session() as session:
         assert not [
@@ -599,7 +600,8 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
         ]
 
     first = await backfill_webhook(
-        migrated_db, (stage,), "canteen", since=since, until=None, limit=100, dry_run=False)
+        migrated_db, (stage,), "canteen", account_ids=frozenset({account_id}), since=since,
+        until=None, limit=100, dry_run=False)
     assert (first.scanned, first.matched, first.queued, first.already_queued) == (7, 4, 4, 0)
     assert first.truncated is False
 
@@ -615,7 +617,8 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
     assert {r.origin for r in rows} == {"backfill"}
 
     second = await backfill_webhook(
-        migrated_db, (stage,), "canteen", since=since, until=None, limit=100, dry_run=False)
+        migrated_db, (stage,), "canteen", account_ids=frozenset({account_id}), since=since,
+        until=None, limit=100, dry_run=False)
     assert (second.matched, second.queued, second.already_queued) == (4, 0, 4)
 
 
@@ -648,8 +651,8 @@ async def test_a_truncated_backfill_continues_from_its_cursor(
     calls = 0
     while True:
         result = await backfill_webhook(
-            migrated_db, (stage,), "canteen", since=since, until=None, limit=2, dry_run=False,
-            after=cursor,
+            migrated_db, (stage,), "canteen", account_ids=frozenset({account_id}),
+            since=since, until=None, limit=2, dry_run=False, after=cursor,
         )
         calls += 1
         seen += result.scanned
@@ -678,4 +681,41 @@ async def test_backfill_of_an_unknown_webhook_name_is_an_error(
 
     with pytest.raises(WebhookNotConfiguredError):
         await backfill_webhook(
-            migrated_db, (), "nope", since=_NOW, until=None, limit=10, dry_run=True)
+            migrated_db, (), "nope", account_ids=frozenset(), since=_NOW, until=None, limit=10,
+            dry_run=True,
+        )
+
+
+async def test_backfill_never_reaches_mail_beyond_the_given_accounts(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A rule that names no accounts means all of its owner's, not all of
+    them: another user's mail that matches it is not queued."""
+    async with migrated_db.session() as session:
+        mine, other = await _seed_account(session), await _seed_account(session)
+        mine_inbox = await _seed_folder(session, mine)
+        other_inbox = await _seed_folder(session, other)
+        own_mail, _ = await _seed_message(session, mine, mine_inbox, received_at=_NOW)
+        await _seed_message(session, other, other_inbox, received_at=_NOW)
+    stage = StageDefinition(
+        stage_id="canteen", type="match", name="canteen",
+        config={
+            "when": {"subject_contains": "Guten Appetit"},
+            "effects": [{"webhook": {"name": "canteen", "url": "http://127.0.0.1:9/never"}}],
+        },
+        accounts=None,
+    )
+
+    result = await backfill_webhook(
+        migrated_db, (stage,), "canteen", account_ids=frozenset({mine}),
+        since=_NOW - timedelta(days=1), until=None, limit=100, dry_run=False,
+    )
+
+    assert result.queued == 1
+    async with migrated_db.session() as session:
+        queued = [
+            r for r in await repository.list_deliveries(
+                session, name="canteen", status=None, limit=500)
+            if r.account_id in (mine, other)
+        ]
+    assert [r.message_id for r in queued] == [own_mail]

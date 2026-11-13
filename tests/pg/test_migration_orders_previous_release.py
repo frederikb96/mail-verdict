@@ -34,6 +34,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.config.loader import DatabaseConfig
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.pipeline.revisions import PipelineRevisionRepository
@@ -160,7 +161,7 @@ async def test_orders_stage_lands_after_move_spam_in_a_real_multi_stage_pipeline
 
     db = await _connect(db_at_previous)
     try:
-        current = await PipelineRevisionRepository(db).current()
+        current = await PipelineRevisionRepository(db).current(OWNER_USER_ID)
     finally:
         await db.close()
 
@@ -198,7 +199,7 @@ async def test_orders_stage_is_not_inserted_twice_on_a_second_upgrade_attempt(
     try:
         from mail_verdict.pipeline.revisions import insert_orders_stage
 
-        current = await PipelineRevisionRepository(db).current()
+        current = await PipelineRevisionRepository(db).current(OWNER_USER_ID)
         assert current is not None
         stages = [
             {
@@ -260,7 +261,7 @@ async def test_heal_repairs_a_current_revision_already_double_encoded(
 
     db = await _connect(db_at_previous)
     try:
-        current = await PipelineRevisionRepository(db).current()
+        current = await PipelineRevisionRepository(db).current(OWNER_USER_ID)
     finally:
         await db.close()
 

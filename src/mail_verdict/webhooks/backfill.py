@@ -102,7 +102,8 @@ def find_webhook(
 
 async def backfill_webhook(
     db: DatabaseConnection, stages: tuple[StageDefinition, ...], name: str, *,
-    since: datetime, until: datetime | None, limit: int, dry_run: bool,
+    account_ids: frozenset[uuid.UUID], since: datetime, until: datetime | None, limit: int,
+    dry_run: bool,
     after: BackfillCursor | None = None,
 ) -> BackfillResult:
     """
@@ -112,6 +113,8 @@ async def backfill_webhook(
         db: Database connection
         stages: The current pipeline definition's stages
         name: The webhook action's name
+        account_ids: The accounts of the document's owner -- the rule never
+            reaches mail beyond them, whatever its own `accounts` say
         since: Only mail received at or after this
         until: Only mail received before this, or None for no upper bound
         limit: Most candidate messages to look at in this call
@@ -139,8 +142,8 @@ async def backfill_webhook(
         )
     if until is not None:
         stmt = stmt.where(Message.received_at < until)
-    if stage.accounts:
-        stmt = stmt.where(Message.account_id.in_(list(stage.accounts)))
+    allowed = account_ids & set(stage.accounts) if stage.accounts else account_ids
+    stmt = stmt.where(Message.account_id.in_(allowed))
 
     async with db.session() as session:
         fetched = list((await session.execute(stmt)).all())

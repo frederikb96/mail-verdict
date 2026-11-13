@@ -220,24 +220,35 @@ Two built-in stage types today: `match` (a rule, generalised — the same condit
 effect and nothing else — it does not move mail). "Spam moves to Junk" is an ordinary `match`
 stage composed on top of `classify`'s output, not a side effect hidden inside the classifier.
 
-`api/pipeline.py` is how the definition is edited — inserting into `pipeline_revisions` by hand is
-not the intended path. `GET`/`PUT /api/pipeline` read and replace the whole document (`PUT`
+Every user has their own definition, and a mail runs its account owner's alone: the runner looks
+up the owner of the message's account and loads that user's current revision, so one user's rules
+never touch another's mail. A user who has none yet is given the starting document
+(`pipeline/template.py`: classify, move spam to Junk and mark it read, bundle orders) the first
+time anything reads it. `pipeline_revisions` keeps one append-only history per user under one
+serial revision number; a `base_revision` is compared with its author's own latest.
+
+`api/pipeline.py` is how the caller's own definition is edited — inserting into
+`pipeline_revisions` by hand is not the intended path. `GET`/`PUT /api/pipeline` read and replace the whole document (`PUT`
 optionally carrying `base_revision` for optimistic concurrency, so an agent and the UI editing at
 once get a `409` rather than one silently clobbering the other), `POST`/`PATCH`/`DELETE
 /api/pipeline/stages` and `.../reorder` operate on one stage at a time, and `GET
 /api/pipeline/stage-types` returns each registered type's JSON schema — generated from the same
 Pydantic model `pipeline/registry.py` validates a write against, so it cannot drift from what
 actually gets accepted. Validation itself splits in two: an unknown stage type, unknown effect,
-unknown condition type or duplicate stage name can never become valid later and are rejected
-outright; an unresolved folder reference is accepted, since folders appear asynchronously as
+unknown condition type, duplicate stage name, a stage naming an account its author does not own
+(`foreign_account`) or a `webhook` effect from a non-admin (`effect_not_allowed`) can never become
+valid later and are rejected outright; an unresolved folder reference is accepted, since folders appear asynchronously as
 PostIMAP discovers them, and is reported instead as a warning on every document response and
 through `GET /api/pipeline/health`. `POST /api/pipeline/test` (and `.../stages/:id/test`) dry-run
 the definition, or one stage of it, against an existing message with nothing applied — the same
 path `pipeline/runner.py`'s `dry_run`/`dry_run_stage` expose for that purpose alone, never
-registered with the queue manager.
+registered with the queue manager; the message must be on one of the caller's accounts. An admin
+sees every user's document only as counts (`GET /api/admin/pipeline/overview`: revision, whether it
+is enabled, how many stages, failed runs) — no rule, condition, folder name or mail.
 
 The rule assistant (`rules/assistant.py`, `POST /api/pipeline/assistant`) proposes one change to
-this document from a sentence about an open mail, and stores nothing: accepting is an ordinary
+the caller's document from a sentence about an open mail on one of their accounts, listing only
+their accounts to the model, and stores nothing: accepting is an ordinary
 whole-document write carrying the `base_revision` the proposal was computed against. It is a fixed
 two-step exchange over the same `ModelGateway` the stages use, with the `ai` model settings and a
 circuit breaker of its own. The first step makes the model name the searches it wants over the
@@ -1090,7 +1101,9 @@ concurrent delivery by default) makes the request.
   received since a date, in every folder but Drafts, Trash and Junk (unlike a live pass, Archive and Sent are included; the glacier is not scanned), and queues the matches behind live mail, ordered by received time. A call looks at most `limit` messages
   and returns a cursor to continue after the last one.
 - **Reach.** The URL is whatever the rule says, so a request goes wherever the server can reach;
-  whoever may edit the rules decides where the server sends requests.
+  only an admin may write a `webhook` effect, so only an admin decides where the server sends
+  requests. The retry and backfill routes read the webhook from the caller's own document, and a
+  backfill reaches only the caller's accounts, whatever the rule's own `accounts` say.
 
 ## Configuration and settings
 

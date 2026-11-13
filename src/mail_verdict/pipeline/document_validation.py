@@ -12,6 +12,12 @@ resolve is a different kind of problem entirely and is never rejected
 here -- see pipeline/health.py, which is where it belongs: folders
 appear asynchronously, so a stage referencing one that does not exist
 yet may still be correct.
+
+A document is its author's own, so validation also holds it to what the
+author may do: a stage names only accounts the author owns
+(`foreign_account`), and only an admin writes a `webhook` effect
+(`effect_not_allowed`) -- a webhook sends mail content to a URL, and may
+carry stored secrets in its headers.
 """
 
 from __future__ import annotations
@@ -19,9 +25,13 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from mail_verdict.auth.scope import Scope
 from mail_verdict.pipeline.contracts import StageDefinition, StageMisconfigured
 from mail_verdict.pipeline.registry import build_stage
 from mail_verdict.rules.conditions import COMPOSITE_CONDITION_KEYS, KNOWN_CONDITION_TYPES
+
+# Effect kinds only an admin may put in a document.
+ADMIN_ONLY_EFFECTS = frozenset({"webhook"})
 
 
 class DocumentValidationError(ValueError):
@@ -32,13 +42,15 @@ class DocumentValidationError(ValueError):
         self.problems = problems
 
 
-def validate_document(document: dict[str, Any]) -> list[StageDefinition]:
+def validate_document(document: dict[str, Any], *, scope: Scope) -> list[StageDefinition]:
     """
     Hard-validate a raw pipeline document (`{"enabled": bool, "stages":
     [...]}`) and return its parsed stage definitions.
 
     Args:
         document: The document as the API received it
+        scope: The author -- whose accounts a stage may name, and whether
+            admin-only effects are allowed
 
     Returns:
         Parsed, individually construction-checked stage definitions, in
@@ -80,6 +92,14 @@ def validate_document(document: dict[str, Any]) -> list[StageDefinition]:
             problems.append(f"stage {stage_id!r}: 'accounts' must be a list of UUIDs")
             continue
 
+        foreign = [a for a in accounts or () if not scope.owns_account(a)]
+        if foreign:
+            problems.append(
+                f"stage {stage_id!r}: foreign_account -- 'accounts' names "
+                f"{len(foreign)} account(s) that are not yours"
+            )
+            continue
+
         definition = StageDefinition(
             stage_id=stage_id, type=stage_type, name=str(raw.get("name") or stage_id),
             config=raw.get("config", {}) or {}, enabled=bool(raw.get("enabled", True)),
@@ -92,6 +112,8 @@ def validate_document(document: dict[str, Any]) -> list[StageDefinition]:
             problems.append(str(exc))
             continue
 
+        problems.extend(_validate_effect_rights(definition, scope=scope))
+
         when = definition.config.get("when") if isinstance(definition.config, dict) else None
         if when:
             problems.extend(_validate_condition_tree(when, stage_id=stage_id))
@@ -101,6 +123,24 @@ def validate_document(document: dict[str, Any]) -> list[StageDefinition]:
     if problems:
         raise DocumentValidationError(problems)
     return definitions
+
+
+def _validate_effect_rights(definition: StageDefinition, *, scope: Scope) -> list[str]:
+    """Reject the effect kinds the author may not write. build_stage has
+    already accepted the config, so every effect is a one-key object."""
+    if scope.is_admin or not isinstance(definition.config, dict):
+        return []
+    kinds = {
+        kind
+        for effect in definition.config.get("effects", [])
+        if isinstance(effect, dict)
+        for kind in effect
+    }
+    return [
+        f"stage {definition.stage_id!r}: effect_not_allowed -- only an administrator may use "
+        f"the {kind!r} effect"
+        for kind in sorted(kinds & ADMIN_ONLY_EFFECTS)
+    ]
 
 
 def _validate_condition_tree(condition: Any, *, stage_id: str) -> list[str]:

@@ -1,7 +1,7 @@
 """
-The "Add rule" assistant: one sentence from the owner about the mail he has
-open becomes one proposed change to his rules, which he accepts or
-declines. Nothing is stored -- Accept is the client replacing the pipeline
+The "Add rule" assistant: one sentence from a user about the mail they have
+open becomes one proposed change to their own rules, which they accept or
+decline. Nothing is stored -- Accept is the client replacing the pipeline
 document with the proposed one, carrying the `base_revision` the proposal
 was computed against.
 
@@ -52,6 +52,8 @@ from mail_verdict.api.schemas import (
     RuleAssistantRuleChange,
     StageOut,
 )
+from mail_verdict.auth.ownership import account_display_name
+from mail_verdict.auth.scope import Scope
 from mail_verdict.core.line_diff import line_diff
 from mail_verdict.core.prompts import escape_delimiter_breakout, render_prompt
 from mail_verdict.core.retry import RetryConfig
@@ -76,6 +78,7 @@ from mail_verdict.pipeline.revisions import (
     definition_to_document,
 )
 from mail_verdict.pipeline.stages.match import matches_message
+from mail_verdict.pipeline.template import current_or_template
 from mail_verdict.rules.conditions import render_condition_syntax
 
 if TYPE_CHECKING:
@@ -198,6 +201,7 @@ class _Candidate:
 class _Scene:
     """Everything one request reads from the database, loaded once."""
 
+    scope: Scope
     view: MessageView
     verdict: VerdictView | None
     definition: PipelineDefinition
@@ -523,7 +527,9 @@ async def _validate(
             )
 
     try:
-        definitions = validate_document({"enabled": scene.definition.enabled, "stages": stages})
+        definitions = validate_document(
+            {"enabled": scene.definition.enabled, "stages": stages}, scope=scene.scope,
+        )
     except DocumentValidationError as exc:
         raise _Rejected("; ".join(exc.problems)) from None
 
@@ -690,12 +696,13 @@ class _Model:
 
 
 async def _load_scene(
-    db: DatabaseConnection, message_id: uuid.UUID,
+    db: DatabaseConnection, scope: Scope, message_id: uuid.UUID,
 ) -> _Scene:
     async with db.session() as session:
         view = await load_message_view(session, message_id)
         if view is None:
             raise AssistantMessageNotFound(str(message_id))
+        scope.require_account(view.account_id)
         folder_rows = (
             await session.execute(
                 select(Folder.id, Folder.imap_name).where(
@@ -706,17 +713,17 @@ async def _load_scene(
         control = await _load_control(session, view.account_id)
 
     verdict = await current_verdict_for_mail(db, message_id)
-    definition = await PipelineRevisionRepository(db).current() or PipelineDefinition(
-        revision=0, enabled=True, stages=(),
-    )
+    definition = await current_or_template(PipelineRevisionRepository(db), scope.require_user())
     stages = cast(
         "list[dict[str, Any]]", copy.deepcopy(definition_to_document(definition)["stages"]),
     )
     accounts = [
-        {"id": str(a.id), "name": a.name} for a in await AccountRepository(db).get_all()
+        {"id": str(a.id), "name": account_display_name(a.name)}
+        for a in await AccountRepository(db).get_all()
+        if scope.owns_account(a.id)
     ]
     return _Scene(
-        view=view, verdict=verdict, definition=definition, stages=stages,
+        scope=scope, view=view, verdict=verdict, definition=definition, stages=stages,
         accounts=accounts, folder_names={row.id: row.imap_name for row in folder_rows},
         control=control,
     )
@@ -817,6 +824,7 @@ async def propose(
     db: DatabaseConnection,
     settings_service: SettingsService,
     cred_repo: ProviderCredentialRepository,
+    scope: Scope,
     message_id: uuid.UUID,
     prompt: str,
     is_disconnected: Callable[[], Awaitable[bool]],
@@ -828,8 +836,10 @@ async def propose(
         db: Database connection
         settings_service: Source of the `ai` model settings
         cred_repo: Provider credentials
-        message_id: The mail the owner has open
-        prompt: The owner's sentence, already stripped
+        scope: The caller -- whose document is changed, and whose accounts
+            the mail and the sample around it come from
+        message_id: The mail the caller has open
+        prompt: The caller's sentence, already stripped
         is_disconnected: Polled before every model call; True ends the
             work quietly, since nobody will read the answer
 
@@ -839,9 +849,10 @@ async def propose(
 
     Raises:
         AssistantMessageNotFound: no such mirrored message
+        ScopeDenied: the message is on someone else's account
         StageUnavailable | StageThrottled | StageTransient: the model call failed
     """
-    scene = await _load_scene(db, message_id)
+    scene = await _load_scene(db, scope, message_id)
     matched_today = [
         s["stage_id"] for s in scene.stages
         if s.get("enabled", True) and stage_matches(s, scene.view, scene.verdict)
