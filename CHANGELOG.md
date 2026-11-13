@@ -63,6 +63,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Alerts, the badge, push devices and the live event stream are per user. Each person lists,
+  counts, looks up and dismisses only the alerts of their own accounts; an alert follows its
+  account when an admin gives it to someone else, and an AI provider outage is an alert for
+  admins only. A push device belongs to whoever registered it last, is pushed only that user's
+  alerts, and carries that user's badge; a device of someone else's is `403`. `GET /api/events`
+  carries only the caller's own events, live and when replaying from `Last-Event-ID`; an open
+  stream picks up an account added, deleted or given away without reconnecting, and
+  `?account_id=` naming someone else's account narrows to none. How long a new-mail alert waits
+  for the rules (`mail.notify_wait_seconds`) is the account owner's own setting.
+- Native pushes name the app they are for (`push.relay_app`, `mailverdict`), as the shared push
+  relay at `https://push.frederikberg.net` requires; `push.apns_relay_urls` lists it beside the
+  previous address, which reaches the same relay.
 - Admin → Processing shows the queues as compact tiles (pause, worker count and circuit reset in a
   menu), failed runs, each user's rule set as counts, and the live tail; the shared stage list is
   gone, since every user edits their own rules on the Rules page. Failures and the tail wrap on a

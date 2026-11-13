@@ -11330,7 +11330,7 @@
     },
     "/admin/accounts/{account_id}/owner": {
       "put": {
-        "description": "Give a mail account to another user. Its stored name moves into the\nnew owner's namespace in the same transaction; 409 if they already have\nan account by that name. Its orders follow (orders/ownership.py).",
+        "description": "Give a mail account to another user. Its stored name moves into the\nnew owner's namespace in the same transaction; 409 if they already have\nan account by that name. Its orders (orders/ownership.py) and its alerts\n(alerts/audience.py) follow.",
         "operationId": "set_owner_admin_accounts__account_id__owner_put",
         "parameters": [
           {
@@ -11610,7 +11610,7 @@
     },
     "/alerts": {
       "get": {
-        "description": "The durable alert list, newest first -- not account-scoped, the\nsame as the SSE stream itself: an installed application watches every\naccount from one page. \"Which folders alert\" is scoped the same way\nfor this list as it already is for the SSE and push paths: the\ncaller passes its own effective folder scope (use-push.ts's\nuseEffectiveAlertFolderIds) rather than the server guessing at one.",
+        "description": "The caller's durable alert list, newest first -- every account of\ntheirs at once, the same as their SSE stream: an installed application\nwatches every account from one page. \"Which folders alert\" is scoped the same way\nfor this list as it already is for the SSE and push paths: the\ncaller passes its own effective folder scope (use-push.ts's\nuseEffectiveAlertFolderIds) rather than the server guessing at one.",
         "operationId": "list_alerts_alerts_get",
         "parameters": [
           {
@@ -11696,7 +11696,7 @@
     },
     "/alerts/badge": {
       "get": {
-        "description": "The notification badge -- alerts/badge.py decides what it counts.",
+        "description": "The caller's notification badge -- alerts/badge.py decides what it\ncounts. A subscription_id must be one of the caller's devices.",
         "operationId": "get_badge_alerts_badge_get",
         "parameters": [
           {
@@ -11775,7 +11775,7 @@
     },
     "/alerts/dismiss-all": {
       "post": {
-        "description": "Dismiss every currently-undismissed alert, or only those of the\ngiven kinds -- the bell dismisses its Mail and System tabs apart.",
+        "description": "Dismiss every currently-undismissed alert of the caller's, or only\nthose of the given kinds -- the bell dismisses its Mail and System tabs\napart.",
         "operationId": "dismiss_all_alerts_alerts_dismiss_all_post",
         "parameters": [
           {
@@ -11815,7 +11815,7 @@
     },
     "/alerts/lookup": {
       "post": {
-        "description": "The alerts among these ids that still exist, dismissed or not -- a\ndevice drops a shown notification that is missing or dismissed here.",
+        "description": "The caller's alerts among these ids that still exist, dismissed or\nnot -- a device drops a shown notification that is missing or\ndismissed here.",
         "operationId": "lookup_alerts_alerts_lookup_post",
         "requestBody": {
           "content": {
@@ -11883,7 +11883,7 @@
     },
     "/alerts/subscriptions": {
       "get": {
-        "description": "Every registered device -- the Settings page's own device list.",
+        "description": "The caller's registered devices -- the Settings page's own device list.",
         "operationId": "list_push_subscriptions_alerts_subscriptions_get",
         "responses": {
           "200": {
@@ -11907,7 +11907,7 @@
         ]
       },
       "post": {
-        "description": "Register this device, or refresh it if `endpoint` is already\nregistered (see PushSubscriptionRepository.upsert).",
+        "description": "Register this device for the caller, or refresh it if `endpoint` is\nalready registered (see PushSubscriptionRepository.upsert).",
         "operationId": "register_push_subscription_alerts_subscriptions_post",
         "requestBody": {
           "content": {
@@ -11949,7 +11949,7 @@
     },
     "/alerts/subscriptions/native": {
       "post": {
-        "description": "Register a native device, or refresh the one registered under this\ninstallation_id (see PushSubscriptionRepository.upsert_native). 400 if\nrelay_url is not one push.apns_relay_urls allows, 503 if native push\nis unavailable here.",
+        "description": "Register a native device for the caller, or refresh the one\nregistered under this installation_id (see PushSubscriptionRepository.upsert_native). 400 if\nrelay_url is not one push.apns_relay_urls allows, 503 if native push\nis unavailable here.",
         "operationId": "register_native_subscription_alerts_subscriptions_native_post",
         "requestBody": {
           "content": {
@@ -11991,7 +11991,7 @@
     },
     "/alerts/subscriptions/{subscription_id}": {
       "delete": {
-        "description": "Unregister a device -- the browser's own unsubscribe, or removing\nanother device from the list.",
+        "description": "Unregister one of the caller's devices -- the browser's own\nunsubscribe, or removing another device from the list. Idempotent: a\ndevice already gone is not an error.",
         "operationId": "delete_push_subscription_alerts_subscriptions__subscription_id__delete",
         "parameters": [
           {
@@ -12080,7 +12080,7 @@
     },
     "/alerts/subscriptions/{subscription_id}/test": {
       "post": {
-        "description": "Send \"Notifications are working\" to one device through its own\ntransport, without creating an alert. 404 if the device is unknown,\n503 if its transport is unavailable here, 410 if the push service or\nrelay says the device is gone (its row is removed), 502 if the send\nwas refused for any other reason.",
+        "description": "Send \"Notifications are working\" to one of the caller's devices\nthrough its own transport, without creating an alert. 404 if the device\nis unknown, 503 if its transport is unavailable here, 410 if the push\nservice or relay says the device is gone (its row is removed), 502 if\nthe send was refused for any other reason.",
         "operationId": "send_test_push_alerts_subscriptions__subscription_id__test_post",
         "parameters": [
           {
@@ -12197,7 +12197,7 @@
     },
     "/alerts/{alert_id}/dismiss": {
       "post": {
-        "description": "Dismiss one alert. Idempotent -- see AlertRepository.dismiss.",
+        "description": "Dismiss one of the caller's alerts. Idempotent -- see\nAlertRepository.dismiss; an alert that is not theirs is left alone.",
         "operationId": "dismiss_alert_alerts__alert_id__dismiss_post",
         "parameters": [
           {

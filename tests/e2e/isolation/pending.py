@@ -12,25 +12,8 @@ defining the endpoint.
 from __future__ import annotations
 
 PENDING_ROUTES: frozenset[str] = frozenset({
-    # api/alerts.py
-    "GET /api/alerts",
-    "GET /api/alerts/badge",
-    "POST /api/alerts/dismiss-all",
-    "POST /api/alerts/lookup",
-    "GET /api/alerts/native-push",
-    "GET /api/alerts/subscriptions",
-    "POST /api/alerts/subscriptions",
-    "POST /api/alerts/subscriptions/native",
-    "DELETE /api/alerts/subscriptions/{subscription_id}",
-    "PATCH /api/alerts/subscriptions/{subscription_id}",
-    "POST /api/alerts/subscriptions/{subscription_id}/test",
-    "GET /api/alerts/unseen-count",
-    "GET /api/alerts/vapid-public-key",
-    "POST /api/alerts/{alert_id}/dismiss",
     # api/embeddings.py
     "GET /api/embeddings/search",
-    # api/events.py
-    "GET /api/events",
     # api/search.py
     "GET /api/search",
     # api/unified.py

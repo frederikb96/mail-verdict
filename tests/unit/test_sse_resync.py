@@ -9,6 +9,8 @@ import pytest
 import mail_verdict.api.events as events_module
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.events import _sse_generator
+from tests.helpers.auth import user_scope
+from tests.helpers.sse import fixed_keys, streaming_as
 
 
 class _DisconnectedRequest:
@@ -37,15 +39,17 @@ class TestSSEReconnectGap:
         for i in range(5):
             await ring.add(account_id, "mail.new", {"n": i})
 
+        # The id just before the oldest kept one was evicted, so a client
+        # that last saw the id before that has missed it for good.
         oldest_id_in_ring = ring._rings[str(account_id)][0]["id"]
-        stale_last_event_id = oldest_id_in_ring - 1
-        assert not ring.has_events_after(stale_last_event_id, str(account_id))
+        stale_last_event_id = oldest_id_in_ring - 2
+        assert not ring.has_events_after(stale_last_event_id, {str(account_id)})
 
         messages = [
             chunk
             async for chunk in _sse_generator(
                 ring,
-                str(account_id),
+                fixed_keys(str(account_id)),
                 stale_last_event_id,
                 _DisconnectedRequest(),
             )
@@ -67,7 +71,7 @@ class TestSSEReconnectGap:
             chunk
             async for chunk in _sse_generator(
                 ring,
-                str(account_id),
+                fixed_keys(str(account_id)),
                 first_id,
                 _DisconnectedRequest(),
             )
@@ -102,7 +106,8 @@ class TestSSEEventIdsNameTheirRing:
         ring = EventRing()  # a freshly started process, nothing emitted yet
 
         messages = [
-            chunk async for chunk in _sse_generator(ring, None, 5000, _DisconnectedRequest())
+            chunk
+            async for chunk in _sse_generator(ring, fixed_keys(), 5000, _DisconnectedRequest())
         ]
 
         assert messages, "the reconnect was answered with nothing at all"
@@ -121,7 +126,8 @@ class TestSSEEventIdsNameTheirRing:
         monkeypatch.setattr(events_module, "_event_ring", ring)
 
         request = _StubRequest({"Last-Event-ID": previous_process.format_event_id(1)})
-        response = await events_module.sse_endpoint(request)  # type: ignore[arg-type]
+        with streaming_as(monkeypatch, user_scope(uuid.uuid4(), [account_id])):
+            response = await events_module.sse_endpoint(request)  # type: ignore[arg-type]
         chunks = [chunk async for chunk in response.body_iterator]  # type: ignore[attr-defined]
 
         assert chunks[0] == events_module.STREAM_PREAMBLE
@@ -134,11 +140,14 @@ class TestSSEEventIdsNameTheirRing:
         first_id = await ring.add(account_id, "mail.new", {"n": 0})
         await ring.add(account_id, "mail.new", {"n": 1})
 
-        fresh = [chunk async for chunk in _sse_generator(ring, None, None, _DisconnectedRequest())]
+        fresh = [
+            chunk
+            async for chunk in _sse_generator(ring, fixed_keys(), None, _DisconnectedRequest())
+        ]
         replayed = [
             chunk
             async for chunk in _sse_generator(
-                ring, str(account_id), first_id, _DisconnectedRequest()
+                ring, fixed_keys(str(account_id)), first_id, _DisconnectedRequest()
             )
         ]
 
@@ -171,7 +180,8 @@ class TestSSEStreamPreamble:
         monkeypatch.setattr(events_module, "_event_ring", ring)
 
         request = _StubRequest({"Last-Event-ID": ring.format_event_id(last_id)})
-        response = await events_module.sse_endpoint(request)  # type: ignore[arg-type]
+        with streaming_as(monkeypatch, user_scope(uuid.uuid4(), [account_id])):
+            response = await events_module.sse_endpoint(request)  # type: ignore[arg-type]
         chunks = [chunk async for chunk in response.body_iterator]  # type: ignore[attr-defined]
 
         assert chunks, "the stream sent nothing"

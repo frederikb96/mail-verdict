@@ -78,10 +78,21 @@ accounts and the outbox. Each payload carries the row's identity, which columns 
 postimap_events ──► listener ──► EventRing ──► SSE ──► browser
 ```
 
-The EventRing is an in-memory ring buffer per account with monotonic ids, so a browser that
+The EventRing is an in-memory ring buffer per key with monotonic ids, so a browser that
 reconnects replays what it missed via `Last-Event-ID` rather than refetching everything. Ids
 restart with every process, so each one carries the ring's own random epoch; an id from another
 process is answered with a resync rather than replayed from.
+
+Every event goes on exactly one key: a mail or DAV account for what happens to its mail and
+calendars, a user for what is theirs without an account (orders, alerts, their pipeline document,
+their account order), `admin` for what only admins see, and `everyone` for an event that carries
+nothing of anyone's (a resync, a bare "this settings category changed"). A stream reads the keys
+of its caller's `Scope` (`Scope.ring_keys()`) and no others, live and on replay; the gap check
+before a replay counts only those keys' rings. `?account_id=` narrows the account keys to that one
+account if it is the caller's, leaving their user, admin and everyone keys. A stream resolves its
+keys again whenever an account changes owner — `auth/ownership.py` announces each committed
+change — so an account added, deleted or given away mid-stream starts or stops reaching it at
+once rather than at the next reconnect.
 
 Two deliberate details:
 
@@ -745,6 +756,15 @@ fires-exactly-once mechanism, the same `ON CONFLICT DO NOTHING` discipline `Verd
 the SSE ring is what lets an open page raise a browser notification and refresh its own list
 without polling.
 
+Every alert is one user's. One about an account's mail, a send, a webhook or the glacier carries
+its account's owner in `user_id`, stamped from `account_owners` by the statement that writes it,
+and moves with the account when an admin gives it to someone else; one about the instance itself
+(`provider_unavailable`) has neither account nor user and is the admins'. An alert of an account
+with no owner reaches nobody. `alerts/audience.py` names that audience the way the event stream
+names its keys, and every path addresses it the same way: the list, counts, lookup and dismissal
+read only the caller's alerts (`alert_visible_to`), `alert.new` and `alert.dismissed` go on the
+owner's key, and a push goes only to the owner's devices.
+
 One row is both the dispatch queue a periodic pass claims from and, once delivered, the durable
 record a bell reads back — `delivered_at` distinguishes the two states, and `idx_alerts_due` is
 what that pass's claim query scans. A message no `pipeline_runs` row will ever exist for --
@@ -756,7 +776,7 @@ role, so waiting for a run that can never exist means waiting out the bound ever
 else is inserted with `delivered_at` left `NULL` and
 `folder_id` holding the arrival folder as a placeholder only; `alerts/dispatch.py`'s periodic pass
 delivers it once that message's pipeline run reaches a terminal status, once the message can no
-longer reach one, or once a bounded wait (`settings.mail.notify_wait_seconds`) expires, overwriting
+longer reach one, or once a bounded wait (the owner's `settings.mail.notify_wait_seconds`) expires, overwriting
 `folder_id` with wherever the message actually is by then. That is what keeps a message a rule
 files elsewhere from announcing itself against the folder it merely arrived in.
 
@@ -766,9 +786,10 @@ header, is read. The header half is what follows a move made in another client, 
 mirrors as an expunge plus a fresh row. It is checked on every message insert and read-state
 event, before an immediate alert is announced, before a staged one is delivered, and by the
 periodic read-state pass below as the net for a lost event. What a badge counts is decided in one
-place too, server-side in `alerts/badge.py`: system notifications always — a failed write on any
-account, inactive ones included, and every alert kind that is not new mail — and new-mail alerts
-only while `settings.mail.bell_badge_counts_new_mail` is on, scoped to the device's folders. The web
+place too, server-side in `alerts/badge.py`, all of it the device user's own: system notifications
+always — a failed write on any of their accounts, inactive ones included, and every alert kind that
+is not new mail — and new-mail alerts only while their `settings.mail.bell_badge_counts_new_mail`
+is on, scoped to the device's folders. The web
 bell reads it from `GET /api/alerts/badge` and every native push carries it, so a phone asleep and a
 browser open show the same number. `ui/src/lib/bell-badge.ts` decides which kinds the bell lists
 under Mail and which under System.
@@ -779,7 +800,8 @@ path inserts one. Building that delivery path is future work, not a column left 
 
 Reaching a device with no page open at all is Web Push, layered on top of the mail alert path
 rather than replacing it: `push_subscriptions` (one row per browser, carrying that browser's own
-per-device preferences) and `vapid_keypair`, this server's signing identity.
+per-device preferences, and the user who registered it last) and `vapid_keypair`, this server's
+signing identity.
 The keypair is generated the first time it is asked for rather than provisioned — nothing seeds
 it, and no chart value or environment variable carries it — with the private key encrypted the
 same way a provider API key is (`core/encryption.py`, gated on `ENCRYPTION_KEY` exactly like a
@@ -794,7 +816,9 @@ The iPhone app is a second transport on the same table: a `push_subscriptions` r
 `transport = 'apns'`, so every rule above — folder scope, staging, exactly-once, resolution —
 applies to it unchanged. Only the app's publisher can sign pushes for the app, so a server never
 talks to Apple itself; it goes through a stateless push relay
-([`mail-verdict-ios/relay`](https://github.com/frederikberg/mail-verdict-ios/blob/main/relay/README.md)).
+([`push-relay`](https://github.com/frederikberg/push-relay/blob/main/docs/api.md)), which serves
+several apps: every push names this one (`push.relay_app`), and the relay refuses a ticket a device
+registered for another.
 
 ```
 phone ──register──► relay ──ticket──► phone ──ticket + content key──► this server
@@ -807,15 +831,15 @@ this server ──sealed envelope + ticket──► relay ──► APNs ──�
   under `ENCRYPTION_KEY`, never returned, and refreshed by the app at least daily.
 - **Sending.** `push/send.py` branches per row: a browser gets Web Push, a phone gets an envelope
   (`push/envelope.py`) sealed with its content key, posted to its relay by `push/relay.py`. The
-  envelope carries the alert, the device's badge and the ids of mail alerts resolved in the last
-  day, so the phone withdraws those banners. The relay forwards ciphertext; it never sees subject,
+  envelope carries the alert, the badge of the device's user and the ids of their mail alerts
+  resolved in the last day, so the phone withdraws those banners. The relay forwards ciphertext; it never sees subject,
   sender or account. `401`/`410` from the relay delete the row, anything else stamps `failed_at`.
 - **Channels.** `muted_channels` (`mail`, `system`, see `push/channels.py`) is a per-device
   opt-out, filtered in `list_for_alert` alongside the folder scope.
 - **Clearing.** A phone learns that mail was read elsewhere three ways: on opening the app
   (`POST /api/alerts/lookup` for the notifications it still shows), in the `resolved` list of the
-  next push, and through a silent push that `announce_alerts_dismissed` schedules to every phone,
-  at most once per `push.read_sync_min_interval_seconds`.
+  next push, and through a silent push that `announce_alerts_dismissed` schedules to every phone of
+  the alerts' owner, at most once per `push.read_sync_min_interval_seconds` for each owner.
 - **Opting out.** Only relays listed in `push.apns_relay_urls` are registered against or sent to;
   an empty list turns native push off entirely.
 

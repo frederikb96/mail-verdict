@@ -131,8 +131,14 @@ mail_actions:
 # Needs security.encryption_key, which protects the stored relay tickets.
 push:
   # Relays a native app may register this server against. An empty list
-  # disables native push and stops every send to a relay.
-  apns_relay_urls: ["https://mailverdict-push.frederikberg.net"]
+  # disables native push and stops every send to a relay. Both addresses
+  # reach the same relay; apps built against either keep working.
+  apns_relay_urls:
+    - "https://push.frederikberg.net"
+    - "https://mailverdict-push.frederikberg.net"
+  # The app name every push names at the relay. A relay serves several apps
+  # and refuses a ticket a device registered for a different one.
+  relay_app: "mailverdict"
   # Minimum gap between two silent "something was read" pushes to phones;
   # a change inside the gap is sent once at its end.
   read_sync_min_interval_seconds: 600

@@ -19,10 +19,9 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from mail_verdict.api.deps import current_scope
-from mail_verdict.api.events import broadcast_event, get_event_ring
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import AccountOrderResponse, AccountOrderUpdate
 from mail_verdict.auth.scope import Scope
-from mail_verdict.database.connection import get_db_connection
 from mail_verdict.settings import get_settings_service
 
 logger = logging.getLogger(__name__)
@@ -76,9 +75,10 @@ async def set_account_order(
     )
 
     # Reuses account.changed since the client already invalidates the
-    # account list cache on it.
+    # account list cache on it; the order is the caller's, so only their
+    # streams hear it.
     event_ring = get_event_ring()
     if event_ring is not None:
-        await broadcast_event(get_db_connection(), event_ring, "account.changed", {})
+        await event_ring.add(scope.require_user(), "account.changed", {})
 
     return AccountOrderResponse(order=[uuid.UUID(item) for item in order])

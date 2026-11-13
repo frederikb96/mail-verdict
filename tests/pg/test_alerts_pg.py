@@ -11,33 +11,45 @@ from __future__ import annotations
 import asyncio
 import itertools
 import uuid
+from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select, text
 
+from mail_verdict.alerts.audience import reassign_account_alerts
 from mail_verdict.alerts.dispatch import (
     _finalize_pending_mail_alerts_once,
     create_mail_alert_for_arrival,
 )
+from mail_verdict.alerts.resolve import announce_alerts_dismissed
 from mail_verdict.api.event_ring import EventRing
+from mail_verdict.auth.principal import OWNER_USER_ID
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Alert
 from mail_verdict.database.repository import AlertRepository, PushSubscriptionRepository
 from mail_verdict.postimap.actions import move_message
 from mail_verdict.push.vapid import VapidKeyRepository
 from mail_verdict.settings.service import SettingsService
+from tests.helpers.auth import owner_scope, user_scope
+from tests.helpers.pipeline_pg import insert_user, own_account
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
+
+# The instance owner, who owns every account _seed_account_two_folders adds.
+_OWNER = owner_scope()
 
 _imap_uid_counter = itertools.count(1)
 
 
 async def _settings(db: DatabaseConnection, **mail_overrides: object) -> SettingsService:
+    """The settings, with the instance owner's own mail settings overridden --
+    every account this module seeds is the owner's."""
     service = SettingsService(db)
     await service.load()
     if mail_overrides:
-        await service.update("mail", mail_overrides)
+        await service.update_for_user("mail", OWNER_USER_ID, mail_overrides, is_admin=True)
     return service
 
 
@@ -203,11 +215,11 @@ class TestCreateMailAlert:
         )
         assert second is None
 
-        # list_recent is deliberately not account-scoped (an installed
+        # list_recent covers every account of the owner's (an installed
         # application watches every account from one bell), so a shared
         # test database accumulates rows across tests -- filter to this
         # test's own message_id rather than asserting the whole list.
-        matching = [a for a in await repo.list_recent() if a.message_id == message_id]
+        matching = [a for a in await repo.list_recent(_OWNER) if a.message_id == message_id]
         assert len(matching) == 1
 
     @pytest.mark.asyncio
@@ -227,7 +239,7 @@ class TestCreateMailAlert:
         assert staged is not None
         assert staged.delivered_at is None
 
-        matching = [a for a in await repo.list_recent() if a.message_id == message_id]
+        matching = [a for a in await repo.list_recent(_OWNER) if a.message_id == message_id]
         assert matching == []
 
 
@@ -283,7 +295,7 @@ class TestImmediateDelivery:
         )
 
         repo = AlertRepository(migrated_db)
-        matching = [a for a in await repo.list_recent() if a.message_id == message_id]
+        matching = [a for a in await repo.list_recent(_OWNER) if a.message_id == message_id]
         assert len(matching) == 1
 
     @pytest.mark.asyncio
@@ -310,7 +322,7 @@ class TestImmediateDelivery:
             settings_service=settings_service, folder_id=junk_id,
         )
 
-        events = await ring.replay_from(seq_before, str(account_id))
+        events = await ring.replay_from(seq_before, _OWNER.ring_keys())
         alert_events = [e for e in events if e["event_type"] == "alert.new"]
         assert len(alert_events) == 1
         assert alert_events[0]["data"]["title"] == "Ping"
@@ -431,7 +443,7 @@ class TestStagedArrival:
         assert alert.folder_id == inbox_id
 
         repo = AlertRepository(migrated_db)
-        matching = [a for a in await repo.list_recent() if a.message_id == message_id]
+        matching = [a for a in await repo.list_recent(_OWNER) if a.message_id == message_id]
         assert matching == []
 
     @pytest.mark.asyncio
@@ -452,7 +464,7 @@ class TestStagedArrival:
             settings_service=settings_service, folder_id=inbox_id,
         )
 
-        events = await ring.replay_from(seq_before, str(account_id))
+        events = await ring.replay_from(seq_before, _OWNER.ring_keys())
         assert [e for e in events if e["event_type"] == "alert.new"] == []
 
     @pytest.mark.asyncio
@@ -675,7 +687,7 @@ class TestFinalizePendingMailAlerts:
         settings_service = await _settings(migrated_db, notify_wait_seconds=0.0)
         await _finalize_pending_mail_alerts_once(migrated_db, ring, None, settings_service)
 
-        events = await ring.replay_from(seq_before, str(account_id))
+        events = await ring.replay_from(seq_before, _OWNER.ring_keys())
         alert_events = [e for e in events if e["event_type"] == "alert.new"]
         assert len(alert_events) == 1
         assert alert_events[0]["data"]["folder_id"] == str(junk_id)
@@ -704,7 +716,7 @@ class TestFinalizePendingMailAlerts:
         seq_before = ring.get_latest_seq()
         await _finalize_pending_mail_alerts_once(migrated_db, ring, None, settings_service)
 
-        events = await ring.replay_from(seq_before, str(account_id))
+        events = await ring.replay_from(seq_before, _OWNER.ring_keys())
         assert [e for e in events if e["event_type"] == "alert.new"] == []
 
     @pytest.mark.asyncio
@@ -730,7 +742,8 @@ class TestFinalizePendingMailAlerts:
 
         push_repo = PushSubscriptionRepository(migrated_db)
         sub = await push_repo.upsert(
-            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+            OWNER_USER_ID, endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p",
+            auth="a", label=None,
         )
 
         called_endpoints: list[str] = []
@@ -771,13 +784,13 @@ class TestListAndDismiss:
             second = await _seed_message(session, account_id, inbox_id, subject="Two")
             await session.commit()
 
-        # unseen_count is deliberately not account-scoped (see
+        # unseen_count covers every account of the owner's (see
         # list_recent's own comment) and a shared test database
         # accumulates undismissed rows across every other test in this
         # file -- measure the delta this test itself produces, never the
         # absolute count.
         repo = AlertRepository(migrated_db)
-        baseline = await repo.unseen_count()
+        baseline = await repo.unseen_count(_OWNER)
         alert_one = await repo.create_mail_alert(
             account_id=account_id, message_id=first, msg_key="k1", title="One", body=None,
         )
@@ -786,20 +799,20 @@ class TestListAndDismiss:
         )
         assert alert_one is not None
 
-        assert await repo.unseen_count() - baseline == 2
+        assert await repo.unseen_count(_OWNER) - baseline == 2
 
-        dismissed = await repo.dismiss(alert_one.id)
+        dismissed = await repo.dismiss(_OWNER, alert_one.id)
         assert dismissed is True
-        assert await repo.unseen_count() - baseline == 1
+        assert await repo.unseen_count(_OWNER) - baseline == 1
 
         # Idempotent -- dismissing an already-dismissed alert is a no-op,
         # not an error.
-        assert await repo.dismiss(alert_one.id) is False
+        assert await repo.dismiss(_OWNER, alert_one.id) is False
 
-        after_dismiss_all = await repo.unseen_count()
-        remaining = await repo.dismiss_all()
-        assert remaining == after_dismiss_all
-        assert await repo.unseen_count() == 0
+        after_dismiss_all = await repo.unseen_count(_OWNER)
+        remaining = await repo.dismiss_all(_OWNER)
+        assert len(remaining) == after_dismiss_all
+        assert await repo.unseen_count(_OWNER) == 0
 
     @pytest.mark.asyncio
     async def test_list_recent_unseen_only_excludes_dismissed(
@@ -824,9 +837,9 @@ class TestListAndDismiss:
             msg_key=f"unseen-only-{uuid.uuid4()}", title="Unseen", body=None,
         )
         assert seen_alert is not None
-        await repo.dismiss(seen_alert.id)
+        await repo.dismiss(_OWNER, seen_alert.id)
 
-        unseen_only = await repo.list_recent(limit=200, unseen_only=True)
+        unseen_only = await repo.list_recent(_OWNER, limit=200, unseen_only=True)
         ids = {a.message_id for a in unseen_only}
         assert unseen_message in ids
         assert seen_message not in ids
@@ -850,7 +863,7 @@ class TestListAndDismiss:
                 title=f"m{i}", body=None,
             )
 
-        recent = await repo.list_recent(limit=2)
+        recent = await repo.list_recent(_OWNER, limit=2)
         assert len(recent) == 2
         # created_at ties (all inserted in the same test, possibly the
         # same microsecond) are broken by id descending -- assert on the
@@ -882,7 +895,7 @@ class TestFolderScope:
         )
 
         repo = AlertRepository(migrated_db)
-        matching = [a for a in await repo.list_recent() if a.message_id == message_id]
+        matching = [a for a in await repo.list_recent(_OWNER) if a.message_id == message_id]
         assert len(matching) == 1
         assert matching[0].folder_id == junk_id
 
@@ -897,7 +910,7 @@ class TestFolderScope:
             await session.commit()
 
         repo = AlertRepository(migrated_db)
-        baseline = await repo.unseen_count(folder_ids=[inbox_id])
+        baseline = await repo.unseen_count(_OWNER, folder_ids=[inbox_id])
         await repo.create_mail_alert(
             account_id=account_id, message_id=inbox_message, msg_key=f"scope-{uuid.uuid4()}",
             title="Inbox", body=None, folder_id=inbox_id,
@@ -907,15 +920,15 @@ class TestFolderScope:
             title="Junk", body=None, folder_id=junk_id,
         )
 
-        scoped_to_inbox = await repo.list_recent(folder_ids=[inbox_id])
+        scoped_to_inbox = await repo.list_recent(_OWNER, folder_ids=[inbox_id])
         assert inbox_message in {a.message_id for a in scoped_to_inbox}
         assert junk_message not in {a.message_id for a in scoped_to_inbox}
-        assert await repo.unseen_count(folder_ids=[inbox_id]) - baseline == 1
+        assert await repo.unseen_count(_OWNER, folder_ids=[inbox_id]) - baseline == 1
 
-        unrestricted = await repo.list_recent(folder_ids=None)
+        unrestricted = await repo.list_recent(_OWNER, folder_ids=None)
         assert {inbox_message, junk_message} <= {a.message_id for a in unrestricted}
 
-        scoped_to_nothing = await repo.list_recent(folder_ids=[])
+        scoped_to_nothing = await repo.list_recent(_OWNER, folder_ids=[])
         assert inbox_message not in {a.message_id for a in scoped_to_nothing}
         assert junk_message not in {a.message_id for a in scoped_to_nothing}
 
@@ -937,6 +950,193 @@ class TestFolderScope:
             title="No folder", body=None,
         )
 
-        scoped = await repo.list_recent(folder_ids=[uuid.uuid4()])
+        scoped = await repo.list_recent(_OWNER, folder_ids=[uuid.uuid4()])
         assert message_id in {a.message_id for a in scoped}
 
+
+
+class TestEveryAlertIsItsOwners:
+    """An alert belongs to whoever owns its account: they alone list, count,
+    look up and dismiss it, and its live announcement reaches only their
+    streams. One about the instance itself is the admins'."""
+
+    @staticmethod
+    async def _user_with_account(db: DatabaseConnection) -> tuple[Scope, uuid.UUID, uuid.UUID]:
+        user_id = await insert_user(db)
+        async with db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            await session.commit()
+        await own_account(db, account_id, user_id)
+        return user_scope(user_id, [account_id]), account_id, inbox_id
+
+    @staticmethod
+    async def _alert(
+        db: DatabaseConnection, account_id: uuid.UUID, folder_id: uuid.UUID, title: str,
+    ) -> Alert:
+        async with db.session() as session:
+            message_id = await _seed_message(session, account_id, folder_id, subject=title)
+            await session.commit()
+        alert = await AlertRepository(db).create_mail_alert(
+            account_id=account_id, message_id=message_id, msg_key=f"own-{uuid.uuid4()}",
+            title=title, body=None, folder_id=folder_id,
+        )
+        assert alert is not None
+        return alert
+
+    @pytest.mark.asyncio
+    async def test_an_alert_is_stamped_with_its_accounts_owner(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        a, account, inbox = await self._user_with_account(migrated_db)
+
+        alert = await self._alert(migrated_db, account, inbox, "Mine")
+
+        assert alert.user_id == a.user_id
+
+    @pytest.mark.asyncio
+    async def test_another_users_alert_is_never_read_counted_or_dismissed(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        a, a_account, a_inbox = await self._user_with_account(migrated_db)
+        b, b_account, b_inbox = await self._user_with_account(migrated_db)
+        repo = AlertRepository(migrated_db)
+        mine = await self._alert(migrated_db, a_account, a_inbox, "A's")
+        theirs = await self._alert(migrated_db, b_account, b_inbox, "B's")
+
+        assert [x.id for x in await repo.list_recent(a)] == [mine.id]
+        assert await repo.unseen_counts_by_kind(a) == {"mail": 1}
+        assert [x.id for x in await repo.lookup(a, [mine.id, theirs.id])] == [mine.id]
+        assert await repo.recently_resolved_mail(a, limit=10, within=timedelta(hours=1)) == []
+
+        assert await repo.dismiss(a, theirs.id) is False
+        assert await repo.dismiss_all(a) == [mine.id]
+        assert [x.id for x in await repo.list_recent(b, unseen_only=True)] == [theirs.id]
+
+    @pytest.mark.asyncio
+    async def test_alert_new_reaches_only_the_owners_streams(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        a, _a_account, _a_inbox = await self._user_with_account(migrated_db)
+        b, b_account, _b_inbox = await self._user_with_account(migrated_db)
+        async with migrated_db.session() as session:
+            junk_id = (await session.execute(
+                text("SELECT id FROM folders WHERE account_id = :a AND special_use = 'junk'"),
+                {"a": b_account},
+            )).scalar_one()
+            message_id = await _seed_message(session, b_account, junk_id, subject="B only")
+            await session.commit()
+        ring = EventRing()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, ring, account_id=b_account, message_id=message_id,
+            settings_service=await _settings(migrated_db), folder_id=junk_id,
+        )
+
+        assert await ring.replay_from(0, a.ring_keys()) == []
+        delivered = await ring.replay_from(0, b.ring_keys())
+        assert [e["data"]["title"] for e in delivered] == ["B only"]
+
+    @pytest.mark.asyncio
+    async def test_an_alert_of_an_account_without_an_owner_reaches_nobody(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, _inbox, junk_id = await _seed_account_two_folders(session)
+            await session.execute(
+                text("DELETE FROM account_owners WHERE account_id = :a"), {"a": account_id},
+            )
+            message_id = await _seed_message(session, account_id, junk_id, subject="Nobody's")
+            await session.commit()
+        ring = EventRing()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, ring, account_id=account_id, message_id=message_id,
+            settings_service=await _settings(migrated_db), folder_id=junk_id,
+        )
+
+        alert = await _alert_row(migrated_db, message_id)
+        assert alert is not None and alert.user_id is None
+        assert alert.id not in {x.id for x in await AlertRepository(migrated_db).list_recent(
+            _OWNER, limit=200,
+        )}
+        assert ring.get_latest_seq() == 0
+
+    @pytest.mark.asyncio
+    async def test_an_instance_alert_is_the_admins(self, migrated_db: DatabaseConnection) -> None:
+        a, _account, _inbox = await self._user_with_account(migrated_db)
+        repo = AlertRepository(migrated_db)
+        system = await repo.create_provider_unavailable_alert(
+            dedupe_key=f"own-provider-{uuid.uuid4()}", title="Provider down", body="b",
+        )
+        assert system is not None
+
+        assert system.id not in {x.id for x in await repo.list_recent(a, limit=200)}
+        assert await repo.dismiss(a, system.id) is False
+        assert system.id in {x.id for x in await repo.list_recent(_OWNER, limit=200)}
+
+    @pytest.mark.asyncio
+    async def test_an_accounts_alerts_follow_it_to_a_new_owner(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        a, account, inbox = await self._user_with_account(migrated_db)
+        b_id = await insert_user(migrated_db)
+        alert = await self._alert(migrated_db, account, inbox, "Moves")
+
+        async with migrated_db.session() as session:
+            await reassign_account_alerts(session, account, b_id)
+
+        repo = AlertRepository(migrated_db)
+        assert await repo.list_recent(a) == []
+        assert [x.id for x in await repo.list_recent(user_scope(b_id, [account]))] == [alert.id]
+
+    @pytest.mark.asyncio
+    async def test_dismissal_is_announced_to_the_owner_alone(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        a, _a_account, _a_inbox = await self._user_with_account(migrated_db)
+        b, b_account, b_inbox = await self._user_with_account(migrated_db)
+        theirs = await self._alert(migrated_db, b_account, b_inbox, "B's")
+        ring = EventRing()
+
+        await announce_alerts_dismissed(migrated_db, ring, [theirs.id])
+
+        assert await ring.replay_from(0, a.ring_keys()) == []
+        assert [e["event_type"] for e in await ring.replay_from(0, b.ring_keys())] == [
+            "alert.dismissed",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_bound_is_each_owners_own_wait(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """mail.notify_wait_seconds is a user setting: a staged alert waits
+        as long as its own owner asked, whatever anyone else set."""
+        impatient, i_account, i_inbox = await self._user_with_account(migrated_db)
+        patient, p_account, p_inbox = await self._user_with_account(migrated_db)
+        settings = await _settings(migrated_db)
+        await settings.update_for_user(
+            "mail", impatient.require_user(), {"notify_wait_seconds": 0.0}, is_admin=False,
+        )
+        await settings.update_for_user(
+            "mail", patient.require_user(), {"notify_wait_seconds": 3600.0}, is_admin=False,
+        )
+        staged: list[uuid.UUID] = []
+        async with migrated_db.session() as session:
+            for account, inbox in ((i_account, i_inbox), (p_account, p_inbox)):
+                await _seed_watermark(session, account_id=account, folder_id=inbox)
+                staged.append(await _seed_message(session, account, inbox))
+            await session.commit()
+        for account, inbox, message_id in (
+            (i_account, i_inbox, staged[0]), (p_account, p_inbox, staged[1]),
+        ):
+            await create_mail_alert_for_arrival(
+                migrated_db, None, account_id=account, message_id=message_id,
+                settings_service=settings, folder_id=inbox,
+            )
+
+        await _finalize_pending_mail_alerts_once(migrated_db, None, None, settings)
+
+        impatient_alert = await _alert_row(migrated_db, staged[0])
+        patient_alert = await _alert_row(migrated_db, staged[1])
+        assert impatient_alert is not None and impatient_alert.delivered_at is not None
+        assert patient_alert is not None and patient_alert.delivered_at is None

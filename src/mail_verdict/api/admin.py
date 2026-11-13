@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from mail_verdict.alerts.audience import reassign_account_alerts
 from mail_verdict.api.deps import require_admin
 from mail_verdict.api.events import get_event_ring
 from mail_verdict.auth.ownership import (
@@ -249,7 +250,8 @@ async def set_owner(
 ) -> AdminAccountResponse:
     """Give a mail account to another user. Its stored name moves into the
     new owner's namespace in the same transaction; 409 if they already have
-    an account by that name. Its orders follow (orders/ownership.py)."""
+    an account by that name. Its orders (orders/ownership.py) and its alerts
+    (alerts/audience.py) follow."""
     new_owner = request.user_id
     try:
         async with get_db_connection().session() as session:
@@ -262,6 +264,7 @@ async def set_owner(
             await update_account(session, account_id, name=name)
             await set_account_owner(session, account_id, new_owner)
             order_changes = await reassign_account(session, account_id, new_owner)
+            await reassign_account_alerts(session, account_id, new_owner)
             response = AdminAccountResponse(
                 id=account_id, name=account_display_name(name), owner_user_id=new_owner,
                 is_active=account.is_active, state=account.state,

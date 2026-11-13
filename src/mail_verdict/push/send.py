@@ -1,5 +1,5 @@
 """
-Sending an alert to every push subscription that wants it.
+Sending an alert to every push subscription of its audience that wants it.
 
 Generic over alert kind on purpose -- a mail alert (delivered immediately,
 folder-scoped), a stuck-send alert, and a future reminder alert all end
@@ -13,8 +13,8 @@ signed with this server's VAPID key (push/vapid.py): a 404 or 410 from the
 push service is its own protocol-level unsubscribe signal (RFC 8030 s7).
 A native app ("apns") is sent an envelope sealed with its own content key
 (push/envelope.py) through its push relay (push/relay.py), carrying its
-own badge (alerts/badge.py) and the mail alerts recently resolved, so the
-phone can withdraw those banners. Each transport's credential is fetched
+user's badge (alerts/badge.py) and that user's mail alerts recently
+resolved, so the phone can withdraw those banners. Each transport's credential is fetched
 only when a row of that transport is about to be sent to.
 """
 
@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 from pywebpush import WebPushException, webpush_async
 
 from mail_verdict.alerts.badge import badge_count
+from mail_verdict.auth.scope import Scope
 from mail_verdict.core.encryption import EncryptionError
 from mail_verdict.database.repository import AlertRepository, PushSubscriptionRepository
 from mail_verdict.push.envelope import MAX_RESOLVED_IDS, alert_payload, seal_payload
@@ -69,12 +70,13 @@ async def dispatch_push_for_alert(
     db: DatabaseConnection,
     vapid_repo: VapidKeyRepository,
     alert: Alert,
+    audience: str,
     *,
     folder_id: uuid.UUID | None,
     relay: RelayClient | None,
 ) -> None:
     """
-    Push `alert` to every subscription eligible for it.
+    Push `alert` to every subscription of its audience eligible for it.
 
     Never raises: an unconfigured ENCRYPTION_KEY or a subscriber's own
     outage must never affect the alert row or the in-app SSE path, both
@@ -85,27 +87,19 @@ async def dispatch_push_for_alert(
         vapid_repo: This server's VAPID identity, for browser rows
         alert: The alert to send -- already inserted and, for a "mail"
             alert, already delivered_at-stamped
+        audience: Whose devices (alerts/audience.py)
         folder_id: The message's folder, threaded through rather than
             re-queried, for a "mail" alert's per-subscription folder
             filter. Ignored for other kinds.
         relay: The relay client for native rows; None skips them
     """
     repo = PushSubscriptionRepository(db)
-    subscriptions = await repo.list_for_alert(kind=alert.kind, folder_id=folder_id)
+    subscriptions = await repo.list_for_alert(audience, kind=alert.kind, folder_id=folder_id)
     if not subscriptions:
         return
 
-    resolved: list[uuid.UUID] = []
-    if any(sub.transport == "apns" for sub in subscriptions):
-        resolved = await AlertRepository(db).recently_resolved_mail(
-            limit=MAX_RESOLVED_IDS, within=_RESOLVED_WITHIN,
-        )
-
     results = await asyncio.gather(
-        *(
-            send_to_subscription(db, vapid_repo, relay, alert, sub, resolved=resolved)
-            for sub in subscriptions
-        ),
+        *(send_to_subscription(db, vapid_repo, relay, alert, sub) for sub in subscriptions),
         return_exceptions=True,
     )
     for result in results:
@@ -121,8 +115,6 @@ async def send_to_subscription(
     relay: RelayClient | None,
     alert: Alert,
     sub: PushSubscription,
-    *,
-    resolved: list[uuid.UUID],
 ) -> RelayOutcome:
     """
     Send one alert to one subscription and record the outcome on its row.
@@ -133,7 +125,6 @@ async def send_to_subscription(
         relay: The relay client, for a native row
         alert: What to send -- need not be a stored row
         sub: The subscription
-        resolved: Mail alerts a native device should withdraw
 
     Returns:
         The outcome, already applied to the row
@@ -143,7 +134,7 @@ async def send_to_subscription(
     """
     repo = PushSubscriptionRepository(db)
     if sub.transport == "apns":
-        outcome = await _send_native(db, relay, alert, sub, resolved=resolved)
+        outcome = await _send_native(db, relay, alert, sub)
     else:
         outcome = await _send_webpush(vapid_repo, alert, sub)
 
@@ -197,8 +188,6 @@ async def _send_native(
     relay: RelayClient | None,
     alert: Alert,
     sub: PushSubscription,
-    *,
-    resolved: list[uuid.UUID],
 ) -> RelayOutcome:
     if relay is None or not relay.allows(sub.relay_url):
         raise PushUnavailableError("native push is unavailable for this subscription")
@@ -214,7 +203,14 @@ async def _send_native(
         )
         return RelayOutcome.GONE
 
-    badge = await badge_count(db, get_settings_service(), subscription=sub)
+    # The device's user: their badge, and their alerts to withdraw.
+    scope = (
+        await Scope.for_user(db, sub.user_id) if sub.user_id is not None else Scope.system()
+    )
+    badge = await badge_count(db, get_settings_service(), scope, subscription=sub)
+    resolved = await AlertRepository(db).recently_resolved_mail(
+        scope, limit=MAX_RESOLVED_IDS, within=_RESOLVED_WITHIN,
+    )
     blob = seal_payload(
         alert_payload(alert, badge=badge, resolved=resolved), key, sub.installation_id,
     )

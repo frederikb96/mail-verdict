@@ -682,7 +682,7 @@ async def cancel_outbox_pending(
             account_id, "outbox.updated", {"id": str(pending_send_id)},
         )
     if resolved:
-        await announce_alerts_dismissed(db, event_ring)
+        await announce_alerts_dismissed(db, event_ring, resolved)
 
 
 def _pending_to_response(

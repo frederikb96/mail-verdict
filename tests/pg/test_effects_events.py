@@ -73,7 +73,7 @@ async def test_a_recorded_ai_verdict_announces_itself_over_the_event_stream(
     )
     assert applied[0].applied is True
 
-    new_events = await event_ring.replay_from(seq_before, str(account_id))
+    new_events = await event_ring.replay_from(seq_before, {str(account_id)})
     matching = [e for e in new_events if e["event_type"] == "verdict.issued"]
     assert len(matching) == 1, f"expected exactly one verdict.issued event, got {new_events!r}"
     assert matching[0]["data"] == {
@@ -110,7 +110,7 @@ async def test_a_duplicate_verdict_the_durability_index_absorbs_announces_nothin
     )
     assert applied[0].applied is False
 
-    new_events = await event_ring.replay_from(seq_before, str(account_id))
+    new_events = await event_ring.replay_from(seq_before, {str(account_id)})
     assert new_events == []
 
 
@@ -132,7 +132,7 @@ async def test_a_tag_that_actually_changes_announces_itself(
     )
     assert applied[0].applied is True
 
-    new_events = await event_ring.replay_from(seq_before, str(account_id))
+    new_events = await event_ring.replay_from(seq_before, {str(account_id)})
     matching = [e for e in new_events if e["event_type"] == "mail.updated"]
     assert len(matching) == 1, f"expected exactly one mail.updated event, got {new_events!r}"
     assert matching[0]["data"] == {
@@ -162,5 +162,5 @@ async def test_a_tag_effect_that_changes_nothing_announces_nothing(
     )
     assert applied[0].applied is True
 
-    new_events = await event_ring.replay_from(seq_before, str(account_id))
+    new_events = await event_ring.replay_from(seq_before, {str(account_id)})
     assert new_events == []

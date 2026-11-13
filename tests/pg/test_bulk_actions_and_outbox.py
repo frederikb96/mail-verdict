@@ -18,6 +18,7 @@ from mail_verdict.api.mails import (
     _resolve_explicit_ids,
     _resolve_scope_ids,
 )
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Message, Outbox, OutboxAttachment
 from mail_verdict.postimap.actions import (
@@ -37,7 +38,8 @@ _BEYOND_ASYNCPG_PARAM_LIMIT = 40000
 async def _seed_account_two_folders(
     session: AsyncSession,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
-    """Insert an account with an inbox and a junk folder, return their ids."""
+    """Insert an account with an inbox and a junk folder, owned by the
+    instance owner, return their ids."""
     account_id = uuid.uuid4()
     inbox_id = uuid.uuid4()
     junk_id = uuid.uuid4()
@@ -48,6 +50,10 @@ async def _seed_account_two_folders(
             "'\\x00' || convert_to('pw', 'UTF8'))"
         ),
         {"id": account_id, "name": f"acct-{account_id}"},
+    )
+    await session.execute(
+        text("INSERT INTO account_owners (account_id, user_id) VALUES (:a, :u)"),
+        {"a": account_id, "u": OWNER_USER_ID},
     )
     for folder_id, imap_name, special_use in ((inbox_id, "INBOX", None), (junk_id, "Junk", "junk")):
         await session.execute(

@@ -34,7 +34,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException
-from sqlalchemy import ColumnElement, literal, select
+from sqlalchemy import ColumnElement, Select, literal, or_, select
 from sqlalchemy.orm import InstrumentedAttribute
 
 from mail_verdict.auth.principal import OWNER_USER_ID, Principal
@@ -43,6 +43,9 @@ from mail_verdict.database.models import AccountOwner, DavAccountOwner, User
 
 # The event-ring key admin-only events go to (see ring_keys()).
 ADMIN_RING_KEY = "admin"
+# The event-ring key every stream receives: only events that carry nothing
+# of anyone's (a resync, a bare "this category changed") go here.
+EVERYONE_RING_KEY = "everyone"
 
 
 class ScopeDenied(HTTPException):
@@ -126,8 +129,10 @@ class Scope:
 
     def ring_keys(self) -> frozenset[str]:
         """The live-update keys this scope may receive: each owned account
-        and DAV account, the user's own key, and the admin key for admins."""
+        and DAV account, the user's own key, the admin key for admins, and
+        the key every stream receives."""
         keys = {str(a) for a in self.account_ids} | {str(d) for d in self.dav_account_ids}
+        keys.add(EVERYONE_RING_KEY)
         if self.user_id is not None:
             keys.add(str(self.user_id))
         if self.is_admin:
@@ -157,11 +162,13 @@ class Scope:
         """The scope of a user, for background work done on their behalf.
         A user that does not exist gets an empty scope, never a wider one."""
         async with db.session() as session:
-            role = await session.scalar(select(User.role).where(User.id == user_id))
+            is_admin = bool(await session.scalar(
+                select(_is_admin_user()).select_from(User).where(User.id == user_id)
+            ))
         account_ids, dav_account_ids = await _owned(db, user_id)
         return cls(
             user_id=user_id,
-            is_admin=role == "admin" or user_id == OWNER_USER_ID,
+            is_admin=is_admin or user_id == OWNER_USER_ID,
             account_ids=account_ids,
             dav_account_ids=dav_account_ids,
         )
@@ -189,6 +196,17 @@ class Scope:
                 )
             )
         return cls.system() if owner is None else await cls.for_user(db, owner)
+
+
+def _is_admin_user() -> ColumnElement[bool]:
+    """SQL: a users row is an admin -- by role, or as the owner row."""
+    return or_(User.role == "admin", User.id == OWNER_USER_ID)
+
+
+def admin_user_ids() -> Select[uuid.UUID]:
+    """The ids of every enabled admin: who receives what belongs to no user
+    (an alert about the instance itself)."""
+    return select(User.id).where(_is_admin_user(), User.disabled.is_(False))
 
 
 async def _owned(

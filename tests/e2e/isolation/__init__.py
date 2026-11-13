@@ -26,6 +26,9 @@ Route kinds and what is checked:
   called by A: 403 or 404.
 - admin: A (not admin) gets 403; the owner gets 2xx (or one of `owner_also`)
   and the body carries none of B's mail content (World.b_content).
+- stream: a response that never ends (the live event stream), which a plain
+  request cannot read to its end: only that it refuses a caller without a
+  token (401) is checked here; what it carries for A is its module's CHECKS.
 
 A case may need more than path parameters: `params` fills the path from the
 World, `query`, `body` and `files` (a multipart upload) build the rest. A write
@@ -56,7 +59,7 @@ from starlette.routing import Mount, Route
 # raises (asserts) on a leak.
 Check = Callable[[Any, "World"], None]
 
-RouteKind = Literal["public", "own", "account_path", "resource_id", "admin"]
+RouteKind = Literal["public", "own", "account_path", "resource_id", "admin", "stream"]
 ToolKind = Literal["own", "resource_id"]
 
 # Routes outside /api and /mcp that the app may serve: the static web UI,
@@ -114,6 +117,8 @@ class RouteCase:
     # an encryption key). Anything but a refusal proves the gate let the
     # owner through.
     owner_also: tuple[int, ...] = ()
+    # Own routes only: the same, for A.
+    also: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

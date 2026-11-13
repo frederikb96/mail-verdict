@@ -1,7 +1,7 @@
 """
 broadcast_resync: the listener-reconnect safeguard that pushes a resync
-event to every account, not only the one whose own SSE connection happens
-to reconnect later and replay a stale Last-Event-ID.
+event to every open stream, not only the one whose own SSE connection
+happens to reconnect later and replay a stale Last-Event-ID.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from sqlalchemy import text
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.events import broadcast_resync
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import user_scope
 
 
 async def _seed_account(db: DatabaseConnection) -> uuid.UUID:
@@ -32,20 +33,20 @@ async def _seed_account(db: DatabaseConnection) -> uuid.UUID:
 
 
 @pytest.mark.asyncio
-async def test_pushes_a_resync_event_to_every_account(migrated_db: DatabaseConnection) -> None:
-    """Every account with mail gets its own resync -- a currently-connected
-    browser for either one must see it on its live SSE stream, not only a
-    browser that happens to reconnect afterward."""
+async def test_pushes_a_resync_event_to_every_stream(migrated_db: DatabaseConnection) -> None:
+    """Every user's stream gets the resync -- a currently-connected browser
+    of either one must see it on its live SSE stream, not only a browser
+    that happens to reconnect afterward."""
     account_a = await _seed_account(migrated_db)
     account_b = await _seed_account(migrated_db)
     ring = EventRing()
 
     await broadcast_resync(migrated_db, ring)
 
-    for account_id in (account_a, account_b):
-        events = list(ring._rings[str(account_id)])
-        assert any(event["event_type"] == "resync" for event in events)
-        assert all(event["data"] == {} for event in events if event["event_type"] == "resync")
+    for scope in (user_scope(uuid.uuid4(), [account_a]), user_scope(uuid.uuid4(), [account_b])):
+        events = await ring.replay_from(0, scope.ring_keys())
+        assert [event["event_type"] for event in events] == ["resync"]
+        assert events[0]["data"] == {}
 
 
 @pytest.mark.asyncio

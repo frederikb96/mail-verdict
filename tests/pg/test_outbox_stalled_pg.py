@@ -15,16 +15,19 @@ import pytest
 from sqlalchemy import select, text
 
 from mail_verdict.api.event_ring import EventRing
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Alert
 from mail_verdict.outbox.stalled import _find_stalled, raise_stalled_outbox_alerts_once
+from tests.helpers.auth import owner_scope
 
 _THRESHOLD = timedelta(minutes=10)
 
 
 async def _seed_inactive_account(db: DatabaseConnection) -> uuid.UUID:
     """Inactive, so PostIMAP never picks up its outbox and every row seeded
-    below keeps exactly the status and age it was given."""
+    below keeps exactly the status and age it was given; owned by the
+    instance owner, whom its alerts reach."""
     account_id = uuid.uuid4()
     async with db.session() as session:
         await session.execute(
@@ -34,6 +37,10 @@ async def _seed_inactive_account(db: DatabaseConnection) -> uuid.UUID:
                 "'user@example.com', '\\x00' || convert_to('pw', 'UTF8'), false)"
             ),
             {"id": account_id, "name": f"acct-{account_id}"},
+        )
+        await session.execute(
+            text("INSERT INTO account_owners (account_id, user_id) VALUES (:a, :u)"),
+            {"a": account_id, "u": OWNER_USER_ID},
         )
         await session.commit()
     return account_id
@@ -197,10 +204,9 @@ class TestStalledOutbox:
             migrated_db, event_ring, None, threshold=_THRESHOLD,
         )
 
-        # Across every account: replaying one account's ring from 0 reads as
-        # a gap too large to replay and returns nothing at all.
+        # On the owner's stream: an alert is announced to whoever owns it.
         events = [
-            e for e in await event_ring.replay_from(0)
+            e for e in await event_ring.replay_from(0, owner_scope().ring_keys())
             if e["event_type"] == "alert.new" and e["data"]["account_id"] == str(account_id)
         ]
         assert len(events) == 1

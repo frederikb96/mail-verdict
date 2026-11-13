@@ -1,21 +1,23 @@
 """
 Native push through a push relay.
 
-A native app registers its device with a relay and hands this server the
-ticket the relay issued plus a content key of its own. This module posts
-each notification to that relay, sealed with the content key
-(push/envelope.py), so the relay forwards ciphertext it cannot read. The
-relay's HTTP API is specified in mail-verdict-ios/relay/README.md:
-https://github.com/frederikberg/mail-verdict-ios/blob/main/relay/README.md
+A native app registers its device with a relay, naming the app it is
+(push.relay_app), and hands this server the ticket the relay issued plus a
+content key of its own. This module posts each notification to that relay
+under the same app name, sealed with the content key (push/envelope.py), so
+the relay forwards ciphertext it cannot read. A relay refuses a ticket
+issued for another app. The relay's HTTP API:
+https://github.com/frederikberg/push-relay/blob/main/docs/api.md
 
 The ticket and content key are stored encrypted under ENCRYPTION_KEY and
 decrypted per send. A relay missing from push.apns_relay_urls is never
 sent to, so emptying that list stops all traffic to relays.
 
-Read-sync: when alerts are dismissed or resolved, every native device is
-sent one silent push so it can clear banners for mail read elsewhere --
-at most once per push.read_sync_min_interval_seconds, with a change inside
-that window sent once at its end.
+Read-sync: when alerts are dismissed or resolved, every native device of
+whoever they were for is sent one silent push so it can clear banners for
+mail read elsewhere -- at most once per push.read_sync_min_interval_seconds
+for each audience (alerts/audience.py), with a change inside that window
+sent once at its end.
 """
 
 from __future__ import annotations
@@ -78,13 +80,14 @@ class RelayClient:
         """
         self._encryption_key = encryption_key
         self._relay_urls = list(config.apns_relay_urls)
+        self._app = config.relay_app
         self._timeout = config.relay_timeout_seconds
         self._read_sync_interval = config.read_sync_min_interval_seconds
         self._transport = transport
         self._clock = clock
         self._sleep = sleep
-        self._last_read_sync: float | None = None
-        self._trailing_read_sync: asyncio.Task[None] | None = None
+        self._last_read_sync: dict[str, float] = {}
+        self._trailing_read_sync: dict[str, asyncio.Task[None]] = {}
         self._tasks: set[asyncio.Task[None]] = set()
 
     @property
@@ -130,7 +133,7 @@ class RelayClient:
     ) -> RelayOutcome:
         """Post one sealed alert to the device's relay."""
         return await self._post(sub, {
-            "ticket": ticket, "type": "alert", "blob": blob,
+            "app": self._app, "ticket": ticket, "type": "alert", "blob": blob,
             "collapse_id": collapse_id, "ttl_seconds": ttl_seconds,
         })
 
@@ -141,7 +144,7 @@ class RelayClient:
         except EncryptionError:
             return RelayOutcome.GONE
         return await self._post(sub, {
-            "ticket": ticket, "type": "background",
+            "app": self._app, "ticket": ticket, "type": "background",
             "collapse_id": _READ_SYNC_COLLAPSE_ID, "ttl_seconds": _READ_SYNC_TTL_SECONDS,
         })
 
@@ -160,37 +163,40 @@ class RelayClient:
             return RelayOutcome.FAILED
         return _outcome_for(response, sub)
 
-    def schedule_read_sync(self, db: DatabaseConnection) -> None:
+    def schedule_read_sync(self, db: DatabaseConnection, audience: str) -> None:
         """
-        Arrange one silent push to every native device -- now, if the last
-        one was at least the minimum interval ago, otherwise once at the
-        end of that interval. Calls inside a pending window fold into it.
+        Arrange one silent push to every native device of an audience
+        (alerts/audience.py) -- now, if its last one was at least the
+        minimum interval ago, otherwise once at the end of that interval.
+        Calls inside a pending window fold into it.
         """
         if self.unavailable_reason() is not None:
             return
-        if self._trailing_read_sync is not None and not self._trailing_read_sync.done():
+        trailing = self._trailing_read_sync.get(audience)
+        if trailing is not None and not trailing.done():
             return
         now = self._clock()
-        wait = (
-            0.0 if self._last_read_sync is None
-            else self._last_read_sync + self._read_sync_interval - now
-        )
+        last = self._last_read_sync.get(audience)
+        wait = 0.0 if last is None else last + self._read_sync_interval - now
         if wait <= 0:
-            self._last_read_sync = now
-            self._spawn(self._read_sync(db))
+            self._last_read_sync[audience] = now
+            self._spawn(self._read_sync(db, audience))
         else:
-            self._last_read_sync = now + wait
-            self._trailing_read_sync = self._spawn(self._read_sync_after(db, wait))
+            self._last_read_sync[audience] = now + wait
+            self._trailing_read_sync[audience] = self._spawn(
+                self._read_sync_after(db, audience, wait),
+            )
 
-    async def _read_sync_after(self, db: DatabaseConnection, wait: float) -> None:
+    async def _read_sync_after(self, db: DatabaseConnection, audience: str, wait: float) -> None:
         await self._sleep(wait)
-        await self._read_sync(db)
+        await self._read_sync(db, audience)
 
-    async def _read_sync(self, db: DatabaseConnection) -> None:
-        """One silent push to every native device whose relay is allowed."""
+    async def _read_sync(self, db: DatabaseConnection, audience: str) -> None:
+        """One silent push to every native device of the audience whose
+        relay is allowed."""
         try:
             repo = PushSubscriptionRepository(db)
-            rows = [s for s in await repo.list_native() if self.allows(s.relay_url)]
+            rows = [s for s in await repo.list_native(audience) if self.allows(s.relay_url)]
             outcomes = await asyncio.gather(*(self.send_background(s) for s in rows))
             for sub, outcome in zip(rows, outcomes):
                 if outcome is RelayOutcome.GONE:

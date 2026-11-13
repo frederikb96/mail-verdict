@@ -229,7 +229,7 @@ async def reconcile_read_state_once(
     async with db.session() as session:
         resolved = await resolve_all(session)
     if resolved:
-        await announce_alerts_dismissed(db, event_ring)
+        await announce_alerts_dismissed(db, event_ring, resolved)
 
     if marked or resolved:
         logger.info("Read state reconcile", extra={"marked": marked, "resolved": len(resolved)})

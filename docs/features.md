@@ -209,6 +209,9 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
 - An alert resolves itself once its mail is read anywhere, and a setting keeps new-mail alerts out
   of the bell's badge so it counts only system notifications. Calendar reminders are not delivered
   as alerts.
+- Everything here is per user: each person sees and dismisses only the alerts of their own
+  accounts, their devices are theirs alone, and a phone or browser someone else signs in on moves
+  to them. An AI provider outage is an alert for the admins.
 
 ## Calendars and contacts
 

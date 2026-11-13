@@ -23,6 +23,7 @@ account.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -77,9 +78,9 @@ async def _suspended(db: DatabaseConnection) -> list[tuple[str, str | None, date
 
 async def _resolve_recovered(
     db: DatabaseConnection, suspended: list[tuple[str, str | None, datetime]],
-) -> bool:
-    """Dismiss the open provider alerts whose outage is over. Returns whether
-    any alert was dismissed."""
+) -> list[uuid.UUID]:
+    """Dismiss the open provider alerts whose outage is over. Returns the
+    ids of the alerts dismissed."""
     live = {_dedupe_key(name, since) for name, _, since in suspended}
     async with db.session() as session:
         open_alerts = (
@@ -96,7 +97,7 @@ async def _resolve_recovered(
                     dismissed_at=datetime.now(timezone.utc),
                 )
             )
-    return bool(recovered)
+    return recovered
 
 
 async def raise_provider_alerts_once(
@@ -109,8 +110,9 @@ async def raise_provider_alerts_once(
     """One pass: resolve the alerts of outages that ended, then alert, once
     each, for every breaker suspended longer than `threshold`."""
     suspended = await _suspended(db)
-    if await _resolve_recovered(db, suspended):
-        await announce_alerts_dismissed(db, event_ring)
+    recovered = await _resolve_recovered(db, suspended)
+    if recovered:
+        await announce_alerts_dismissed(db, event_ring, recovered)
 
     now = datetime.now(timezone.utc)
     repo = AlertRepository(db)

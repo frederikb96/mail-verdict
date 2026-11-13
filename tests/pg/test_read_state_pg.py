@@ -160,7 +160,7 @@ class TestAlertResolvesWhenItsMailIsRead:
         assert event.origin == "app"
         assert await resolve_for_message_event(migrated_db, ring, event.id) == [alert_id]
         assert (await _alert(migrated_db, alert_id)).dismissed_at is not None
-        ring.add.assert_any_await(account_id, "alert.dismissed", {})
+        ring.add.assert_any_await(str(OWNER_USER_ID), "alert.dismissed", {})
 
     @pytest.mark.asyncio
     async def test_a_read_flag_from_another_client_resolves_it(

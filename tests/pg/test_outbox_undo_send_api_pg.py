@@ -380,7 +380,7 @@ class TestPendingSendAnnouncesItself:
             )
         assert resp.status_code == 201, resp.text
 
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(event_ring.replay_from, seq_before, {str(account_id)})
         matching = [e for e in new_events if e["event_type"] == "outbox.updated"]
         assert len(matching) == 1, f"expected one outbox.updated event, got {new_events!r}"
 
@@ -408,6 +408,6 @@ class TestPendingSendAnnouncesItself:
             resp = client.post(f"/outbox/pending/{created['id']}/cancel")
         assert resp.status_code == 204, resp.text
 
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(event_ring.replay_from, seq_before, {str(account_id)})
         matching = [e for e in new_events if e["event_type"] == "outbox.updated"]
         assert len(matching) == 1, f"expected one outbox.updated event, got {new_events!r}"

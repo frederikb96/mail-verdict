@@ -21,8 +21,8 @@ _RELAY = "https://relay.example"
 
 def _config(**overrides: Any) -> PushConfig:
     values: dict[str, Any] = {
-        "apns_relay_urls": [_RELAY], "read_sync_min_interval_seconds": 600.0,
-        "relay_timeout_seconds": 5.0,
+        "apns_relay_urls": [_RELAY], "relay_app": "mailverdict",
+        "read_sync_min_interval_seconds": 600.0, "relay_timeout_seconds": 5.0,
     }
     values.update(overrides)
     return PushConfig(**values)
@@ -91,9 +91,52 @@ async def test_an_alert_request_carries_the_ticket_and_blob_and_nothing_readable
     assert str(seen[0].url) == f"{_RELAY}/v1/push"
     body = json.loads(seen[0].content)
     assert body == {
-        "ticket": "the-ticket", "type": "alert", "blob": "c2VhbGVk", "collapse_id": "id",
-        "ttl_seconds": 300,
+        "app": "mailverdict", "ticket": "the-ticket", "type": "alert", "blob": "c2VhbGVk",
+        "collapse_id": "id", "ttl_seconds": 300,
     }
+
+
+@pytest.mark.asyncio
+async def test_every_push_names_the_configured_app() -> None:
+    """A relay serving several apps refuses a ticket of another app, so
+    every push names the app this server's devices registered as."""
+    seen: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(202, json={})
+
+    client = RelayClient(
+        encryption_key=_KEY, config=_config(relay_app="another-app"),
+        transport=httpx.MockTransport(handler),
+    )
+    row = _native_row(client)
+    await client.send_alert(row, ticket="t", blob="b", collapse_id="c", ttl_seconds=1)
+    await client.send_background(row)
+
+    assert [body["app"] for body in seen] == ["another-app", "another-app"]
+
+
+def test_the_shipped_config_names_the_shared_relay_and_this_app() -> None:
+    """The default sends as the app the shared relay knows MailVerdict by,
+    and devices registered at either of its addresses stay reachable."""
+    from pathlib import Path
+
+    import yaml
+
+    shipped = Path(__file__).parents[2] / "config" / "config.yaml"
+    push = PushConfig(**yaml.safe_load(shipped.read_text())["push"])
+
+    assert push.relay_app == "mailverdict"
+    assert "https://push.frederikberg.net" in push.apns_relay_urls
+    assert "https://mailverdict-push.frederikberg.net" in push.apns_relay_urls
+
+
+def test_an_empty_app_name_is_refused_at_startup() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _config(relay_app="")
 
 
 @pytest.mark.asyncio
@@ -107,6 +150,7 @@ async def test_a_background_push_carries_no_blob() -> None:
     client = _client(handler)
     await client.send_background(_native_row(client))
     assert seen[0]["type"] == "background"
+    assert seen[0]["app"] == "mailverdict"
     assert "blob" not in seen[0]
 
 
@@ -142,19 +186,25 @@ async def test_announcing_dismissed_alerts_schedules_a_read_sync(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Every resolve and dismiss path ends in announce_alerts_dismissed; a
-    phone has no open stream, so this is its only way to hear of it."""
+    phone has no open stream, so this is its only way to hear of it. Only
+    the devices of whoever the alerts were for are woken."""
     from mail_verdict.alerts.resolve import announce_alerts_dismissed
 
-    scheduled: list[object] = []
+    scheduled: list[tuple[object, str]] = []
+    owner = str(uuid.uuid4())
 
     class _Recorder:
-        def schedule_read_sync(self, db: object) -> None:
-            scheduled.append(db)
+        def schedule_read_sync(self, db: object, audience: str) -> None:
+            scheduled.append((db, audience))
+
+    async def audiences_of(db: object, alert_ids: object) -> set[str]:
+        return {owner}
 
     monkeypatch.setattr("mail_verdict.alerts.resolve.get_relay_client_if_ready", _Recorder)
+    monkeypatch.setattr("mail_verdict.alerts.resolve.audiences_of", audiences_of)
     marker = object()
-    await announce_alerts_dismissed(marker, None)  # type: ignore[arg-type]
-    assert scheduled == [marker]
+    await announce_alerts_dismissed(marker, None, [uuid.uuid4()])  # type: ignore[arg-type]
+    assert scheduled == [(marker, owner)]
 
 
 class _FakeTime:
@@ -178,6 +228,9 @@ class _FakeTime:
         self._moved.set()
 
 
+_AUDIENCE = str(uuid.uuid4())
+
+
 class TestReadSyncThrottle:
     @pytest.fixture()
     def fake_time(self) -> _FakeTime:
@@ -193,8 +246,9 @@ class TestReadSyncThrottle:
         )
         sends: list[float] = []
 
-        async def record(db: object) -> None:
-            sends.append(fake_time.now)
+        async def record(db: object, audience: str) -> None:
+            if audience == _AUDIENCE:
+                sends.append(fake_time.now)
 
         monkeypatch.setattr(client, "_read_sync", record)
         return client, sends
@@ -210,14 +264,14 @@ class TestReadSyncThrottle:
     ) -> None:
         client, sends = recorded
 
-        client.schedule_read_sync(db=None)  # type: ignore[arg-type]
+        client.schedule_read_sync(None, _AUDIENCE)  # type: ignore[arg-type]
         await self._settle()
         assert sends == [1000.0]
 
         # Three more changes inside the window fold into one trailing send.
         for _ in range(3):
             fake_time.advance(100)
-            client.schedule_read_sync(db=None)  # type: ignore[arg-type]
+            client.schedule_read_sync(None, _AUDIENCE)  # type: ignore[arg-type]
             await self._settle()
         assert sends == [1000.0]
 
@@ -227,7 +281,7 @@ class TestReadSyncThrottle:
 
         # A change right after the trailing send waits out a full window again.
         fake_time.advance(10)
-        client.schedule_read_sync(db=None)  # type: ignore[arg-type]
+        client.schedule_read_sync(None, _AUDIENCE)  # type: ignore[arg-type]
         await self._settle()
         assert sends == [1000.0, 1600.0]
         fake_time.advance(590)
@@ -239,12 +293,34 @@ class TestReadSyncThrottle:
         self, fake_time: _FakeTime, recorded: tuple[RelayClient, list[float]],
     ) -> None:
         client, sends = recorded
-        client.schedule_read_sync(db=None)  # type: ignore[arg-type]
+        client.schedule_read_sync(None, _AUDIENCE)  # type: ignore[arg-type]
         await self._settle()
         fake_time.advance(601)
-        client.schedule_read_sync(db=None)  # type: ignore[arg-type]
+        client.schedule_read_sync(None, _AUDIENCE)  # type: ignore[arg-type]
         await self._settle()
         assert sends == [1000.0, 1601.0]
+
+    @pytest.mark.asyncio
+    async def test_each_audience_has_its_own_window(
+        self, fake_time: _FakeTime, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One user's dismissals neither delay nor wake another's phones."""
+        client = RelayClient(
+            encryption_key=_KEY, config=_config(), clock=fake_time.clock, sleep=fake_time.sleep,
+        )
+        sends: list[tuple[str, float]] = []
+
+        async def record(db: object, audience: str) -> None:
+            sends.append((audience, fake_time.now))
+
+        monkeypatch.setattr(client, "_read_sync", record)
+        client.schedule_read_sync(None, "a")  # type: ignore[arg-type]
+        await self._settle()
+        fake_time.advance(10)
+        client.schedule_read_sync(None, "b")  # type: ignore[arg-type]
+        await self._settle()
+
+        assert sends == [("a", 1000.0), ("b", 1010.0)]
 
     @pytest.mark.asyncio
     async def test_nothing_is_scheduled_while_native_push_is_unavailable(
@@ -256,10 +332,10 @@ class TestReadSyncThrottle:
         )
         sends: list[float] = []
 
-        async def record(db: object) -> None:
+        async def record(db: object, audience: str) -> None:
             sends.append(fake_time.now)
 
         monkeypatch.setattr(client, "_read_sync", record)
-        client.schedule_read_sync(db=None)  # type: ignore[arg-type]
+        client.schedule_read_sync(None, _AUDIENCE)  # type: ignore[arg-type]
         await self._settle()
         assert sends == []

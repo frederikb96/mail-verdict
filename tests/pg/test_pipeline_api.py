@@ -610,7 +610,7 @@ def test_replacing_the_document_announces_itself(
         resp = client.put("/pipeline", json={"enabled": True, "stages": []})
     assert resp.status_code == 200, resp.text
 
-    new_events = client.portal.call(event_ring.replay_from, seq_before, str(OWNER_USER_ID))
+    new_events = client.portal.call(event_ring.replay_from, seq_before, {str(OWNER_USER_ID)})
     matching = [e for e in new_events if e["event_type"] == "pipeline.document_changed"]
     assert len(matching) == 1, f"expected one pipeline.document_changed event, got {new_events!r}"
 
@@ -637,7 +637,7 @@ def test_adding_a_stage_announces_itself(
         )
     assert resp.status_code == 200, resp.text
 
-    new_events = client.portal.call(event_ring.replay_from, seq_before, str(OWNER_USER_ID))
+    new_events = client.portal.call(event_ring.replay_from, seq_before, {str(OWNER_USER_ID)})
     matching = [e for e in new_events if e["event_type"] == "pipeline.document_changed"]
     assert len(matching) == 1, f"expected one pipeline.document_changed event, got {new_events!r}"
 
@@ -657,8 +657,8 @@ def test_the_announcement_reaches_the_authors_key_only(
     ):
         assert client.put("/pipeline", json={"enabled": True, "stages": []}).status_code == 200
 
-    own = client.portal.call(event_ring.replay_from, seq_before, str(OWNER_USER_ID))
-    others = client.portal.call(event_ring.replay_from, seq_before, str(other))
+    own = client.portal.call(event_ring.replay_from, seq_before, {str(OWNER_USER_ID)})
+    others = client.portal.call(event_ring.replay_from, seq_before, {str(other)})
     assert [e["event_type"] for e in own] == ["pipeline.document_changed"]
     assert others == []
 

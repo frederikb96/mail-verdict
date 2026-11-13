@@ -1,9 +1,10 @@
 """
 In-memory ring buffer for SSE events.
 
-Stores the last N events per account with monotonic sequence IDs.
-Supports replay from a given Last-Event-ID for reconnecting clients
-and snapshot delivery for fresh connections.
+Every event goes on one key: a mail account, a DAV account, a user, the
+admin key or the key every stream receives (auth/scope.py, Scope.ring_keys).
+A stream reads exactly the keys its caller's scope covers, so replay from a
+given Last-Event-ID and the live wake-ups both stay within them.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import logging
 import secrets
 import uuid
 from collections import deque
+from collections.abc import Collection
 from datetime import datetime, timezone
 from typing import Any
 
@@ -23,9 +25,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_RING_SIZE = 500
 
 
+def _key_set(keys: Collection[str]) -> Collection[str]:
+    """`keys`, refusing a lone string: iterated, it would read as a set of
+    one-character keys that match nothing, and a stream would go silent."""
+    if isinstance(keys, str):
+        raise TypeError("ring keys are a collection of keys, not one string")
+    return keys
+
+
 class EventRing:
     """
-    Per-account ring buffer of SSE events with global sequence counter.
+    Per-key ring buffers of SSE events with one global sequence counter.
 
     Thread-safe via asyncio.Lock for concurrent add/replay operations.
     Each event gets a monotonically increasing ID used by SSE Last-Event-ID.
@@ -36,12 +46,15 @@ class EventRing:
         Initialize the event ring.
 
         Args:
-            max_size: Maximum events to retain per account
+            max_size: Maximum events to retain per key
         """
         self._max_size = max_size
         self._lock = asyncio.Lock()
         self._seq: int = 0
         self._rings: dict[str, deque[dict[str, Any]]] = {}
+        # The id of the newest event each key's ring has dropped: a replay
+        # from any id below it would be missing that event.
+        self._evicted: dict[str, int] = {}
         self._waiters: dict[str, list[asyncio.Event]] = {}
         # Sequence ids restart at 1 with every process, so an id alone
         # cannot say which ring issued it: a browser reconnecting after a
@@ -71,15 +84,16 @@ class EventRing:
             return None
         return int(seq)
 
-    async def add(self, account_id: uuid.UUID, event_type: str, data: dict[str, Any]) -> int:
+    async def add(self, key: uuid.UUID | str, event_type: str, data: dict[str, Any]) -> int:
         """
-        Add an event to the ring buffer for an account.
+        Add an event to the ring of one key.
 
         Protected by asyncio.Lock to prevent interleaved mutations from
         concurrent coroutines.
 
         Args:
-            account_id: Account the event belongs to
+            key: Who receives it -- a mail or DAV account id, a user id,
+                ADMIN_RING_KEY or EVERYONE_RING_KEY (auth/scope.py)
             event_type: SSE event type (sync.state, sync.progress, etc.)
             data: Event payload
 
@@ -94,7 +108,7 @@ class EventRing:
         async with self._lock:
             self._seq += 1
             seq_id = self._seq
-            acct_key = str(account_id)
+            ring_key = str(key)
 
             event: dict[str, Any] = {
                 "id": seq_id,
@@ -103,126 +117,99 @@ class EventRing:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-            if acct_key not in self._rings:
-                self._rings[acct_key] = deque(maxlen=self._max_size)
+            ring = self._rings.setdefault(ring_key, deque(maxlen=self._max_size))
+            if len(ring) == self._max_size:
+                self._evicted[ring_key] = ring[0]["id"]
+            ring.append(event)
 
-            self._rings[acct_key].append(event)
-
-            # Wake any waiting SSE generators for this account
-            for waiter in self._waiters.get(acct_key, []):
-                waiter.set()
-            # Also wake global waiters (no account filter)
-            for waiter in self._waiters.get("__global__", []):
+            for waiter in self._waiters.get(ring_key, []):
                 waiter.set()
 
             return seq_id
 
-    async def replay_from(
-        self,
-        last_event_id: int,
-        account_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    async def replay_from(self, last_event_id: int, keys: Collection[str]) -> list[dict[str, Any]]:
         """
-        Replay events after a given sequence ID.
+        The events of these keys after a given sequence ID, in order.
 
         Args:
             last_event_id: Last event ID the client received
-            account_id: Optional account filter (None = all accounts)
+            keys: The keys the client receives
 
         Returns:
-            List of events after last_event_id, or empty if gap too large
+            The events, oldest first; whether the list is complete is
+            has_events_after()'s answer, not this one's
         """
+        keys = _key_set(keys)
         async with self._lock:
-            events: list[dict[str, Any]] = []
+            events = [
+                event
+                for key in keys
+                for event in self._rings.get(key, ())
+                if event["id"] > last_event_id
+            ]
+        events.sort(key=lambda e: e["id"])
+        return events
 
-            if account_id:
-                ring = self._rings.get(account_id, deque())
-                if not ring:
-                    return []
-                # Check if last_event_id is still in the ring
-                oldest_id = ring[0]["id"]
-                if last_event_id < oldest_id:
-                    # Gap too large — caller should send full snapshot
-                    return []
-                for event in ring:
-                    if event["id"] > last_event_id:
-                        events.append(event)
-            else:
-                # Replay across all accounts
-                for ring in self._rings.values():
-                    for event in ring:
-                        if event["id"] > last_event_id:
-                            events.append(event)
-                events.sort(key=lambda e: e["id"])
-
-            return events
-
-    def has_events_after(self, last_event_id: int, account_id: str | None = None) -> bool:
+    def has_events_after(self, last_event_id: int, keys: Collection[str]) -> bool:
         """
-        Check if replaying from last_event_id is safe (gap detection).
+        Whether replaying these keys from last_event_id would be complete --
+        no ring among them has dropped an event newer than that id.
+
+        Every key counts, not just one: a quiet key whose ring still reaches
+        back past last_event_id says nothing about a busier one that has
+        already evicted ids in between, and replaying only the quiet one's
+        events would leave the client believing it is caught up while it
+        silently missed the busy key's gap.
 
         Args:
             last_event_id: Last event ID the client received
-            account_id: Optional account filter
-
-        Returns:
-            True if a replay from last_event_id would be complete -- every
-            id after it is still retained. For the global case (no
-            account_id) this means every account's ring, not just one: a
-            quiet account whose ring still reaches back past
-            last_event_id says nothing about a busier account that has
-            already evicted ids in between, and replaying only the quiet
-            one's events would leave the client believing it is caught up
-            while it silently missed the busy account's gap.
+            keys: The keys the client receives
         """
-        if account_id:
-            ring = self._rings.get(account_id, deque())
-            if not ring:
-                return False
-            return bool(ring[0]["id"] <= last_event_id)
-        return all(
-            ring[0]["id"] <= last_event_id
-            for ring in self._rings.values()
-            if ring
-        )
+        return all(self._evicted.get(key, 0) <= last_event_id for key in _key_set(keys))
 
     def get_latest_seq(self) -> int:
         """Get the latest global sequence number."""
         return self._seq
 
-    def register_waiter(self, account_id: str | None = None) -> asyncio.Event:
+    def register_waiter(self, keys: Collection[str]) -> asyncio.Event:
         """
-        Register a waiter that gets notified when new events arrive.
+        Register a waiter that gets set when an event arrives on any of
+        these keys, or when wake_all() is called.
 
         Args:
-            account_id: Account to watch, or None for all accounts
+            keys: The keys to watch
 
         Returns:
             asyncio.Event that gets set when new events are added
         """
-        key = account_id if account_id else "__global__"
         waiter = asyncio.Event()
-        if key not in self._waiters:
-            self._waiters[key] = []
-        self._waiters[key].append(waiter)
+        for key in _key_set(keys):
+            self._waiters.setdefault(key, []).append(waiter)
         return waiter
 
-    def unregister_waiter(self, waiter: asyncio.Event, account_id: str | None = None) -> None:
+    def unregister_waiter(self, waiter: asyncio.Event, keys: Collection[str]) -> None:
         """
         Remove a previously registered waiter.
 
         Args:
             waiter: The asyncio.Event to remove
-            account_id: Account key used during registration
+            keys: The keys it was registered with
         """
-        key = account_id if account_id else "__global__"
-        waiters = self._waiters.get(key, [])
-        try:
-            waiters.remove(waiter)
-        except ValueError:
-            pass
-        if not waiters:
-            self._waiters.pop(key, None)
+        for key in keys:
+            waiters = self._waiters.get(key, [])
+            try:
+                waiters.remove(waiter)
+            except ValueError:
+                pass
+            if not waiters:
+                self._waiters.pop(key, None)
+
+    def wake_all(self) -> None:
+        """Set every registered waiter -- each stream looks at the ring and
+        at what its caller owns again (see auth/ownership.py)."""
+        for waiters in self._waiters.values():
+            for waiter in waiters:
+                waiter.set()
 
     def clear_account(self, account_id: str) -> None:
         """
@@ -231,4 +218,6 @@ class EventRing:
         Args:
             account_id: Account to clear events for
         """
-        self._rings.pop(account_id, None)
+        ring = self._rings.pop(account_id, None)
+        if ring:
+            self._evicted[account_id] = ring[-1]["id"]

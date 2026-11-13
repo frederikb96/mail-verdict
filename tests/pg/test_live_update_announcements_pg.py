@@ -89,7 +89,6 @@ _SETTINGS_EVENT_RING_TARGET = "mail_verdict.api.settings_api.get_event_ring"
 _SETTINGS_DB_TARGET = "mail_verdict.api.settings_api.get_db_connection"
 _UNIFIED_TARGET = "mail_verdict.api.unified.get_db_connection"
 _UNIFIED_EVENT_RING_TARGET = "mail_verdict.api.unified.get_event_ring"
-_ACCOUNT_ORDER_TARGET = "mail_verdict.api.account_order.get_db_connection"
 _ACCOUNT_ORDER_EVENT_RING_TARGET = "mail_verdict.api.account_order.get_event_ring"
 
 
@@ -113,7 +112,7 @@ class TestAccountPrefsAnnouncesItself:
             resp = client.patch(f"/accounts/{account_id}", json={"emoji": "📬"})
         assert resp.status_code == 200, resp.text
 
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(event_ring.replay_from, seq_before, {str(account_id)})
         matching = [e for e in new_events if e["event_type"] == "account.changed"]
         assert len(matching) == 1, f"expected one account.changed event, got {new_events!r}"
 
@@ -132,14 +131,14 @@ class TestAccountPrefsAnnouncesItself:
             resp = client.put(f"/accounts/{account_id}/emoji", json={"emoji": "📭"})
         assert resp.status_code == 200, resp.text
 
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(event_ring.replay_from, seq_before, {str(account_id)})
         matching = [e for e in new_events if e["event_type"] == "account.changed"]
         assert len(matching) == 1, f"expected one account.changed event, got {new_events!r}"
 
 
 class TestAccountOrderAnnouncesItself:
-    """The account order is a global Setting row, not account-scoped --
-    broadcast_event reaches every account's ring, this one included."""
+    """The account order is the caller's own user setting, so the event goes
+    on their user key and reaches their streams."""
 
     def test_saving_the_account_order_announces_itself(
         self, client: TestClient, migrated_db: DatabaseConnection,
@@ -152,16 +151,15 @@ class TestAccountOrderAnnouncesItself:
         seq_before = event_ring.get_latest_seq()
 
         try:
-            with (
-                patch(_ACCOUNT_ORDER_TARGET, return_value=migrated_db),
-                patch(_ACCOUNT_ORDER_EVENT_RING_TARGET, return_value=event_ring),
-            ):
+            with patch(_ACCOUNT_ORDER_EVENT_RING_TARGET, return_value=event_ring):
                 resp = client.put("/account-order", json={"order": [str(account_id)]})
         finally:
             reset_settings_service()
         assert resp.status_code == 200, resp.text
 
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(
+            event_ring.replay_from, seq_before, owner_scope([account_id]).ring_keys(),
+        )
         matching = [e for e in new_events if e["event_type"] == "account.changed"]
         assert len(matching) == 1, f"expected one account.changed event, got {new_events!r}"
 
@@ -188,7 +186,7 @@ class TestFolderPrefsAnnouncesItself:
             )
         assert resp.status_code == 200, resp.text
 
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(event_ring.replay_from, seq_before, {str(account_id)})
         matching = [e for e in new_events if e["event_type"] == "folder.changed"]
         assert len(matching) == 1, f"expected one folder.changed event, got {new_events!r}"
 
@@ -207,15 +205,15 @@ class TestFolderPrefsAnnouncesItself:
             resp = client.patch(f"/folders/{folder_id}/prefs", json={"is_visible": False})
         assert resp.status_code == 200, resp.text
 
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(event_ring.replay_from, seq_before, {str(account_id)})
         matching = [e for e in new_events if e["event_type"] == "folder.changed"]
         assert len(matching) == 1, f"expected one folder.changed event, got {new_events!r}"
 
     def test_saving_the_unified_folder_order_announces_itself(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
-        # The unified order is a global Setting row, not account-scoped --
-        # broadcast_event reaches every account's ring, this one included.
+        # The unified order is not account-scoped: the event goes to every
+        # stream, the owner's included.
         account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
         event_ring = EventRing()
         client.portal.call(event_ring.add, account_id, "connected", {})
@@ -228,14 +226,17 @@ class TestFolderPrefsAnnouncesItself:
             resp = client.put("/unified/folder-order", json={"order": ["Inbox"]})
         assert resp.status_code == 200, resp.text
 
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(
+            event_ring.replay_from, seq_before, owner_scope([account_id]).ring_keys(),
+        )
         matching = [e for e in new_events if e["event_type"] == "folder.changed"]
         assert len(matching) == 1, f"expected one folder.changed event, got {new_events!r}"
 
 
 class TestSettingsAnnouncesItself:
-    """The settings table has no account scope at all -- see
-    broadcast_event for why every account's ring gets a copy."""
+    """The settings table has no account scope at all: settings.changed
+    carries only a category name and goes to every stream (broadcast_event),
+    the owner's included."""
 
     @pytest.fixture(autouse=True)
     def _reset_settings_after(self) -> Iterator[None]:
@@ -263,7 +264,9 @@ class TestSettingsAnnouncesItself:
             resp = client.put("/settings/retry", json={"data": {"max_retries": 6}})
         assert resp.status_code == 200, resp.text
 
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(
+            event_ring.replay_from, seq_before, owner_scope([account_id]).ring_keys(),
+        )
         matching = [e for e in new_events if e["event_type"] == "settings.changed"]
         assert len(matching) == 1, f"expected one settings.changed event, got {new_events!r}"
         assert matching[0]["data"]["category"] == "retry"
@@ -288,6 +291,8 @@ class TestSettingsAnnouncesItself:
             )
         assert resp.status_code == 200, resp.text
 
-        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        new_events = client.portal.call(
+            event_ring.replay_from, seq_before, owner_scope([account_id]).ring_keys(),
+        )
         matching = [e for e in new_events if e["event_type"] == "settings.changed"]
         assert len(matching) == 1, f"expected one settings.changed event, got {new_events!r}"
