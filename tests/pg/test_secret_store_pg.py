@@ -21,6 +21,7 @@ from mail_verdict.settings.secret_store import (
     init_secret_repo,
     reset_secret_repo,
 )
+from tests.helpers.auth import act_as, owner_scope
 
 _KEY = "0123456789abcdef" * 4
 _VALUE = "tok-ZXCVBNM-not-a-real-token"
@@ -30,6 +31,7 @@ _VALUE = "tok-ZXCVBNM-not-a-real-token"
 def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(router)
+    act_as(app, owner_scope())
     with TestClient(app) as c:
         c.portal.call(init_secret_repo, migrated_db, _KEY)
         try:
@@ -115,6 +117,7 @@ def test_storing_without_an_encryption_key_is_a_clear_400(
 ) -> None:
     app = FastAPI()
     app.include_router(router)
+    act_as(app, owner_scope())
     with TestClient(app) as c:
         c.portal.call(init_secret_repo, migrated_db, "")
         try:
