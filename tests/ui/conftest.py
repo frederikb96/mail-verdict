@@ -34,6 +34,7 @@ from testcontainers.core.container import DockerContainer
 
 from mail_verdict.config.loader import DatabaseConfig, reset_config
 from mail_verdict.database.connection import DatabaseConnection
+from tests.setup.auth import OWNER_SUBJECT, TestIssuer, inject_bearer
 from tests.setup.migrations import run_migrations
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
@@ -94,7 +95,9 @@ class _ThreadedUvicornServer(uvicorn.Server):
         pass
 
 
-def _run_app_server(postgres_url: str, *, encryption_key: str | None) -> Iterator[str]:
+def _run_app_server(
+    postgres_url: str, issuer: TestIssuer, *, encryption_key: str | None,
+) -> Iterator[str]:
     """
     The MailVerdict ASGI app, migrated and actually listening on a loopback
     port for one test module, reused by every test in that module -- the
@@ -109,7 +112,14 @@ def _run_app_server(postgres_url: str, *, encryption_key: str | None) -> Iterato
     the duration of the browser/page fixtures, and asyncio.run() refuses
     to nest inside a loop that is already running.
 
+    The app is served wrapped in inject_bearer(): a request without an
+    Authorization header acts as the instance owner, which is how the
+    browser -- which cannot add a header to every request it makes, its
+    EventSource included -- and api_client reach it. A request that brings
+    its own token keeps it.
+
     Args:
+        issuer: The session's token issuer the app is configured against.
         encryption_key: None leaves ENCRYPTION_KEY unset, the same "fresh
             install" state a plain `app_server` needs -- a UI test named
             after that exact absence (a provider key save refused for
@@ -132,7 +142,7 @@ def _run_app_server(postgres_url: str, *, encryption_key: str | None) -> Iterato
 
     from mail_verdict.server import create_app
 
-    app = create_app()
+    app = inject_bearer(create_app(), issuer.mint(OWNER_SUBJECT))
     config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
     server = _ThreadedUvicornServer(config)
     thread = threading.Thread(target=server.run, daemon=True)
@@ -177,10 +187,11 @@ def app_server(
     dovecot_container: DockerContainer,
     mailpit_container: DockerContainer,
     postimap_container: DockerContainer,
+    auth_issuer: TestIssuer,
 ) -> Iterator[str]:
     """No ENCRYPTION_KEY -- the "fresh install" state most UI tests run
     against, including one named after that exact absence."""
-    yield from _run_app_server(postgres_url, encryption_key=None)
+    yield from _run_app_server(postgres_url, auth_issuer, encryption_key=None)
 
 
 @pytest.fixture(scope="module")
@@ -189,12 +200,13 @@ def app_server_with_encryption_key(
     dovecot_container: DockerContainer,
     mailpit_container: DockerContainer,
     postimap_container: DockerContainer,
+    auth_issuer: TestIssuer,
 ) -> Iterator[str]:
     """The same app, with a throwaway ENCRYPTION_KEY configured -- for a
     module whose tests need something gated on one (provider-key storage,
     Web Push's VAPID keypair) rather than the "not configured" case
     `app_server` itself is for."""
-    yield from _run_app_server(postgres_url, encryption_key="a" * 64)
+    yield from _run_app_server(postgres_url, auth_issuer, encryption_key="a" * 64)
 
 
 @pytest.fixture(scope="module")

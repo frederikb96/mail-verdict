@@ -14,6 +14,14 @@ between them.
 
     python scripts/devstack.py
     python scripts/devstack.py --to bob@test.local
+    python scripts/devstack.py --as second
+
+The application validates a token on every API request, so the stack runs
+its own token issuer (tests/setup/auth.py) and serves the app so that a
+request without a token acts as one user: the instance owner (admin), or
+with `--as second` an ordinary second user. Seeding runs as that user too,
+so the seeded accounts are theirs. Both users' tokens are printed; a request
+carrying either one's `Authorization: Bearer ...` acts as that user instead.
 
 Delivers the test corpus, creates and waits for the account, then blocks
 until interrupted (Ctrl-C, or a `kill` of this process) -- both stop the
@@ -56,6 +64,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.seed_dev import DEFAULT_DAV_USER, seed_calendar  # noqa: E402
 from scripts.seed_large import seed_calendars, seed_contacts, seed_mail  # noqa: E402
+from tests.setup.auth import OWNER_SUBJECT, TestIssuer, inject_bearer  # noqa: E402
 from tests.setup.containers import (  # noqa: E402
     DOVECOT_ALIAS,
     DOVECOT_IMAP_PORT,
@@ -82,6 +91,7 @@ from tests.setup.migrations import run_migrations  # noqa: E402
 from tests.setup.runtime import bootstrap_container_runtime  # noqa: E402
 
 DEFAULT_RECIPIENT = "alice@test.local"
+SECOND_SUBJECT = "second-user"
 APP_READY_TIMEOUT_S = 30.0
 ACCOUNT_ACTIVE_TIMEOUT_S = 60.0
 
@@ -171,6 +181,11 @@ def main() -> int:
              "folders, thirty calendar collections and a few thousand contacts "
              "(see scripts/seed_large.py). Takes a few minutes and syncs for longer.",
     )
+    parser.add_argument(
+        "--as", dest="acting_user", choices=("owner", "second"), default="owner",
+        help="who a request without a token acts as, and who the seeded accounts belong to: "
+             "the instance owner (admin) or an ordinary second user",
+    )
     args = parser.parse_args()
 
     build_index = REPO_ROOT / "ui" / "build" / "index.html"
@@ -250,13 +265,20 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
 
         os.environ["MAIL_VERDICT_DATABASE_URL"] = postgres_url
         os.environ["MAIL_VERDICT_SERVER_LIVENESS_PORT"] = str(_get_random_port())
+        issuer = TestIssuer()
+        stack.callback(issuer.close)
+        os.environ.update(issuer.environment())
+        tokens = {
+            "owner": issuer.mint(OWNER_SUBJECT, name="Owner"),
+            "second": issuer.mint(SECOND_SUBJECT, email="second@test.local", name="Second user"),
+        }
         from mail_verdict.config.loader import reset_config
 
         reset_config()
 
         from mail_verdict.server import create_app
 
-        app = create_app()
+        app = inject_bearer(create_app(), tokens[args.acting_user])
         config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
         server = _ThreadedUvicornServer(config)
         thread = threading.Thread(target=server.run, daemon=True)
@@ -389,9 +411,12 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
         mailpit_url = f"http://{mailpit.get_container_host_ip()}:{mailpit_port}"
 
         print()
-        print(f"MailVerdict:  {base_url}")
+        print(f"MailVerdict:  {base_url} (acting as {args.acting_user})")
         print(f"Mailpit:      {mailpit_url}")
         print(f"Calendar:     {DEFAULT_DAV_USER!r}'s Personal calendar and Contacts address book")
+        print()
+        for name, token in tokens.items():
+            print(f"Token ({name}): {token}")
         print()
         print("Ctrl-C, or a `kill` of this process, stops the stack and removes its containers.")
 

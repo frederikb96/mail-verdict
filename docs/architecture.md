@@ -753,8 +753,7 @@ path inserts one. Building that delivery path is future work, not a column left 
 
 Reaching a device with no page open at all is Web Push, layered on top of the mail alert path
 rather than replacing it: `push_subscriptions` (one row per browser, carrying that browser's own
-per-device preferences — since a subscription row is the only genuinely per-device thing a system
-with no login has) and `vapid_keypair`, this server's signing identity.
+per-device preferences) and `vapid_keypair`, this server's signing identity.
 The keypair is generated the first time it is asked for rather than provisioned — nothing seeds
 it, and no chart value or environment variable carries it — with the private key encrypted the
 same way a provider API key is (`core/encryption.py`, gated on `ENCRYPTION_KEY` exactly like a
@@ -1090,9 +1089,8 @@ concurrent delivery by default) makes the request.
 - **Backfill.** `webhooks/backfill.py` evaluates the named webhook's rule conditions against mail
   received since a date, in every folder but Drafts, Trash and Junk (unlike a live pass, Archive and Sent are included; the glacier is not scanned), and queues the matches behind live mail, ordered by received time. A call looks at most `limit` messages
   and returns a cursor to continue after the last one.
-- **Reach.** The URL is whatever the rule says, so a request goes wherever the server can reach.
-  The application has no authentication of its own and relies on the proxy in front of it, which
-  therefore also decides who can make the server send a request.
+- **Reach.** The URL is whatever the rule says, so a request goes wherever the server can reach;
+  whoever may edit the rules decides where the server sends requests.
 
 ## Configuration and settings
 
@@ -1118,6 +1116,63 @@ key, or rotating a stored one, takes effect on the next request with no restart.
 
 ## Access
 
-The application has no login and no auth mechanism of its own — nothing checks a header or a key
-on any endpoint. The deployment model is an authenticating proxy in front of it, handling sign-in
-before traffic ever reaches the application, so users never hold an application credential at all.
+### Who is calling
+
+Every request under `/api` and `/mcp` carries an OIDC JWT as `Authorization: Bearer ...`, and the
+application validates it itself (`auth/tokens.py`): signed by a key the issuer publishes, naming
+the configured issuer, unexpired, and with an audience shared with `auth.audiences`. The same
+validator serves every caller. A browser's token is the ID token an authenticating proxy in front
+of the application forwards; a native app or an agent sends its own access token. Only
+`/api/health` (readiness has no token) and `/api/auth/config` (how a native app starts a sign-in)
+answer without one, plus the bare `/mcp` redirect. A missing or invalid token is 401 with
+`WWW-Authenticate: Bearer`.
+
+The gate is a pure ASGI middleware (`auth/middleware.py`) innermost of the application's own
+middleware, so it runs in the task that routes and serves the request: the principal it resolves
+is bound to a context variable every endpoint, MCP tool and the event stream read, MCP tool calls
+included (each call sees the caller of the request that carried it, not whoever opened the MCP
+session — `tests/unit/test_auth_middleware.py` holds FastMCP to that).
+
+A token's subject is a user through `user_identities`, so one person can sign in under several
+subjects (their login, their machine tokens). The subjects in `auth.owner_subjects` are the
+**owner**: the user the 0050 migration created and handed every account that existed before
+there were users. They resolve to it as admin from configuration alone, without reading a table,
+so the owner can always sign in. Any other subject is looked up in the database; an unknown one
+becomes an ordinary user on first request while `auth.auto_provision` is on, and is refused with
+403 `unknown_user` otherwise. A `disabled` user gets 403 `user_disabled`. Roles (`admin`, `user`)
+live in the `users` table rather than in a token claim, so they do not depend on how an identity
+provider shapes its claims; the token decides only who may sign in at all.
+
+### Who owns what
+
+`account_owners` and `dav_account_owners` map every mail and DAV account to its user, without a
+foreign key onto PostIMAP's tables (the section above on owned tables). An account's owner row is
+written in the same transaction as the account. PostIMAP keeps an account's `name` unique across
+the instance, so the stored name is `<owner user id>/<name>` and responses show the part after the
+slash (`auth/ownership.py`); a name stored before there were users has no prefix and is shown as
+is. Rows a user owns that carry no account key — alerts, orders, unified views, push
+subscriptions, pipeline revisions, submissions, usage — carry a `user_id`, and `user_settings`
+holds the settings a user sets for themselves.
+
+### The one access check
+
+Everything that reads or writes a user's data goes through a `Scope` (`auth/scope.py`): the user it
+acts for, whether they are admin, and the accounts they own. A request gets it from
+`api/deps.py`'s `current_scope()`; background work builds one with `Scope.for_user()` or
+`Scope.for_account_owner()` for the user it acts for.
+
+- A list over a table keyed by account filters with `scope.account_filter(Table.account_id)`; a
+  table keyed by user filters on `Table.user_id == scope.user_id`. An empty scope matches nothing —
+  a filter never turns into no filter.
+- A read or write by id loads the row, then calls `scope.require_account(row.account_id)`: a
+  missing row is 404, someone else's is 403.
+- An account id a client names (a query parameter, a body field, an MCP argument) is intersected
+  with what the caller owns (`scope.narrow()`), never trusted.
+- Admin is not "every account". An admin's scope covers their own accounts like anyone's. Reaching
+  other users is the `/api/admin` routes' job — users, and who owns which account, by display
+  name — and none of them reads mail, events or contacts.
+
+`tests/e2e/test_multiuser_isolation.py` holds every route and MCP tool to this. It enumerates the
+live application and fails on anything not classified, either by a case in an area module of
+`tests/e2e/isolation/` (checked as one ordinary user against another's data) or by an entry in
+`tests/e2e/isolation/pending.py`, the routes not yet made per-user, which only ever shrinks.

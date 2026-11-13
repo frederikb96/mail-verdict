@@ -690,23 +690,27 @@ class CalendarReplyRepository:
 
 
 class CalendarLinksRevisionRepository:
-    """The single-row optimistic-concurrency counter PUT /calendar/links checks."""
+    """The per-user optimistic-concurrency counter PUT /calendar/links checks."""
 
     def __init__(self, db: DatabaseConnection) -> None:
         self._db = db
 
-    async def current(self) -> int:
+    async def current(self, user_id: uuid.UUID) -> int:
         async with self._db.session() as session:
-            revision: int | None = await session.scalar(select(CalendarLinksRevision.revision))
+            revision: int | None = await session.scalar(
+                select(CalendarLinksRevision.revision).where(
+                    CalendarLinksRevision.user_id == user_id
+                )
+            )
             return revision or 0
 
-    async def bump(self, session: AsyncSession) -> int:
-        """Increment the counter as part of an already-open transaction --
-        callers pass their own session so this commits atomically with the
-        calendar_prefs rows it is meant to guard."""
-        row = await session.get(CalendarLinksRevision, True)
+    async def bump(self, session: AsyncSession, user_id: uuid.UUID) -> int:
+        """Increment the user's counter as part of an already-open
+        transaction -- callers pass their own session so this commits
+        atomically with the calendar_prefs rows it is meant to guard."""
+        row = await session.get(CalendarLinksRevision, user_id)
         if row is None:
-            row = CalendarLinksRevision(revision=1)
+            row = CalendarLinksRevision(user_id=user_id, revision=1)
             session.add(row)
         else:
             row.revision += 1

@@ -23,6 +23,7 @@ from testcontainers.core.container import DockerContainer
 
 from mail_verdict.config.loader import DatabaseConfig, reset_config
 from mail_verdict.database.connection import DatabaseConnection
+from tests.setup.auth import OWNER_SUBJECT, TestIssuer, bearer
 from tests.setup.migrations import run_migrations
 
 
@@ -40,6 +41,7 @@ def app_client(
     mailpit_container: DockerContainer,
     radicale_container: DockerContainer,
     postimap_container: DockerContainer,
+    auth_issuer: TestIssuer,
 ) -> Iterator[TestClient]:
     """
     The MailVerdict ASGI app, migrated and started in-process for one test
@@ -61,6 +63,10 @@ def app_client(
     same startup/shutdown server.py wires for uvicorn), so init_database,
     the settings service, and the postimap_events listener all come up for
     real -- no manual lifespan plumbing needed here.
+
+    Every request carries the instance owner's token by default; a test
+    acting as someone else passes its own Authorization header, which
+    replaces it for that request.
     """
     asyncio.run(run_migrations(postgres_url))
 
@@ -71,7 +77,7 @@ def app_client(
     from mail_verdict.server import create_app
 
     app = create_app()
-    with TestClient(app) as client:
+    with TestClient(app, headers=bearer(auth_issuer.mint(OWNER_SUBJECT))) as client:
         yield client
 
     reset_config()

@@ -29,6 +29,14 @@ _TEST_DEFAULTS: dict[str, Any] = {
         "port": 18080,
         "cors_origins": ["http://localhost:5173"],
     },
+    "auth": {
+        # Never contacted: a unit test that needs a working issuer uses the
+        # auth_issuer fixture (tests/setup/auth.py) instead.
+        "issuer": "https://issuer.invalid",
+        "jwks_url": "https://issuer.invalid/jwks",
+        "audiences": ["mail-verdict-test"],
+        "owner_subjects": ["owner-subject"],
+    },
     "security": {
         # A fixed, obviously-fake 32-byte key so tests can round-trip
         # provider-credential encryption without a real secret.

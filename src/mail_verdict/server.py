@@ -7,6 +7,9 @@ Single app serving:
 - /api/health — readiness check
 - /mcp — MCP streamable-http endpoint (FastMCP)
 
+Everything under /api and /mcp but readiness and sign-in discovery requires a
+valid bearer token (auth/middleware.py).
+
 Liveness is not one of these routes. It is answered by a plain socket server
 on its own port and its own thread (see `start_liveness_server` below),
 because an async endpoint here shares the event loop with every other
@@ -176,6 +179,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Database initialized")
 
     db = get_db_connection()
+
+    from mail_verdict.auth.bootstrap import ensure_owner
+
+    await ensure_owner(db, config.auth.owner_subjects)
+    logger.info("Instance owner linked to %d subject(s)", len(config.auth.owner_subjects))
     settings_service = await init_settings_service(db)
     logger.info("Settings loaded from DB")
 
@@ -793,14 +801,38 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
             async with lifespan(app):
                 yield
 
-    # MailVerdict has no authentication layer of its own: the deployment
-    # model is an authenticating proxy in front of it (see README).
-    # Nothing here checks a header or a key against who the caller is.
-    # OriginCheckMiddleware below is a narrower thing -- not identity, only
-    # whether a browser itself says a write crosses origins.
-    app = FastAPI(title="MailVerdict", lifespan=combined_lifespan)
+    # No documents of its own: the root app's routes are the MCP redirect and
+    # the web UI, and the API's documents are served behind the gate at
+    # /api/openapi.json and /api/docs.
+    app = FastAPI(
+        title="MailVerdict", lifespan=combined_lifespan,
+        openapi_url=None, docs_url=None, redoc_url=None,
+    )
 
     config = get_config()
+
+    # Added first, so it sits innermost of the app's own middleware: its 401
+    # and 403 answers still carry the security and CORS headers, and the
+    # principal it binds is set in the task that runs routing and every
+    # endpoint. OriginCheckMiddleware below is a narrower thing -- not
+    # identity, only whether a browser itself says a write crosses origins.
+    from mail_verdict.auth.middleware import AuthMiddleware
+    from mail_verdict.auth.principal import (
+        DatabaseUserDirectory,
+        PrincipalResolver,
+        init_principal_resolver,
+    )
+    from mail_verdict.auth.tokens import TokenVerifier
+
+    resolver = init_principal_resolver(
+        PrincipalResolver(
+            DatabaseUserDirectory(),
+            config.auth.owner_subjects,
+            auto_provision=config.auth.auto_provision,
+            cache_seconds=config.auth.principal_cache_seconds,
+        )
+    )
+    app.add_middleware(AuthMiddleware, verifier=TokenVerifier(config.auth), resolver=resolver)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.server.cors_origins,

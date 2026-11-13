@@ -21,6 +21,8 @@ dependencies = [
     "anthropic>=0.40.0",
     "openai>=1.60.0",
     "cryptography>=43.0.0",
+    # Validates the bearer token on every request (auth/tokens.py).
+    "pyjwt[crypto]>=2.10.0",
     "fastmcp>=2.0.0",
     "nh3>=0.2.0",
     "tinycss2>=1.4.0",

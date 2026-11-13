@@ -77,7 +77,8 @@ split and everything built on it.
   CardDAV server, for example Nextcloud.
 - An API key for at least one model provider: OpenAI, Anthropic, or any OpenAI-compatible server.
   Without one, mail works and the AI features skip their work until a key is set.
-- An authenticating proxy in front of it. MailVerdict has no login of its own ([Access](#access)).
+- An OpenID Connect identity provider whose tokens MailVerdict accepts, and an authenticating
+  proxy in front of the web UI that signs a browser in ([Access](#access)).
 
 ## Run your own
 
@@ -88,7 +89,8 @@ cp .prod.env.example .prod.env      # fill in the secrets, see Configuration
 podman compose --env-file .prod.env up -d
 ```
 
-The UI is then on <http://localhost:8080>. Add an account under *Accounts*; PostIMAP starts
+The UI is then on <http://localhost:8080>, behind the authenticating proxy that signs a browser in
+and forwards its token ([Access](#access)). Add an account under *Accounts*; PostIMAP starts
 syncing it right away and mail appears as it arrives. Then set a provider key and pick the models
 under *Settings*.
 
@@ -147,10 +149,20 @@ fallback for a deployment that would rather not put a key in the database:
 
 ## Access
 
-MailVerdict has no login screen and no auth mechanism of its own — nothing checks a header or a
-key on any endpoint. Put an authenticating proxy in front of it (OIDC, basic auth, an internal
-SSO) and let that handle sign-in. People never touch application credentials, and the app stays
-free of session management. The chart README has a worked example.
+Every request to the API and the MCP server needs an OpenID Connect token, which MailVerdict
+validates against your identity provider's published keys: an ID token for a browser, forwarded by
+an authenticating proxy in front of the web UI (oauth2-proxy, for example, which also handles the
+sign-in), or an access token a native app or an agent sends itself. MailVerdict keeps no sessions
+and no passwords of its own. Set the `auth:` section of
+[`config/config.yaml`](config/config.yaml): the issuer, its key set, the audiences to accept, and
+the owner's subjects. It refuses to start without them.
+
+Several people can share one instance. Each person sees only the mail, calendars and contacts of
+the accounts they added. The owner, named by `auth.owner_subjects`, is the first admin and owns
+whatever existed before there were users. Admins manage users and who owns which account through
+`/api/admin`, and never see anyone else's mail. A new person becomes a user the first time they
+sign in, unless `auth.auto_provision` is off, in which case an admin adds them first. The chart
+README has a worked example.
 
 ## On a phone
 

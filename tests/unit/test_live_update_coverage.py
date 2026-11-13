@@ -82,6 +82,14 @@ _UNANNOUNCED: dict[str, str] = {
         "No browser surface calls this or watches it -- it is driven by an operator, and "
         "what it produces is read by search."
     ),
+    "POST /admin/users": (
+        "An admin adding a user changes nobody's mail, calendar or settings; the admin's own "
+        "user list refetches after the write it made."
+    ),
+    "DELETE /dav-accounts/{dav_account_id}": (
+        "The owned write is the deleted account's owner row; the deletion itself is PostIMAP's "
+        "and announced by its NOTIFY."
+    ),
     "POST /alerts/subscriptions/{subscription_id}/test": (
         "The only write is the send's outcome on the device's own row (last seen, failed, "
         "or removed when gone) -- the same write every alert push makes, read by the device "

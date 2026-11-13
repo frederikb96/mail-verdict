@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Users. MailVerdict validates an OpenID Connect token on every request to `/api` and `/mcp`
+  against the issuer configured under `auth:`, and refuses to start without one. A new subject
+  becomes an ordinary user on first sign-in (`auth.auto_provision`); `auth.owner_subjects` name
+  the owner, who is always admin and owns every account that existed before there were users.
+- `GET /api/me` (who the token signs in as) and `GET /api/auth/config` (how a native app starts a
+  sign-in, answered without a token).
+- `/api/admin` for admins: list, add, rename, promote and disable users, and give a mail or DAV
+  account to another user. Nothing there returns mail, events or contacts.
+- Every mail and DAV account belongs to the user who added it. Two users may give an account the
+  same name.
+- `scripts/devstack.py --as owner|second` runs its own token issuer and acts as the chosen user.
+
+### Changed
+
+- Requests without a valid bearer token get `401`, a disabled user `403` `user_disabled`. The
+  authenticating proxy in front of the web UI must forward the browser's ID token as
+  `Authorization: Bearer ...`.
+- Migration `0050` creates the users tables and gives every existing account and row to the
+  owner. Calendar links are versioned per user, and a unified view's name is unique per user.
+- The root application no longer serves its own `/docs` and `/openapi.json`; the API's are at
+  `/api/docs` and `/api/openapi.json`, behind the token check.
+
 ## [7.5.1] - 2026-11-11
 
 ### Changed

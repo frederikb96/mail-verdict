@@ -20,19 +20,24 @@ from starlette.datastructures import Headers
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.types import Message, Receive, Scope, Send
 
+from tests.setup.auth import OWNER_SUBJECT, TestIssuer, bearer
+
 os.environ.setdefault(
     "MAIL_VERDICT_DATABASE_URL", "postgresql+asyncpg://unused:unused@127.0.0.1:1/unused"
 )
 
 
 @pytest.fixture()
-def client() -> TestClient:
+def client(auth_issuer: TestIssuer) -> TestClient:
     """The real, fully composed application -- no lifespan (no DB needed):
     /api/events answers its own 503 "not ready" placeholder without a live
-    EventRing, and /api/openapi.json needs no database at all."""
+    EventRing, and /api/openapi.json needs no database at all. The owner's
+    token passes the gate without one too."""
     import mail_verdict.server as server_module
 
-    return TestClient(server_module.create_app())
+    return TestClient(
+        server_module.create_app(), headers=bearer(auth_issuer.mint(OWNER_SUBJECT)),
+    )
 
 
 def test_sse_is_never_compressed_even_when_the_client_asks_for_it(client: TestClient) -> None:
