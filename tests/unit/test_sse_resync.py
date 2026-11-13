@@ -10,7 +10,7 @@ import mail_verdict.api.events as events_module
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.events import _sse_generator
 from tests.helpers.auth import user_scope
-from tests.helpers.sse import fixed_keys, streaming_as
+from tests.helpers.sse import RECHECK_SECONDS, fixed_keys, streaming_as
 
 
 class _DisconnectedRequest:
@@ -52,6 +52,7 @@ class TestSSEReconnectGap:
                 fixed_keys(str(account_id)),
                 stale_last_event_id,
                 _DisconnectedRequest(),
+                recheck_seconds=RECHECK_SECONDS,
             )
         ]
 
@@ -74,6 +75,7 @@ class TestSSEReconnectGap:
                 fixed_keys(str(account_id)),
                 first_id,
                 _DisconnectedRequest(),
+                recheck_seconds=RECHECK_SECONDS,
             )
         ]
 
@@ -107,7 +109,9 @@ class TestSSEEventIdsNameTheirRing:
 
         messages = [
             chunk
-            async for chunk in _sse_generator(ring, fixed_keys(), 5000, _DisconnectedRequest())
+            async for chunk in _sse_generator(
+                ring, fixed_keys(), 5000, _DisconnectedRequest(), recheck_seconds=RECHECK_SECONDS,
+            )
         ]
 
         assert messages, "the reconnect was answered with nothing at all"
@@ -142,12 +146,15 @@ class TestSSEEventIdsNameTheirRing:
 
         fresh = [
             chunk
-            async for chunk in _sse_generator(ring, fixed_keys(), None, _DisconnectedRequest())
+            async for chunk in _sse_generator(
+                ring, fixed_keys(), None, _DisconnectedRequest(), recheck_seconds=RECHECK_SECONDS,
+            )
         ]
         replayed = [
             chunk
             async for chunk in _sse_generator(
-                ring, fixed_keys(str(account_id)), first_id, _DisconnectedRequest()
+                ring, fixed_keys(str(account_id)), first_id, _DisconnectedRequest(),
+                recheck_seconds=RECHECK_SECONDS,
             )
         ]
 

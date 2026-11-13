@@ -127,6 +127,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   caller's own rules and accounts; a message on someone else's account is refused with `403`.
 - The root application no longer serves its own `/docs` and `/openapi.json`; the API's are at
   `/api/docs` and `/api/openapi.json`, behind the token check.
+- An open `GET /api/events` stream ends once its user is disabled, and stops carrying the admin
+  key once they are no longer admin: at once when an admin makes the change, and within
+  `auth.principal_cache_seconds` otherwise.
+- Webhook deliveries are listed and retried per admin: `GET /api/webhooks/deliveries` lists the
+  caller's own, retrying another admin's delivery is `403`, and `retry-failed` re-queues only the
+  caller's, so one admin's retry never sends another admin's mail to their own URL.
+- Migration `0053` makes `user_id` required on push devices, unified views, orders, order files,
+  pipeline documents and the idempotency records; a row written without one is first given to
+  the owner of its mail's account, or to the instance owner.
 
 ## [7.5.1] - 2026-11-11
 

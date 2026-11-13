@@ -186,11 +186,11 @@ async def test_a_file_document_links_to_the_file_download_route(
             await session.execute(
                 text(
                     "INSERT INTO order_files "
-                    "(order_id, filename, size_bytes, sha256, data, status) "
-                    "VALUES (:order_id, 'scan.pdf', 3, 'abc', '\\x010203', 'attached') "
+                    "(order_id, filename, size_bytes, sha256, data, status, user_id) "
+                    "VALUES (:order_id, 'scan.pdf', 3, 'abc', '\\x010203', 'attached', :user) "
                     "RETURNING id"
                 ),
-                {"order_id": order_id},
+                {"order_id": order_id, "user": OWNER_USER_ID},
             )
         ).scalar_one()
         await session.execute(

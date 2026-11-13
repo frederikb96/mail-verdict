@@ -591,10 +591,10 @@ class TestARewriteRepairsAnOldOrder:
             file_id = (await session.execute(
                 text(
                     "INSERT INTO order_files (order_id, filename, content_type, size_bytes, "
-                    "sha256, data, status) VALUES (:o, 'ticket.pdf', 'application/pdf', 1, :h, "
-                    ":d, 'attached') RETURNING id"
+                    "sha256, data, status, user_id) VALUES (:o, 'ticket.pdf', "
+                    "'application/pdf', 1, :h, :d, 'attached', :user) RETURNING id"
                 ),
-                {"o": order_id, "h": number, "d": ticket_pdf(number)},
+                {"o": order_id, "h": number, "d": ticket_pdf(number), "user": OWNER_USER_ID},
             )).scalar_one()
             await session.execute(
                 text(

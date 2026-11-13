@@ -1,6 +1,8 @@
 """
 Webhook delivery API (admin only): what a rule's webhook action has queued, retrying a
-failed delivery, and the backfill over existing mail.
+failed delivery, and the backfill over existing mail. Each covers the caller's
+own mail only: a delivery carries the message it was queued for, so another
+admin's deliveries are neither listed nor sent anywhere by a retry.
 
 GET  /api/webhooks/deliveries               -- newest first; ?name= &status= &limit=
 POST /api/webhooks/deliveries/{id}/retry    -- re-queue a failed delivery
@@ -120,10 +122,13 @@ async def list_deliveries(
     name: str | None = Query(default=None),
     status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
+    scope: Scope = Depends(current_scope),
 ) -> list[WebhookDeliveryOut]:
-    """List deliveries, newest first."""
+    """List deliveries of the caller's mail, newest first."""
     async with get_db_connection().session() as session:
-        rows = await repository.list_deliveries(session, name=name, status=status, limit=limit)
+        rows = await repository.list_deliveries(
+            session, account_ids=scope.account_ids, name=name, status=status, limit=limit,
+        )
     return [_to_out(r) for r in rows]
 
 
@@ -138,6 +143,7 @@ async def retry_delivery(
         row = await session.get(WebhookDelivery, delivery_id)
     if row is None:
         raise HTTPException(status_code=409, detail="no failed delivery with that id")
+    scope.require_account(row.account_id)
     effect = await _current_effect(scope, row.name)
     async with get_db_connection().session() as session:
         if not await repository.requeue_failed(session, delivery_id, effect=effect):
@@ -147,11 +153,15 @@ async def retry_delivery(
 
 @router.post("/{name}/retry-failed", status_code=202)
 async def retry_failed(name: str, scope: Scope = Depends(current_scope)) -> dict[str, int]:
-    """Re-queue every failed delivery of one webhook, as the single retry
-    does for one. Returns how many moved."""
+    """Re-queue every failed delivery of one webhook for the caller's mail,
+    as the single retry does for one. Returns how many moved."""
     effect = await _current_effect(scope, name)
     async with get_db_connection().session() as session:
-        return {"requeued": await repository.requeue_all_failed(session, name, effect=effect)}
+        return {
+            "requeued": await repository.requeue_all_failed(
+                session, name, account_ids=scope.account_ids, effect=effect,
+            ),
+        }
 
 
 @router.post("/{name}/backfill", response_model=WebhookBackfillResponse)

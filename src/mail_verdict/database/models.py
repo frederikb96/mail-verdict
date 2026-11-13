@@ -1171,7 +1171,7 @@ class UnifiedView(Base):
     emoji: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Sidebar order, ascending.
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
 
     __table_args__ = (
         UniqueConstraint(
@@ -1694,7 +1694,7 @@ class PipelineRevision(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
-    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
 
     __table_args__ = (Index("ix_pipeline_revisions_user_revision", "user_id", "revision"),)
 
@@ -1801,7 +1801,7 @@ class OutboxSubmission(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
-    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
 
 
 class MessageActionSubmission(Base):
@@ -1832,7 +1832,7 @@ class MessageActionSubmission(Base):
     heartbeat_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
-    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
 
 
 class Alert(Base):
@@ -1958,7 +1958,7 @@ class PushSubscription(Base):
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
 
     __table_args__ = (
         Index("ix_push_subscriptions_user_id", "user_id"),
@@ -2086,7 +2086,7 @@ class Order(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
     )
-    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
 
     __table_args__ = (
         Index("ix_orders_user_id", "user_id"),
@@ -2279,7 +2279,7 @@ class OrderFile(Base):
     )
     # Who added the file. A file with no entry yet belongs to its uploader
     # alone; once placed, it sits in an entry of the same user.
-    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
 
     __table_args__ = (
         CheckConstraint(

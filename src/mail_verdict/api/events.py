@@ -8,8 +8,11 @@ A stream carries the events of the caller's own ring keys and nothing else
 key for an admin, and the key every stream receives). ?account_id=<uuid>
 narrows the account keys to that one account, if it is the caller's; the
 caller's user, admin and everyone keys stay. The keys are resolved again
-whenever an account changes owner (auth/ownership.py), so an account added,
-removed or given away mid-stream starts or stops reaching it at once.
+whenever an account changes owner or a user's role or sign-in changes
+(auth/ownership.py), so an account added, removed or given away mid-stream
+starts or stops reaching it at once, and at least every
+auth.principal_cache_seconds besides. A stream whose user has been disabled
+ends at that point; the client's reconnect is then refused by the gate.
 
 On fresh connect: sends connected event, then streams live events.
 On reconnect (Last-Event-ID header): replays missed events of the caller's
@@ -27,18 +30,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
 from mail_verdict.auth.ownership import on_ownership_change, ownership_generation
-from mail_verdict.auth.principal import Principal, current_principal
+from mail_verdict.auth.principal import OWNER_USER_ID, Principal, current_principal
 from mail_verdict.auth.scope import EVERYONE_RING_KEY, Scope
+from mail_verdict.config import get_config
 from mail_verdict.database.connection import get_db_connection
+from mail_verdict.database.models import User
 
 if TYPE_CHECKING:
     from mail_verdict.api.event_ring import EventRing
@@ -215,8 +222,13 @@ def _format_sse(event_id: str, event_type: str, data: dict[str, Any]) -> str:
     return f"id: {event_id}\nevent: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
-# Resolves the ring keys a stream may read, as of now.
+# Resolves the ring keys a stream may read, as of now. Raises StreamClosed
+# when the stream may no longer read anything at all.
 KeyResolver = Callable[[], Awaitable[frozenset[str]]]
+
+
+class StreamClosed(Exception):
+    """The caller of a stream may no longer stream: their user is disabled."""
 
 
 async def _sse_generator(
@@ -224,6 +236,8 @@ async def _sse_generator(
     resolve_keys: KeyResolver,
     last_event_id: int | None,
     request: Request,
+    *,
+    recheck_seconds: float,
 ) -> AsyncGenerator[str, None]:
     """
     Async generator yielding SSE-formatted strings from the EventRing.
@@ -232,16 +246,24 @@ async def _sse_generator(
     On reconnect (with Last-Event-ID): replays missed events, then live.
     Sends a `ping` heartbeat event every KEEPALIVE_INTERVAL_S while idle.
     Only ever reads the keys `resolve_keys` returns, asked again before the
-    next read whenever ownership_generation() has moved.
+    next read whenever ownership_generation() has moved or `recheck_seconds`
+    have passed since it was last asked; ends as soon as it raises
+    StreamClosed.
 
     Args:
         event_ring: Ring buffer to read events from
         resolve_keys: The keys this stream may read
         last_event_id: Last-Event-ID from reconnecting client
         request: Starlette request for disconnect detection
+        recheck_seconds: The longest the keys are trusted without asking
+            again -- what bounds a change no generation bump announced
     """
     generation = ownership_generation()
-    keys = await resolve_keys()
+    try:
+        keys = await resolve_keys()
+    except StreamClosed:
+        return
+    resolved_at = time.monotonic()
     waiter = event_ring.register_waiter(keys)
     try:
         last_seen: int
@@ -283,12 +305,16 @@ async def _sse_generator(
             last_seen = seq
 
         async def _current_keys() -> frozenset[str]:
-            # Ownership changed since the keys were read: read them again
-            # before the ring, so an account given away is never read once
-            # more and one just added is read from here on.
-            nonlocal generation, keys, waiter
-            if generation != ownership_generation():
+            # Ownership or the user changed since the keys were read, or they
+            # are older than recheck_seconds: read them again before the
+            # ring, so an account given away is never read once more, one
+            # just added is read from here on, and a disabled user's stream
+            # ends (StreamClosed, caught below).
+            nonlocal generation, keys, waiter, resolved_at
+            stale = time.monotonic() - resolved_at >= recheck_seconds
+            if stale or generation != ownership_generation():
                 generation = ownership_generation()
+                resolved_at = time.monotonic()
                 fresh = await resolve_keys()
                 if fresh != keys:
                     event_ring.unregister_waiter(waiter, keys)
@@ -323,15 +349,36 @@ async def _sse_generator(
                 )
                 last_seen = event["id"]
 
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, StreamClosed):
         return
     finally:
         event_ring.unregister_waiter(waiter, keys)
 
 
 async def _scope_of(principal: Principal) -> Scope:
-    """The scope a stream of `principal` reads, as of now."""
-    return await Scope.for_principal(get_db_connection(), principal)
+    """
+    The scope a stream of `principal` reads, as of now: read from the users
+    table rather than the principal, so a role changed since the stream
+    opened counts, and a user disabled since then closes it.
+
+    Raises:
+        StreamClosed: The user is disabled (the owner never is).
+    """
+    db = get_db_connection()
+    if principal.user_id != OWNER_USER_ID:
+        async with db.session() as session:
+            disabled = await session.scalar(
+                select(User.disabled).where(User.id == principal.user_id)
+            )
+        if disabled is not False:
+            raise StreamClosed()
+    return await Scope.for_user(db, principal.user_id)
+
+
+def _recheck_seconds() -> float:
+    """How long a stream trusts its user without reading them again: as long
+    as the gate trusts who a subject is (auth.principal_cache_seconds)."""
+    return get_config().auth.principal_cache_seconds
 
 
 def stream_keys(scope: Scope, account_id: uuid.UUID | None) -> frozenset[str]:
@@ -405,7 +452,12 @@ async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
         last_event_id = FOREIGN_EVENT_ID if parsed is None else parsed
 
     return StreamingResponse(
-        _with_preamble(_sse_generator(_event_ring, resolve_keys, last_event_id, request)),
+        _with_preamble(
+            _sse_generator(
+                _event_ring, resolve_keys, last_event_id, request,
+                recheck_seconds=_recheck_seconds(),
+            )
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

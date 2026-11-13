@@ -17740,7 +17740,7 @@
     },
     "/webhooks/deliveries": {
       "get": {
-        "description": "List deliveries, newest first.",
+        "description": "List deliveries of the caller's mail, newest first.",
         "operationId": "list_deliveries_webhooks_deliveries_get",
         "parameters": [
           {
@@ -17923,7 +17923,7 @@
     },
     "/webhooks/{name}/retry-failed": {
       "post": {
-        "description": "Re-queue every failed delivery of one webhook, as the single retry\ndoes for one. Returns how many moved.",
+        "description": "Re-queue every failed delivery of one webhook for the caller's mail,\nas the single retry does for one. Returns how many moved.",
         "operationId": "retry_failed_webhooks__name__retry_failed_post",
         "parameters": [
           {

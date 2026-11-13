@@ -6,10 +6,11 @@ the insert is written), listing, and re-queueing a failed one.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mail_verdict.database.models import WebhookDelivery
@@ -73,10 +74,17 @@ async def enqueue_delivery(
 
 
 async def list_deliveries(
-    session: AsyncSession, *, name: str | None, status: str | None, limit: int,
+    session: AsyncSession, *, account_ids: Collection[uuid.UUID], name: str | None,
+    status: str | None, limit: int,
 ) -> list[WebhookDelivery]:
-    """Newest first, optionally narrowed by webhook name and status."""
-    stmt = select(WebhookDelivery).order_by(WebhookDelivery.created_at.desc()).limit(limit)
+    """Deliveries of mail in `account_ids`, newest first, optionally narrowed
+    by webhook name and status."""
+    stmt = (
+        select(WebhookDelivery)
+        .where(WebhookDelivery.account_id.in_(account_ids))
+        .order_by(WebhookDelivery.created_at.desc())
+        .limit(limit)
+    )
     if name is not None:
         stmt = stmt.where(WebhookDelivery.name == name)
     if status is not None:
@@ -119,11 +127,13 @@ async def requeue_failed(
 
 
 async def requeue_all_failed(
-    session: AsyncSession, name: str, *, effect: Webhook | None = None,
+    session: AsyncSession, name: str, *, account_ids: Collection[uuid.UUID],
+    effect: Webhook | None = None,
 ) -> int:
-    """Re-queue every failed delivery of one webhook as `requeue_failed` does
-    for one; returns how many moved."""
-    return await _requeue(session, WebhookDelivery.name == name, effect)
+    """Re-queue every failed delivery of one webhook for mail in
+    `account_ids`, as `requeue_failed` does for one; returns how many moved."""
+    which = and_(WebhookDelivery.name == name, WebhookDelivery.account_id.in_(account_ids))
+    return await _requeue(session, which, effect)
 
 
 async def _requeue(

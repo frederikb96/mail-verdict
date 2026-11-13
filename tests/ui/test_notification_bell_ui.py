@@ -18,6 +18,7 @@ from playwright.sync_api import Browser, Locator, Page, expect
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from mail_verdict.auth.principal import OWNER_USER_ID
 from tests.ui.helpers import mail_row, select_account, select_unified_view, unique_email
 
 # Stubs navigator.serviceWorker and Notification.permission before any
@@ -325,11 +326,12 @@ def _seed_native_device(postgres_url: str, label: str) -> None:
             await conn.execute(
                 text(
                     "INSERT INTO push_subscriptions (transport, installation_id, relay_url, "
-                    "encrypted_relay_ticket, encrypted_content_key, label, last_seen_at) "
+                    "encrypted_relay_ticket, encrypted_content_key, label, last_seen_at, "
+                    "user_id) "
                     "VALUES ('apns', :installation, 'https://relay.example', '\\x01'::bytea, "
-                    "'\\x01'::bytea, :label, now())"
+                    "'\\x01'::bytea, :label, now(), :owner)"
                 ),
-                {"installation": uuid.uuid4(), "label": label},
+                {"installation": uuid.uuid4(), "label": label, "owner": OWNER_USER_ID},
             )
         await engine.dispose()
 

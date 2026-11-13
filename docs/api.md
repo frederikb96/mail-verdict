@@ -18,7 +18,8 @@ Every request under `/api` and to the MCP server at `/mcp` carries an OpenID Con
 configured issuer as `Authorization: Bearer <token>`; without a valid one the answer is `401` with
 `WWW-Authenticate: Bearer`. Two routes answer without a token: `GET /api/health` (readiness) and
 `GET /api/auth/config` (the issuer, the native client id, scopes and redirect URI a native app
-starts its sign-in with). A user an admin has disabled gets `403` with detail `user_disabled`;
+starts its sign-in with). A user an admin has disabled gets `403` with detail `user_disabled`,
+and an event stream they hold open ends;
 with `auth.auto_provision` off, a subject no user has gets `403` `unknown_user`. Any other `403`
 is a request for something the caller does not own.
 
@@ -292,6 +293,8 @@ after the last message looked at. A request without it starts over from `since`.
 `POST /api/webhooks/deliveries/{id}/retry` re-queues one failed delivery and
 `POST /api/webhooks/{name}/retry-failed` all of one webhook's; both send to the URL, method and
 headers the rule has now, falling back to what was queued when no enabled rule carries the name.
+All three cover the deliveries of the caller's own accounts; retrying another user's answers
+`403`.
 
 ### Search semantically
 

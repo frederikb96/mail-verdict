@@ -15,10 +15,10 @@ import pytest
 import mail_verdict.api.events as events_module
 import mail_verdict.auth.ownership as ownership_module
 from mail_verdict.api.event_ring import EventRing
-from mail_verdict.api.events import _sse_generator, stream_keys
+from mail_verdict.api.events import StreamClosed, _sse_generator, stream_keys
 from mail_verdict.auth.scope import ADMIN_RING_KEY, EVERYONE_RING_KEY
 from tests.helpers.auth import user_scope
-from tests.helpers.sse import fixed_keys, streaming_as
+from tests.helpers.sse import RECHECK_SECONDS, fixed_keys, streaming_as
 
 
 class _CountingRequest:
@@ -83,7 +83,9 @@ class TestSSELiveLoopDoesNotDropEvents:
         await ring.add(account_id, "mail.new", {"n": 2})
 
         request = _CountingRequest(disconnect_after=50)
-        gen = _sse_generator(ring, fixed_keys(acct_str), first_id, request)
+        gen = _sse_generator(
+            ring, fixed_keys(acct_str), first_id, request, recheck_seconds=RECHECK_SECONDS,
+        )
 
         # Replays the single missed event (n=2). The generator is now
         # suspended immediately after this yield -- exactly the window the
@@ -122,7 +124,9 @@ class TestSSELiveLoopDoesNotDropEvents:
         first_id = await ring.add(account_id, "mail.new", {"n": 1})
 
         request = _CountingRequest(disconnect_after=50)
-        gen = _sse_generator(ring, fixed_keys(acct_str), first_id, request)
+        gen = _sse_generator(
+            ring, fixed_keys(acct_str), first_id, request, recheck_seconds=RECHECK_SECONDS,
+        )
 
         # Fresh connect would also work, but reuse the reconnect path since
         # it is the one with a `missed` loop to suspend inside of. Prime it
@@ -187,6 +191,8 @@ class TestSSEAccountFilter:
             resolve_keys: events_module.KeyResolver,
             last_event_id: int | None,
             request: object,
+            *,
+            recheck_seconds: float,
         ) -> None:
             captured["keys"] = await resolve_keys()
             return
@@ -234,6 +240,7 @@ class TestSSEStreamReadsOnlyItsKeys:
 
         gen = _sse_generator(
             ring, fixed_keys(str(mine)), None, _CountingRequest(disconnect_after=50),
+            recheck_seconds=RECHECK_SECONDS,
         )
         await gen.__anext__()  # connected
 
@@ -255,6 +262,7 @@ class TestSSEStreamReadsOnlyItsKeys:
 
         gen = _sse_generator(
             ring, fixed_keys(str(mine)), last_seen, _CountingRequest(disconnect_after=0),
+            recheck_seconds=RECHECK_SECONDS,
         )
         replayed = [chunk async for chunk in gen]
 
@@ -275,7 +283,10 @@ class TestSSEStreamReadsOnlyItsKeys:
         async def resolve() -> frozenset[str]:
             return frozenset(owned)
 
-        gen = _sse_generator(ring, resolve, None, _CountingRequest(disconnect_after=50))
+        gen = _sse_generator(
+            ring, resolve, None, _CountingRequest(disconnect_after=50),
+            recheck_seconds=RECHECK_SECONDS,
+        )
         await gen.__anext__()  # connected
         await ring.add(given_away, "mail.new", {"n": "before"})
         await _drain_until(gen, '"n": "before"')
@@ -293,6 +304,75 @@ class TestSSEStreamReadsOnlyItsKeys:
         await gen.aclose()
 
 
+class TestSSEStreamEndsForADisabledUser:
+    """A stream opened before its user was disabled does not outlive the
+    switch: it ends once the user is read again -- at once on the change
+    that bumps the generation, and within recheck_seconds without one."""
+
+    @staticmethod
+    def _disabled_after_first_read(mine: uuid.UUID) -> events_module.KeyResolver:
+        reads = 0
+
+        async def resolve() -> frozenset[str]:
+            nonlocal reads
+            reads += 1
+            if reads > 1:
+                raise StreamClosed()
+            return frozenset({str(mine)})
+
+        return resolve
+
+    @pytest.mark.asyncio
+    async def test_the_change_that_disables_the_user_ends_the_stream(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(events_module, "KEEPALIVE_INTERVAL_S", 0.05)
+        ring = EventRing()
+        mine = uuid.uuid4()
+        gen = _sse_generator(
+            ring, self._disabled_after_first_read(mine), None,
+            _CountingRequest(disconnect_after=50), recheck_seconds=RECHECK_SECONDS,
+        )
+        await gen.__anext__()  # connected
+
+        monkeypatch.setattr(ownership_module, "_generation", ownership_module._generation + 1)
+        ring.wake_all()
+        await ring.add(mine, "mail.new", {"n": "after disabling"})
+        rest = [chunk async for chunk in gen]
+
+        assert not any("after disabling" in chunk for chunk in rest), rest
+
+    @pytest.mark.asyncio
+    async def test_with_no_announced_change_the_stream_ends_within_recheck_seconds(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(events_module, "KEEPALIVE_INTERVAL_S", 0.05)
+        ring = EventRing()
+        mine = uuid.uuid4()
+        gen = _sse_generator(
+            ring, self._disabled_after_first_read(mine), None,
+            _CountingRequest(disconnect_after=1000), recheck_seconds=0.1,
+        )
+        await gen.__anext__()  # connected
+
+        rest = [chunk async for chunk in gen]
+
+        assert all(chunk == events_module.PING_FRAME for chunk in rest), rest
+        assert len(rest) < 100
+
+    @pytest.mark.asyncio
+    async def test_a_user_disabled_before_the_stream_opens_gets_nothing(self) -> None:
+        async def closed() -> frozenset[str]:
+            raise StreamClosed()
+
+        gen = _sse_generator(
+            EventRing(), closed, None, _CountingRequest(disconnect_after=50),
+            recheck_seconds=RECHECK_SECONDS,
+        )
+
+        assert [chunk async for chunk in gen] == []
+
+
 class TestSSEHeartbeat:
     """An idle stream carries a named `ping` event: EventSource hides comment
     lines, so a page could not otherwise tell a quiet stream from a dead one."""
@@ -306,6 +386,7 @@ class TestSSEHeartbeat:
         ring = EventRing()
         gen = _sse_generator(
             ring, fixed_keys(str(uuid.uuid4())), None, _CountingRequest(disconnect_after=50),
+            recheck_seconds=RECHECK_SECONDS,
         )
 
         assert (await gen.__anext__()).startswith("id: ")
