@@ -44,6 +44,7 @@ from mail_verdict.settings.service import (
     init_settings_service,
     reset_settings_service,
 )
+from tests.helpers.auth import act_as_owner_of_everything
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
 from tests.pg.test_sync_notifications import _seed_notification
 
@@ -407,11 +408,12 @@ class TestRegistration:
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     """One persistent portal for the whole test -- see test_identities_api_pg.py."""
     app = FastAPI()
     app.include_router(alerts_router)
     app.include_router(all_notifications_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

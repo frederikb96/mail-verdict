@@ -55,7 +55,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from sqlalchemy import desc, func, select
@@ -63,6 +63,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile
 
 from mail_verdict.alerts.resolve import announce_alerts_dismissed
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.identities import resolve_send_from_addr
 from mail_verdict.api.schemas import (
@@ -72,6 +73,7 @@ from mail_verdict.api.schemas import (
     PendingSendAttachmentSummary,
     PendingSendResponse,
 )
+from mail_verdict.auth.scope import Scope
 from mail_verdict.config import get_config
 from mail_verdict.core.content_disposition import content_disposition
 from mail_verdict.core.image_sanitizer import restore_remote_images
@@ -237,7 +239,9 @@ async def _parse_request(
 
 
 @router.post("", response_model=None, status_code=201)
-async def create_outbox(request: Request) -> OutboxResponse | PendingSendResponse:
+async def create_outbox(
+    request: Request, scope: Scope = Depends(current_scope),
+) -> OutboxResponse | PendingSendResponse:
     """
     Send a message or save a draft.
 
@@ -253,6 +257,8 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
     stage_send() below.
     """
     payload, attachments = await _parse_request(request)
+    scope.require_account(payload.account_id)
+    user_id = scope.require_user()
 
     if payload.kind == "send":
         require_recipients(payload.to, payload.cc, payload.bcc)
@@ -274,7 +280,9 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
         # time: a repeat whose draft has since been superseded by the first
         # one's own send is still that same request, not a 404.
         if payload.idempotency_key is not None:
-            repeat = await replay_submission(session, payload.idempotency_key, payload.kind)
+            repeat = await replay_submission(
+                session, user_id, payload.idempotency_key, payload.kind,
+            )
             if repeat is not None:
                 return repeat
 
@@ -359,7 +367,7 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
         # bare FastAPI() mounting just this router, in tests among them)
         # that never initialised the settings service at all.
         undo_seconds = (
-            get_settings_service().get("outbox").get("undo_send_seconds", 0)
+            get_settings_service().get_for_user("outbox", user_id).get("undo_send_seconds", 0)
             if payload.kind == "send"
             else 0
         )
@@ -382,7 +390,7 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
             )
             if payload.idempotency_key is not None:
                 await record_submission(
-                    session, payload.idempotency_key, payload.kind, pending.id,
+                    session, user_id, payload.idempotency_key, payload.kind, pending.id,
                 )
             # PendingSend is MailVerdict's own staging table -- the real
             # outbox insert it eventually becomes fires outbox.updated via
@@ -416,7 +424,9 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
             attachments=attachments,
         )
         if payload.idempotency_key is not None:
-            await record_submission(session, payload.idempotency_key, payload.kind, outbox.id)
+            await record_submission(
+                session, user_id, payload.idempotency_key, payload.kind, outbox.id,
+            )
         att_result = await session.execute(
             select(OutboxAttachment).where(OutboxAttachment.outbox_id == outbox.id)
         )
@@ -476,7 +486,7 @@ async def _pending_send_responses(
 
 
 async def replay_submission(
-    session: AsyncSession, idempotency_key: uuid.UUID, kind: str,
+    session: AsyncSession, user_id: uuid.UUID, idempotency_key: uuid.UUID, kind: str,
 ) -> OutboxResponse | PendingSendResponse | None:
     """
     The answer to a request repeating an earlier one's idempotency key: the
@@ -486,6 +496,7 @@ async def replay_submission(
 
     Args:
         session: Active AsyncSession (caller commits)
+        user_id: The user the key belongs to
         idempotency_key: The caller's key for this composed message
         kind: "send" or "draft", what this request asks for
 
@@ -496,7 +507,7 @@ async def replay_submission(
         HTTPException: 409 if the key was used for a different kind, or the
             row it created no longer exists in either place
     """
-    previous = await find_submission(session, idempotency_key)
+    previous = await find_submission(session, user_id, idempotency_key)
     if previous is None:
         return None
     if previous.kind != kind:
@@ -527,6 +538,7 @@ async def replay_submission(
 async def list_outbox(
     account_id: uuid.UUID | None = None,
     status: str | None = None,
+    scope: Scope = Depends(current_scope),
 ) -> list[OutboxResponse]:
     """List outbox rows, newest first, optionally scoped to an account/status.
 
@@ -539,10 +551,13 @@ async def list_outbox(
     rows, since neither describes them.
     """
     db = get_db_connection()
+    account_ids = scope.narrow(account_id)
     async with db.session() as session:
-        stmt = select(Outbox).order_by(desc(Outbox.created_at))
-        if account_id is not None:
-            stmt = stmt.where(Outbox.account_id == account_id)
+        stmt = (
+            select(Outbox)
+            .where(Outbox.account_id.in_(account_ids))
+            .order_by(desc(Outbox.created_at))
+        )
         if status is not None:
             stmt = stmt.where(Outbox.status == status)
         result = await session.execute(stmt)
@@ -561,7 +576,7 @@ async def list_outbox(
         responses = [_to_response(o, attachments_by_outbox.get(o.id, [])) for o in rows]
 
         if status is None or status == "pending":
-            pending_rows = await list_pending_sends(session, account_id)
+            pending_rows = await list_pending_sends(session, account_ids)
             pending_attachments_by_send: dict[uuid.UUID, list[PendingSendAttachment]] = {}
             if pending_rows:
                 pending_att_result = await session.execute(
@@ -585,22 +600,31 @@ async def list_outbox(
 
 
 @router.get("/pending", response_model=list[PendingSendResponse])
-async def list_outbox_pending(account_id: uuid.UUID | None = None) -> list[PendingSendResponse]:
+async def list_outbox_pending(
+    account_id: uuid.UUID | None = None, scope: Scope = Depends(current_scope),
+) -> list[PendingSendResponse]:
     """List sends still inside their undo window, soonest first -- for the
     undo banner to rehydrate from on a fresh page load."""
     db = get_db_connection()
     async with db.session() as session:
-        rows = await list_pending_sends(session, account_id)
+        rows = await list_pending_sends(session, scope.narrow(account_id))
         return await _pending_send_responses(session, rows)
 
 
 @router.get("/pending/{pending_send_id}/attachments/{attachment_id}")
-async def get_pending_attachment(pending_send_id: uuid.UUID, attachment_id: uuid.UUID) -> Response:
+async def get_pending_attachment(
+    pending_send_id: uuid.UUID, attachment_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> Response:
     """One staged send's attachment content -- what Undo re-attaches to the
     composer it reopens. Answers for a cancelled send too, since that is
     when it is asked for; gone once the send has moved into outbox."""
     db = get_db_connection()
     async with db.session() as session:
+        owner_account = await session.scalar(
+            select(PendingSend.account_id).where(PendingSend.id == pending_send_id)
+        )
+        if owner_account is not None:
+            scope.require_account(owner_account)
         row = (
             await session.execute(
                 select(
@@ -623,7 +647,9 @@ async def get_pending_attachment(pending_send_id: uuid.UUID, attachment_id: uuid
 
 
 @router.post("/pending/{pending_send_id}/cancel", status_code=204)
-async def cancel_outbox_pending(pending_send_id: uuid.UUID) -> None:
+async def cancel_outbox_pending(
+    pending_send_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> None:
     """Cancel a send still inside its undo window.
 
     404 covers both "never existed" and "already sent or already
@@ -635,6 +661,8 @@ async def cancel_outbox_pending(pending_send_id: uuid.UUID) -> None:
         account_id = await session.scalar(
             select(PendingSend.account_id).where(PendingSend.id == pending_send_id)
         )
+        if account_id is not None:
+            scope.require_account(account_id)
         cancelled = await cancel_pending_send(session, pending_send_id)
         # Undo settles a send stuck past its window, so its stalled alert
         # clears with the cancel rather than on the stalled pass's next tick.

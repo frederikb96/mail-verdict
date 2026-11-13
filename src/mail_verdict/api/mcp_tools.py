@@ -794,9 +794,11 @@ async def _create_outbox_row(
         db = get_db_connection()
         account_uuid = uuid.UUID(account_id)
         key = uuid.UUID(idempotency_key) if idempotency_key else None
+        # Only a keyed send is stored per user, so only it needs to know who.
+        user_id = (await current_scope()).require_user() if key is not None else None
         async with db.session() as session:
-            if key is not None:
-                repeat = await replay_submission(session, key, kind)
+            if key is not None and user_id is not None:
+                repeat = await replay_submission(session, user_id, key, kind)
                 if repeat is not None:
                     status = repeat.status if isinstance(repeat, OutboxResponse) else "pending"
                     return {"success": True, "outbox_id": str(repeat.id), "status": status}
@@ -818,8 +820,8 @@ async def _create_outbox_row(
                 references=references,
                 attachments=attachments,
             )
-            if key is not None:
-                await record_submission(session, key, kind, outbox.id)
+            if key is not None and user_id is not None:
+                await record_submission(session, user_id, key, kind, outbox.id)
             return {"success": True, "outbox_id": str(outbox.id), "status": outbox.status}
     except (HTTPException, ValueError) as exc:
         return {"success": False, **_endpoint_error(exc)}

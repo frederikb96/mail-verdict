@@ -26,6 +26,9 @@ written afterwards:
   (claim_token), never one another request has since taken over.
 - A claim whose heartbeat stopped -- the process was killed mid-action --
   is taken over once it is _ABANDONED_AFTER_SECONDS old.
+- A key belongs to the user who sent it: the stored key is derived from the
+  user and the client's key together, so two users sending the same key are
+  two unrelated submissions and neither can read or block the other's.
 - A key reused for a different request is refused with 409. The request
   is compared without its defaulted fields, so a field added with a
   default in a later release does not turn a retry across the upgrade
@@ -88,9 +91,16 @@ def request_fingerprint(endpoint: str, target_id: uuid.UUID, request: BaseModel)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def scoped_key(user_id: uuid.UUID, idempotency_key: uuid.UUID) -> uuid.UUID:
+    """The key a submission is stored under: the client's key within one
+    user's namespace, so it can never meet another user's."""
+    return uuid.uuid5(user_id, str(idempotency_key))
+
+
 async def run_once(
     db: DatabaseConnection,
-    idempotency_key: uuid.UUID,
+    user_id: uuid.UUID,
+    client_key: uuid.UUID,
     fingerprint: str,
     response_model: type[ResponseT],
     apply: Callable[[], Awaitable[ResponseT]],
@@ -100,7 +110,8 @@ async def run_once(
 
     Args:
         db: Database connection
-        idempotency_key: The caller's key for this action
+        user_id: The user the key belongs to
+        client_key: The caller's key for this action
         fingerprint: request_fingerprint() of the request
         response_model: The endpoint's response model, to rebuild a replay
         apply: Performs the action and returns its response
@@ -112,6 +123,7 @@ async def run_once(
         HTTPException: 409 if the key was used for a different request, 503
             if a request with this key is still being applied
     """
+    idempotency_key = scoped_key(user_id, client_key)
     token = uuid.uuid4()
     async with db.session() as session:
         await session.execute(
@@ -152,6 +164,7 @@ async def run_once(
             session.add(
                 MessageActionSubmission(
                     idempotency_key=idempotency_key, fingerprint=fingerprint, claim_token=token,
+                    user_id=user_id,
                 )
             )
 

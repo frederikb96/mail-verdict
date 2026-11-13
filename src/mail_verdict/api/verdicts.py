@@ -12,11 +12,12 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import aliased
 
-from mail_verdict.api.deps import get_message_repo, get_verdict_repo
+from mail_verdict.api.access import owned_account
+from mail_verdict.api.deps import current_scope, get_message_repo, get_verdict_repo
 from mail_verdict.api.mails import _LIST_DEFERRED_COLUMNS
 from mail_verdict.api.schemas import (
     FeedbackRequest,
@@ -25,6 +26,7 @@ from mail_verdict.api.schemas import (
     SpamReviewListResponse,
     VerdictResponse,
 )
+from mail_verdict.auth.scope import Scope
 from mail_verdict.core.envelope_sender import envelope_sender, return_path_option
 from mail_verdict.core.snippet import build_snippet
 from mail_verdict.database.connection import get_db_connection
@@ -41,18 +43,20 @@ async def list_verdicts(
     mail_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    scope: Scope = Depends(current_scope),
 ) -> list[VerdictResponse]:
-    """List verdicts with optional filters."""
+    """List verdicts of the caller's own mail, with optional filters."""
     db = get_db_connection()
+    accounts = scope.narrow(account_id)
     async with db.session() as session:
-        stmt = select(Verdict).order_by(desc(Verdict.created_at))
+        stmt = (
+            select(Verdict)
+            .where(Verdict.account_id.in_(accounts))
+            .order_by(desc(Verdict.created_at))
+        )
 
         if mail_id is not None:
             stmt = stmt.where(Verdict.mail_id == mail_id)
-        if account_id is not None:
-            stmt = stmt.join(Message, Verdict.mail_id == Message.id).where(
-                Message.account_id == account_id,
-            )
 
         stmt = stmt.limit(limit).offset(offset)
         result = await session.execute(stmt)
@@ -79,10 +83,12 @@ async def list_spam_review(
         description="Cursor: id of the last verdict in the previous page",
     ),
     limit: int = Query(default=50, ge=1, le=200),
+    scope: Scope = Depends(current_scope),
 ) -> SpamReviewListResponse:
     """
-    Every message whose latest verdict calls it spam, with no user ruling
-    since -- across every account and folder, including Junk, since this
+    Every message of the caller's own whose latest verdict calls it spam,
+    with no user ruling since -- across every one of their accounts and
+    folders, including Junk, since this
     is a triage view over verdicts rather than a folder listing; nothing
     here moves a message or changes the classification pipeline.
 
@@ -126,6 +132,7 @@ async def list_spam_review(
             .join(latest, latest.mail_id == Message.id)
             .join(Folder, Folder.id == Message.folder_id)
             .where(
+                scope.account_filter(Message.account_id),
                 Message.expunged_at.is_(None),
                 latest.is_spam.is_(True),
                 latest.source != VerdictSource.USER_FEEDBACK,
@@ -169,13 +176,14 @@ async def list_spam_review(
 
 @router.get("/mails/{mail_id}/verdict", response_model=VerdictResponse | None)
 async def get_message_verdict(
-    mail_id: uuid.UUID,
+    mail_id: uuid.UUID, scope: Scope = Depends(current_scope),
 ) -> VerdictResponse | None:
-    """Get the latest verdict for a specific message."""
+    """Get the latest verdict for a specific message of the caller's own."""
     verdict_repo = get_verdict_repo()
     verdict = await verdict_repo.get_latest_for_mail(mail_id)
     if verdict is None:
         return None
+    scope.require_account(verdict.account_id)
 
     return VerdictResponse(
         id=verdict.id,
@@ -192,7 +200,7 @@ async def get_message_verdict(
 async def submit_feedback(
     mail_id: uuid.UUID,
     request: FeedbackRequest,
-    account_id: uuid.UUID = Query(),
+    account_id: uuid.UUID = Depends(owned_account),
 ) -> FeedbackResponse:
     """
     Submit a person's ruling on a message's spam classification.

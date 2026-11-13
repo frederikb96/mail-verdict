@@ -42,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   per user, and the account order is a per-user setting (`mail.account_order`) that only names the
   user's own accounts; the models, providers, queues and retry mechanics stay the instance's.
   `GET /api/settings/schema` lists every key with its scope and type.
+- Mail is per user. Accounts, folders, messages, threads, attachments, drafts and sends, verdicts,
+  the spam review, pipeline runs, identities, image exceptions and sync notifications show only
+  the caller's own: a list names nothing else, and a path naming an account, message or folder of
+  someone else's answers `403`. A conversation delivered to two users' accounts is two threads,
+  and the stats cover the caller's accounts alone.
 - Every user has their own rules (spam classification, filing rules, order bundling), edited
   through `/api/pipeline` and run only on mail of their own accounts. A user without any starts
   from a template: classify, move spam to Junk and mark it read, bundle orders. A rule may name
@@ -62,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   menu), failed runs, each user's rule set as counts, and the live tail; the shared stage list is
   gone, since every user edits their own rules on the Rules page. Failures and the tail wrap on a
   phone instead of cutting off stage names.
+- An `idempotency_key` on a mail action or a send belongs to the user who sent it: two users
+  sending the same key act separately, and neither is answered with the other's response. Whether
+  mail is marked read when it is filed into Archive or Junk follows the owner of the account,
+  also for the background pass that keeps those folders read.
 - Settings routes: an admin reads and writes every key (their own values for the user keys), anyone
   else only the user keys, and writing an admin key is `403`. Secrets, webhooks, queues, provider
   status, embedding coverage and backfill and settings import are admin-only.

@@ -12,6 +12,7 @@ from __future__ import annotations
 import types
 import uuid
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 import pytest
 from fastapi import HTTPException
@@ -19,12 +20,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import mail_verdict.api.mails as mails_module
-from mail_verdict.api.mails import bulk_action as api_bulk_action
+from mail_verdict.api.mails import bulk_action as _bulk_action
 from mail_verdict.api.schemas import BulkActionRequest, BulkActionScope
 from mail_verdict.config.loader import GlacierConfig
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.glacier.operations import ManualOutcome
 from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
+from tests.helpers.auth import owner_scope
+
+api_bulk_action = partial(_bulk_action, scope=owner_scope())
+
 
 _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
 

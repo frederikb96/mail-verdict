@@ -43,12 +43,15 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
+from mail_verdict.auth.ownership import owner_of_account
 from mail_verdict.database.models import VerdictSource
 from mail_verdict.database.repository import FolderRepository
 from mail_verdict.postimap.actions import move_message, move_messages_from, set_flags
 from mail_verdict.settings.service import get_settings_service
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from mail_verdict.api.event_ring import EventRing
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.database.repository import VerdictRepository
@@ -81,14 +84,17 @@ class FolderResolutionError(Exception):
 _MARK_READ_ON_FILE_ROLE = "junk"
 
 
-def _should_mark_read_on_file(role: str) -> bool:
+async def _should_mark_read_on_file(
+    session: AsyncSession, account_id: uuid.UUID, role: str,
+) -> bool:
     """settings.mail.mark_read_on_file_to_archive_or_junk, applied to a
     spam ruling's own move -- the thumbs-down button and the review
     screen both go through apply_human_ruling, so this is the one place
-    that covers them both."""
+    that covers them both. The setting is the account owner's own."""
     if role != _MARK_READ_ON_FILE_ROLE:
         return False
-    settings = get_settings_service().get("mail")
+    owner = await owner_of_account(session, account_id)
+    settings = get_settings_service().get_for_user("mail", owner)
     return bool(settings.get("mark_read_on_file_to_archive_or_junk", True))
 
 
@@ -197,7 +203,7 @@ class SpamFeedbackHandler:
                     session, [mail_id], expected_folder_id, folder_id,
                 ):
                     return ok
-                if _should_mark_read_on_file(role):
+                if await _should_mark_read_on_file(session, account_id, role):
                     await set_flags(session, mail_id, is_seen=True)
         return ok
 

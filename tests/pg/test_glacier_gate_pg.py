@@ -30,16 +30,21 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 import pytest
 from sqlalchemy import text
 
-from mail_verdict.api.mails import message_action as api_message_action
+from mail_verdict.api.mails import message_action as _message_action
 from mail_verdict.api.schemas import MessageActionRequest
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.glacier.operations import glacier_message_now
 from mail_verdict.glacier.restore import require_message_append_support
 from mail_verdict.postimap.contract import MIN_MESSAGE_APPEND_SERVICE_VERSION
+from tests.helpers.auth import owner_scope
+
+api_message_action = partial(_message_action, scope=owner_scope())
+
 
 _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
 

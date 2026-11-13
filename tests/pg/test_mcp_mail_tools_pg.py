@@ -17,7 +17,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.mcp_tools import mcp
+from mail_verdict.auth.principal import OWNER_USER_ID, Principal
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import as_principal
 
 _TARGETS = (
     "mail_verdict.api.mcp_tools.get_db_connection",
@@ -34,8 +36,9 @@ async def mcp_client(migrated_db: DatabaseConnection) -> AsyncIterator[Client]:
     for p in patchers:
         p.start()
     try:
-        async with Client(mcp) as client:
-            yield client
+        with as_principal(Principal(user_id=OWNER_USER_ID, subject="test:owner", is_admin=True)):
+            async with Client(mcp) as client:
+                yield client
     finally:
         for p in patchers:
             p.stop()

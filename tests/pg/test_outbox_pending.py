@@ -97,7 +97,7 @@ class TestStageSend:
         assert cancelled is True
 
         async with migrated_db.session() as session:
-            rows = await list_pending_sends(session, account_id)
+            rows = await list_pending_sends(session, [account_id])
         assert rows == []
 
     @pytest.mark.asyncio

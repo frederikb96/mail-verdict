@@ -16,6 +16,10 @@ Two independent checks, because they catch different repeats:
   dead-lettered (the draft is removed only once a send succeeds, so it is
   still there to resend).
 
+A key belongs to the user who sent it (mail_actions.submissions.scoped_key):
+two users sending the same key are unrelated, and neither is answered with
+the other's row.
+
 Each check runs under a transaction-scoped advisory lock on the thing it
 is about, so two concurrent requests are serialised rather than both
 reading "nothing yet" -- the second waits for the first to commit and then
@@ -30,6 +34,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.models import Outbox, OutboxSubmission, PendingSend
+from mail_verdict.mail_actions.submissions import scoped_key
 
 
 async def _lock(session: AsyncSession, name: str) -> None:
@@ -39,7 +44,7 @@ async def _lock(session: AsyncSession, name: str) -> None:
 
 
 async def find_submission(
-    session: AsyncSession, idempotency_key: uuid.UUID,
+    session: AsyncSession, user_id: uuid.UUID, client_key: uuid.UUID,
 ) -> OutboxSubmission | None:
     """
     The earlier submission carrying this key, if any -- holding the key's
@@ -48,11 +53,13 @@ async def find_submission(
 
     Args:
         session: Active AsyncSession (caller commits)
-        idempotency_key: The caller's key for this composed message
+        user_id: The user the key belongs to
+        client_key: The caller's key for this composed message
 
     Returns:
         The earlier OutboxSubmission, or None if this is the first
     """
+    idempotency_key = scoped_key(user_id, client_key)
     await _lock(session, f"outbox-submission:{idempotency_key}")
     previous: OutboxSubmission | None = await session.scalar(
         select(OutboxSubmission).where(OutboxSubmission.idempotency_key == idempotency_key)
@@ -61,12 +68,18 @@ async def find_submission(
 
 
 async def record_submission(
-    session: AsyncSession, idempotency_key: uuid.UUID, kind: str, target_id: uuid.UUID,
+    session: AsyncSession, user_id: uuid.UUID, client_key: uuid.UUID, kind: str,
+    target_id: uuid.UUID,
 ) -> None:
     """Record the row a keyed request created, in the same transaction as
     the row itself -- a request that fails before commit leaves the key
     unused, so retrying it after fixing whatever failed still works."""
-    session.add(OutboxSubmission(idempotency_key=idempotency_key, kind=kind, target_id=target_id))
+    session.add(
+        OutboxSubmission(
+            idempotency_key=scoped_key(user_id, client_key), kind=kind, target_id=target_id,
+            user_id=user_id,
+        )
+    )
     await session.flush()
 
 

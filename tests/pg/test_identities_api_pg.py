@@ -24,10 +24,11 @@ from mail_verdict.api.identities import router as identities_router
 from mail_verdict.api.outbox import router as outbox_router
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity, Outbox
+from tests.helpers.auth import act_as_owner_of_everything
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     """A single persistent TestClient portal for the whole test -- a new
     `with TestClient(...)` per call would each open its own event loop in
     its own thread, and the shared migrated_db's asyncpg connections
@@ -36,6 +37,7 @@ def client() -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(identities_router)
     app.include_router(outbox_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 
@@ -168,7 +170,7 @@ class TestIdentityCreate:
         assert first.status_code == 201
         assert second.status_code == 201
 
-    def test_unknown_account_is_rejected(
+    def test_an_account_that_is_not_the_callers_is_refused(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
@@ -176,7 +178,7 @@ class TestIdentityCreate:
                 "/identities",
                 json={"account_id": str(uuid.uuid4()), "address": "nobody@example.com"},
             )
-        assert resp.status_code == 404
+        assert resp.status_code == 403
 
 
 class TestIdentityUpdate:

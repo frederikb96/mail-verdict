@@ -613,7 +613,9 @@ async def set_folder_idle(
     )
 
 
-async def acknowledge_notification(session: AsyncSession, notification_id: int) -> None:
+async def acknowledge_notification(
+    session: AsyncSession, account_id: uuid.UUID, notification_id: int,
+) -> None:
     """
     Mark one sync_notifications row as seen.
 
@@ -624,11 +626,15 @@ async def acknowledge_notification(session: AsyncSession, notification_id: int) 
 
     Args:
         session: Active AsyncSession (caller commits)
+        account_id: The account the notification must belong to -- a row of
+            any other account is left alone
         notification_id: The sync_notifications row to acknowledge
     """
     await session.execute(
         update(SyncNotification)
-        .where(SyncNotification.id == notification_id)
+        .where(
+            SyncNotification.id == notification_id, SyncNotification.account_id == account_id,
+        )
         .values(acknowledged_at=text("now()"))
     )
 

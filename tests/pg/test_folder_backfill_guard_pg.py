@@ -30,12 +30,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.api.folder_management import folder_prefs_router
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Folder
+from tests.helpers.auth import act_as_owner_of_everything
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(folder_prefs_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

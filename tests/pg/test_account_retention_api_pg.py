@@ -22,17 +22,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.accounts import router as accounts_router
 from mail_verdict.database.connection import DatabaseConnection
-from tests.helpers.auth import act_as, owner_scope
+from tests.helpers.auth import act_as_owner_of_everything
 
 _ACCOUNTS_DB_TARGET = "mail_verdict.api.accounts.get_db_connection"
 _ACCOUNTS_EVENT_RING_TARGET = "mail_verdict.api.accounts.get_event_ring"
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(accounts_router)
-    act_as(app, owner_scope())
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

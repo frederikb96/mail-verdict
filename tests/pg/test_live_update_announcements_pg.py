@@ -31,11 +31,11 @@ from mail_verdict.settings.credentials import (
     reset_provider_credential_repo,
 )
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
-from tests.helpers.auth import act_as, owner_scope
+from tests.helpers.auth import act_as, act_as_owner_of_everything, owner_scope
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(accounts_router)
     app.include_router(account_order_router)
@@ -44,6 +44,7 @@ def client() -> Iterator[TestClient]:
     app.include_router(settings_router)
     app.include_router(unified_account_router)
     app.include_router(unified_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

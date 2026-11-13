@@ -9976,7 +9976,7 @@
     },
     "/accounts": {
       "get": {
-        "description": "List all configured accounts with their preferences.",
+        "description": "List the caller's accounts with their preferences.",
         "operationId": "list_accounts_accounts_get",
         "responses": {
           "200": {
@@ -14061,7 +14061,7 @@
     },
     "/identities": {
       "get": {
-        "description": "List identities, oldest first, optionally scoped to one account.",
+        "description": "List the caller's identities, oldest first, optionally scoped to one account.",
         "operationId": "list_identities_identities_get",
         "parameters": [
           {
@@ -14357,7 +14357,7 @@
     },
     "/mails/{mail_id}/verdict": {
       "get": {
-        "description": "Get the latest verdict for a specific message.",
+        "description": "Get the latest verdict for a specific message of the caller's own.",
         "operationId": "get_message_verdict_mails__mail_id__verdict_get",
         "parameters": [
           {
@@ -14779,7 +14779,7 @@
     },
     "/notifications": {
       "get": {
-        "description": "Every account's notifications in one list, newest first -- inactive\naccounts included (see SyncNotificationRepository.list_all).",
+        "description": "Every one of the caller's accounts' notifications in one list, newest\nfirst -- inactive accounts included (see SyncNotificationRepository.list_all).",
         "operationId": "list_all_notifications_notifications_get",
         "parameters": [
           {
@@ -16407,7 +16407,7 @@
     },
     "/runs": {
       "get": {
-        "description": "List pipeline runs, newest first, optionally filtered.",
+        "description": "List the caller's own pipeline runs, newest first, optionally filtered.",
         "operationId": "list_runs_runs_get",
         "parameters": [
           {
@@ -17125,7 +17125,7 @@
     },
     "/stats": {
       "get": {
-        "description": "Get dashboard statistics.\n\nReturns spam metrics, sync status, and weekly accuracy trend.\nIf account_id is provided, scopes to that account.\nOtherwise, aggregates across all accounts.",
+        "description": "Get dashboard statistics.\n\nReturns spam metrics, sync status, and weekly accuracy trend.\nIf account_id is provided, scopes to that account (an account that is\nnot the caller's counts as no account at all). Otherwise, aggregates\nacross all of the caller's accounts.",
         "operationId": "get_stats_stats_get",
         "parameters": [
           {
@@ -17558,7 +17558,7 @@
     },
     "/verdicts": {
       "get": {
-        "description": "List verdicts with optional filters.",
+        "description": "List verdicts of the caller's own mail, with optional filters.",
         "operationId": "list_verdicts_verdicts_get",
         "parameters": [
           {
@@ -17653,7 +17653,7 @@
     },
     "/verdicts/spam-review": {
       "get": {
-        "description": "Every message whose latest verdict calls it spam, with no user ruling\nsince -- across every account and folder, including Junk, since this\nis a triage view over verdicts rather than a folder listing; nothing\nhere moves a message or changes the classification pipeline.\n\n\"No user ruling since\" is exactly \"the latest verdict is itself not a\nuser_feedback row\" -- a user's thumb-up (agreeing it's spam) inserts a\nUSER_FEEDBACK verdict the same as a thumb-down does, so a message the\nlatest verdict for which is USER_FEEDBACK has already been decided\neither way and drops out, regardless of that row's own is_spam value.\n\nDISTINCT ON picks the latest verdict per message, the same shape the\nthreaded mail list uses for one row per thread; DISTINCT ON's own\nORDER BY has to start with mail_id, so re-ordering by the verdict's own\ncreated_at for cursor pagination is an outer step, not folded into it.",
+        "description": "Every message of the caller's own whose latest verdict calls it spam,\nwith no user ruling since -- across every one of their accounts and\nfolders, including Junk, since this\nis a triage view over verdicts rather than a folder listing; nothing\nhere moves a message or changes the classification pipeline.\n\n\"No user ruling since\" is exactly \"the latest verdict is itself not a\nuser_feedback row\" -- a user's thumb-up (agreeing it's spam) inserts a\nUSER_FEEDBACK verdict the same as a thumb-down does, so a message the\nlatest verdict for which is USER_FEEDBACK has already been decided\neither way and drops out, regardless of that row's own is_spam value.\n\nDISTINCT ON picks the latest verdict per message, the same shape the\nthreaded mail list uses for one row per thread; DISTINCT ON's own\nORDER BY has to start with mail_id, so re-ordering by the verdict's own\ncreated_at for cursor pagination is an outer step, not folded into it.",
         "operationId": "list_spam_review_verdicts_spam_review_get",
         "parameters": [
           {

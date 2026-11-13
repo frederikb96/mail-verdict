@@ -24,18 +24,21 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.mails import account_router, router
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Message, MessageActionSubmission
-from mail_verdict.mail_actions.submissions import prune_submissions_once
+from mail_verdict.mail_actions.submissions import prune_submissions_once, scoped_key
+from tests.helpers.auth import act_as_owner_of_everything
 
 _MAILS_TARGET = "mail_verdict.api.mails.get_db_connection"
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(router)
     app.include_router(account_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 
@@ -99,11 +102,16 @@ async def _put_back(
         )
 
 
+def _stored_key(client_key: str) -> uuid.UUID:
+    """What the owner's request with this key is stored under."""
+    return scoped_key(OWNER_USER_ID, uuid.UUID(client_key))
+
+
 async def _submission_count(migrated_db: DatabaseConnection, key: str) -> int:
     async with migrated_db.session() as session:
         count = await session.scalar(
             select(func.count()).select_from(MessageActionSubmission).where(
-                MessageActionSubmission.idempotency_key == uuid.UUID(key),
+                MessageActionSubmission.idempotency_key == _stored_key(key),
             )
         )
     return int(count or 0)
@@ -252,7 +260,7 @@ async def _reopen_claim(
             ),
             {
                 "silent": silent_for.total_seconds(), "claimed": claimed.total_seconds(),
-                "key": uuid.UUID(key),
+                "key": _stored_key(key),
             },
         )
 

@@ -23,13 +23,15 @@ from mail_verdict.api.mails import router as mails_router
 from mail_verdict.api.outbox import router as outbox_router
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import ImageException, ImageExceptionType, Outbox
+from tests.helpers.auth import act_as_owner_of_everything
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(outbox_router)
     app.include_router(mails_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 
@@ -269,7 +271,7 @@ class TestASendNeedsARecipient:
         the refusals above answer before settings are ever consulted."""
         account_id = client.portal.call(_seed_account, migrated_db)
         settings = Mock()
-        settings.get.return_value = {"undo_send_seconds": 0}
+        settings.get_for_user.return_value = {"undo_send_seconds": 0}
         with patch(_OUTBOX_TARGET, return_value=migrated_db), patch(
             "mail_verdict.api.outbox.get_settings_service", return_value=settings,
         ):

@@ -9,7 +9,7 @@ and manages its own tables (verdicts, tags, prefs, settings).
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
@@ -1653,14 +1653,17 @@ class SyncNotificationRepository:
             return result.scalar_one()
 
     async def list_all(
-        self, *, unacknowledged_only: bool = False, limit: int = 100,
+        self, account_ids: Collection[uuid.UUID], *, unacknowledged_only: bool = False,
+        limit: int = 100,
     ) -> list[SyncNotification]:
         """
-        Every account's notifications in one list, newest first -- inactive
-        accounts included, since the folder-delete guard a notification
-        can block is account-wide whether the account is active or not.
+        The notifications of several accounts in one list, newest first --
+        inactive accounts included, since the folder-delete guard a
+        notification can block is account-wide whether the account is
+        active or not.
 
         Args:
+            account_ids: The accounts to list for (a caller's own)
             unacknowledged_only: Only rows with acknowledged_at IS NULL
             limit: Maximum rows to return
 
@@ -1670,6 +1673,7 @@ class SyncNotificationRepository:
         async with self._db.session() as session:
             stmt = (
                 select(SyncNotification)
+                .where(SyncNotification.account_id.in_(account_ids))
                 .order_by(desc(SyncNotification.created_at), desc(SyncNotification.id))
                 .limit(limit)
             )
@@ -1679,7 +1683,9 @@ class SyncNotificationRepository:
             return list(result.scalars().all())
 
     async def unacknowledged_count_all(self) -> int:
-        """Unacknowledged notifications across every account, inactive ones included."""
+        """Unacknowledged notifications across every account of the instance,
+        inactive ones included -- the push badge's count, which spans every
+        user's accounts."""
         async with self._db.session() as session:
             result = await session.execute(
                 select(func.count(SyncNotification.id)).where(

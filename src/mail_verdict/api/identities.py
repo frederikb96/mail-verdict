@@ -33,13 +33,15 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import IdentityCreate, IdentityResponse, IdentityUpdate
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, Identity
 
@@ -91,21 +93,28 @@ async def _announce_identity_changed(account_id: uuid.UUID) -> None:
 
 
 @router.get("", response_model=list[IdentityResponse])
-async def list_identities(account_id: uuid.UUID | None = None) -> list[IdentityResponse]:
-    """List identities, oldest first, optionally scoped to one account."""
+async def list_identities(
+    account_id: uuid.UUID | None = None, scope: Scope = Depends(current_scope),
+) -> list[IdentityResponse]:
+    """List the caller's identities, oldest first, optionally scoped to one account."""
     db = get_db_connection()
     async with db.session() as session:
-        stmt = select(Identity).order_by(Identity.created_at)
-        if account_id is not None:
-            stmt = stmt.where(Identity.account_id == account_id)
+        stmt = (
+            select(Identity)
+            .where(Identity.account_id.in_(scope.narrow(account_id)))
+            .order_by(Identity.created_at)
+        )
         result = await session.execute(stmt)
         identities = list(result.scalars().all())
     return [_to_response(identity) for identity in identities]
 
 
 @router.post("", response_model=IdentityResponse, status_code=201)
-async def create_identity(request: IdentityCreate) -> IdentityResponse:
+async def create_identity(
+    request: IdentityCreate, scope: Scope = Depends(current_scope),
+) -> IdentityResponse:
     """Create an identity on an account."""
+    scope.require_account(request.account_id)
     db = get_db_connection()
     email = request.address.strip()
     if not email:
@@ -147,7 +156,9 @@ async def create_identity(request: IdentityCreate) -> IdentityResponse:
 
 
 @router.patch("/{identity_id}", response_model=IdentityResponse)
-async def update_identity(identity_id: uuid.UUID, request: IdentityUpdate) -> IdentityResponse:
+async def update_identity(
+    identity_id: uuid.UUID, request: IdentityUpdate, scope: Scope = Depends(current_scope),
+) -> IdentityResponse:
     """Update an identity's address, display name or default status."""
     values = request.model_dump(exclude_unset=True)
     if not values:
@@ -159,6 +170,7 @@ async def update_identity(identity_id: uuid.UUID, request: IdentityUpdate) -> Id
         identity = result.scalar_one_or_none()
         if identity is None:
             raise HTTPException(status_code=404, detail="Identity not found")
+        scope.require_account(identity.account_id)
 
         if values.get("is_default") is False and identity.is_default:
             raise HTTPException(
@@ -199,7 +211,9 @@ async def update_identity(identity_id: uuid.UUID, request: IdentityUpdate) -> Id
 
 
 @router.delete("/{identity_id}", status_code=204)
-async def delete_identity(identity_id: uuid.UUID) -> None:
+async def delete_identity(
+    identity_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> None:
     """
     Delete an identity.
 
@@ -213,6 +227,7 @@ async def delete_identity(identity_id: uuid.UUID) -> None:
         identity = result.scalar_one_or_none()
         if identity is None:
             raise HTTPException(status_code=404, detail="Identity not found")
+        scope.require_account(identity.account_id)
 
         was_default = identity.is_default
         account_id = identity.account_id

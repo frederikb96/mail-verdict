@@ -21,11 +21,14 @@ def _mark_read_setting_on(monkeypatch: pytest.MonkeyPatch) -> None:
     raising "SettingsService not initialized". TestMarkReadOnFile below
     overrides this locally to test the setting itself."""
     settings_service = MagicMock()
-    settings_service.get.return_value = {"mark_read_on_file_to_archive_or_junk": True}
+    settings_service.get_for_user.return_value = {"mark_read_on_file_to_archive_or_junk": True}
     monkeypatch.setattr(
         "mail_verdict.spam.feedback.get_settings_service", lambda: settings_service,
     )
     monkeypatch.setattr("mail_verdict.spam.feedback.set_flags", AsyncMock())
+    monkeypatch.setattr(
+        "mail_verdict.spam.feedback.owner_of_account", AsyncMock(return_value=None),
+    )
 
 
 class _FakeSessionContext:
@@ -348,7 +351,9 @@ class TestMarkReadOnFile:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         settings_service = MagicMock()
-        settings_service.get.return_value = {"mark_read_on_file_to_archive_or_junk": False}
+        settings_service.get_for_user.return_value = {
+            "mark_read_on_file_to_archive_or_junk": False,
+        }
         monkeypatch.setattr(
             "mail_verdict.spam.feedback.get_settings_service", lambda: settings_service,
         )
@@ -367,6 +372,36 @@ class TestMarkReadOnFile:
             await handler.apply_human_ruling(mail_id, account_id, is_spam=True)
 
         set_flags.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_setting_read_is_the_account_owners(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        owner = uuid.uuid4()
+        settings_service = MagicMock()
+        settings_service.get_for_user.return_value = {
+            "mark_read_on_file_to_archive_or_junk": True,
+        }
+        monkeypatch.setattr(
+            "mail_verdict.spam.feedback.get_settings_service", lambda: settings_service,
+        )
+        monkeypatch.setattr(
+            "mail_verdict.spam.feedback.owner_of_account", AsyncMock(return_value=owner),
+        )
+        handler, verdict_repo = _make_handler()
+        verdict_repo.get_current_verdict = AsyncMock(return_value=None)
+
+        with (
+            patch("mail_verdict.spam.feedback.FolderRepository") as folder_repo_cls,
+            patch("mail_verdict.spam.feedback.move_message", new=AsyncMock()),
+            patch("mail_verdict.spam.feedback.set_flags", new=AsyncMock()),
+        ):
+            folder_repo_cls.return_value.resolve_special_folder = AsyncMock(
+                return_value=uuid.uuid4(),
+            )
+            await handler.apply_human_ruling(uuid.uuid4(), uuid.uuid4(), is_spam=True)
+
+        settings_service.get_for_user.assert_called_once_with("mail", owner)
 
 
 class TestHandleFolderMoveToJunk:

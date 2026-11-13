@@ -17,15 +17,17 @@ from sqlalchemy import text
 
 from mail_verdict.api.mails import router
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import act_as_owner_of_everything
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
 
 _REMOTE_IMG = '<img src="https://tracker.example.com/pixel.png" alt="">'
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

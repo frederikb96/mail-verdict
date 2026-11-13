@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import case, select, text
 from sqlalchemy import func as sa_func
 
+from mail_verdict.api.access import owned_account
 from mail_verdict.api.deps import current_scope, get_account_prefs_repo
 from mail_verdict.api.events import broadcast_event, get_event_ring
 from mail_verdict.api.schemas import (
@@ -109,13 +110,14 @@ def _build_account_response(
 
 
 @router.get("", response_model=list[AccountResponse])
-async def list_accounts() -> list[AccountResponse]:
-    """List all configured accounts with their preferences."""
+async def list_accounts(scope: Scope = Depends(current_scope)) -> list[AccountResponse]:
+    """List the caller's accounts with their preferences."""
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(
             select(Account, AccountPrefs)
             .outerjoin(AccountPrefs, Account.id == AccountPrefs.account_id)
+            .where(scope.account_filter(Account.id))
             .order_by(Account.name)
         )
         rows = list(result.all())
@@ -166,7 +168,9 @@ async def create_account(
         return _build_account_response(account, prefs)
 
 
-@router.get("/{account_id}", response_model=AccountResponse)
+@router.get(
+    "/{account_id}", response_model=AccountResponse, dependencies=[Depends(owned_account)],
+)
 async def get_account(account_id: uuid.UUID) -> AccountResponse:
     """Get account detail by ID."""
     db = get_db_connection()
@@ -183,7 +187,9 @@ async def get_account(account_id: uuid.UUID) -> AccountResponse:
     return _build_account_response(account, prefs)
 
 
-@router.patch("/{account_id}", response_model=AccountResponse)
+@router.patch(
+    "/{account_id}", response_model=AccountResponse, dependencies=[Depends(owned_account)],
+)
 async def update_account(
     account_id: uuid.UUID,
     request: AccountUpdateRequest,
@@ -312,7 +318,7 @@ async def update_account(
         return _build_account_response(acct, prefs)
 
 
-@router.delete("/{account_id}", status_code=204)
+@router.delete("/{account_id}", status_code=204, dependencies=[Depends(owned_account)])
 async def delete_account(account_id: uuid.UUID) -> None:
     """
     Permanently delete an account and its entire mirrored mailbox.
@@ -373,7 +379,10 @@ async def delete_account(account_id: uuid.UUID) -> None:
             )
 
 
-@router.get("/{account_id}/folders", response_model=list[FolderResponse])
+@router.get(
+    "/{account_id}/folders", response_model=list[FolderResponse],
+    dependencies=[Depends(owned_account)],
+)
 async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
     """List all folders for an account with message counts and prefs."""
     db = get_db_connection()
@@ -478,7 +487,10 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
     return responses
 
 
-@router.get("/{account_id}/sync-status", response_model=SyncStatusResponse)
+@router.get(
+    "/{account_id}/sync-status", response_model=SyncStatusResponse,
+    dependencies=[Depends(owned_account)],
+)
 async def get_sync_status(account_id: uuid.UUID) -> SyncStatusResponse:
     """Get sync status for an account (reads PostIMAP's sync_state table).
 
@@ -524,7 +536,7 @@ async def get_sync_status(account_id: uuid.UUID) -> SyncStatusResponse:
         )
 
 
-@router.post("/{account_id}/sync")
+@router.post("/{account_id}/sync", dependencies=[Depends(owned_account)])
 async def trigger_sync(account_id: uuid.UUID) -> dict[str, str]:
     """Trigger an immediate sync for an account via PG NOTIFY to PostIMAP.
 

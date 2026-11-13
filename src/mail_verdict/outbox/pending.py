@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Collection
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -151,17 +152,15 @@ async def cancel_pending_send(session: AsyncSession, pending_send_id: uuid.UUID)
 
 
 async def list_pending_sends(
-    session: AsyncSession, account_id: uuid.UUID | None,
+    session: AsyncSession, account_ids: Collection[uuid.UUID],
 ) -> list[PendingSend]:
-    """Uncancelled pending sends, soonest first -- for the undo banner to
-    rehydrate from on a fresh page load."""
+    """Uncancelled pending sends of these accounts, soonest first -- for
+    the undo banner to rehydrate from on a fresh page load."""
     stmt = (
         select(PendingSend)
-        .where(PendingSend.cancelled_at.is_(None))
+        .where(PendingSend.cancelled_at.is_(None), PendingSend.account_id.in_(account_ids))
         .order_by(PendingSend.send_after)
     )
-    if account_id is not None:
-        stmt = stmt.where(PendingSend.account_id == account_id)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 

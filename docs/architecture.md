@@ -1218,6 +1218,17 @@ acts for, whether they are admin, and the accounts they own. A request gets it f
   missing row is 404, someone else's is 403.
 - An account id a client names (a query parameter, a body field, an MCP argument) is intersected
   with what the caller owns (`scope.narrow()`), never trusted.
+- Mail routes state the check as a route dependency, not a parameter of the endpoint function
+  (`api/access.py`): `owned_account` on a `{account_id}` path, `owned_message` and `owned_folder`
+  on a message or folder id, which resolve the id to its account whichever table holds it -- a
+  live row, a glacier row, the id a message had before it was glaciered, a glacier's synthetic
+  folder. The endpoint functions keep their plain signatures, so the MCP tools and tests that call
+  them directly are unaffected; an endpoint that needs the caller itself (`user_id` for a
+  stored key, a list filtered by owned accounts) takes the `Scope`.
+- A conversation is read within the account of the message it was opened from: the same mail
+  delivered to two accounts carries one `thread_id` in both.
+- An idempotency key is stored under a value derived from the user and the key
+  (`mail_actions.submissions.scoped_key`), for message actions and for sends.
 - Admin is not "every account". An admin's scope covers their own accounts like anyone's. Reaching
   other users is the `/api/admin` routes' job — users, and who owns which account, by display
   name — and none of them reads mail, events or contacts.

@@ -18,14 +18,17 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
 from mail_verdict.api.mails import account_router, router
+from mail_verdict.auth.ownership import set_account_owner
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Message
 from mail_verdict.settings.service import SettingsService
+from tests.helpers.auth import act_as_owner_of_everything
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders, _seed_messages
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     """A single persistent TestClient portal for the whole test -- a new
     `with TestClient(...)` per call would each open its own event loop in
     its own thread, and the shared migrated_db's asyncpg connections
@@ -34,6 +37,7 @@ def client() -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(router)
     app.include_router(account_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 
@@ -46,17 +50,20 @@ async def _settings(db: DatabaseConnection, *, mark_read: bool = True) -> Settin
     test's outcome depend on file order."""
     service = SettingsService(db)
     await service.load()
-    await service.update("mail", {"mark_read_on_file_to_archive_or_junk": mark_read})
+    await service.update_for_user(
+        "mail", OWNER_USER_ID, {"mark_read_on_file_to_archive_or_junk": mark_read}, is_admin=True,
+    )
     return service
 
 
 async def _seed_account_with_archive(
     migrated_db: DatabaseConnection,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
-    """An account with Inbox, Junk, Archive and Trash -- returns
-    (account_id, inbox_id, junk_id, archive_id, trash_id)."""
+    """An account, owned by the instance owner, with Inbox, Junk, Archive
+    and Trash -- returns (account_id, inbox_id, junk_id, archive_id, trash_id)."""
     async with migrated_db.session() as session:
         account_id, inbox_id, junk_id = await _seed_account_two_folders(session)
+        await set_account_owner(session, account_id, OWNER_USER_ID)
         archive_id = uuid.uuid4()
         trash_id = uuid.uuid4()
         for folder_id, imap_name, special_use in (
