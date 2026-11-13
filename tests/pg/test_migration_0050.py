@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
@@ -249,6 +250,18 @@ async def test_a_unified_view_name_is_unique_per_user_not_per_instance(
         db_at_previous, "SELECT user_id FROM unified_views WHERE name = 'Everything'",
     )
     assert {row[0] for row in names} == {_OWNER, other}
+
+
+@pytest.mark.asyncio
+async def test_views_no_user_owns_yet_still_collide_on_name(db_at_previous: str) -> None:
+    """A view written without a user (by code that does not stamp one yet)
+    is unique by name among the others like it, as every view was before."""
+    await _upgrade(db_at_previous, _REVISION)
+    insert = "INSERT INTO unified_views (id, name) VALUES (:id, 'Unowned')"
+
+    await _execute(db_at_previous, (insert, {"id": uuid.uuid4()}))
+    with pytest.raises(IntegrityError):
+        await _execute(db_at_previous, (insert, {"id": uuid.uuid4()}))
 
 
 @pytest.mark.asyncio
