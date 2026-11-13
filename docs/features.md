@@ -142,13 +142,17 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
 
 ## Rules
 
+- Every user has their own rules, which run only on mail of their own accounts. A new user starts
+  with spam classification, moving spam to Junk and marking it read, and order bundling. An
+  administrator sees how many rules each user has and whether they are paused, never what they
+  say.
 - Conditions over incoming mail with actions that move, tag, flag or delete it, or send it to a
   webhook.
 - **Webhooks:** the message's raw source is posted to a URL, with a header that can take its value
   from a named secret stored encrypted in the database (set from Settings, never shown again). A
   delivery is queued, retried when the receiver is unavailable, never repeated once it succeeded,
   and raises an alert when it gives up. Mail that predates a rule can be sent once, oldest first,
-  through the API.
+  through the API. Only an administrator may write a webhook rule.
 - **Rule assistant:** from an open mail, the "Add rule" icon takes a sentence ("these should go to
   Newsletter too", "split this rule by sender") and proposes one change to the rules, which may
   add, change, reorder or remove several rules at once. It shows the explanation, each affected

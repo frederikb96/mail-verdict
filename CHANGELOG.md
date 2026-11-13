@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   per user, and the account order is a per-user setting (`mail.account_order`) that only names the
   user's own accounts; the models, providers, queues and retry mechanics stay the instance's.
   `GET /api/settings/schema` lists every key with its scope and type.
+- Every user has their own rules (spam classification, filing rules, order bundling), edited
+  through `/api/pipeline` and run only on mail of their own accounts. A user without any starts
+  from a template: classify, move spam to Junk and mark it read, bundle orders. A rule may name
+  only the author's own accounts, and only an admin may write a webhook. `GET
+  /api/admin/pipeline/overview` shows an admin each user's rules as counts.
 
 ### Changed
 
@@ -44,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `Authorization: Bearer ...`.
 - Migration `0050` creates the users tables and gives every existing account and row to the
   owner. Calendar links are versioned per user, and a unified view's name is unique per user.
+- The rule assistant, the pipeline dry runs and the webhook retry and backfill routes work on the
+  caller's own rules and accounts; a message on someone else's account is refused with `403`.
 - The root application no longer serves its own `/docs` and `/openapi.json`; the API's are at
   `/api/docs` and `/api/openapi.json`, behind the token check.
 

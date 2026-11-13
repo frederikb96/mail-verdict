@@ -24,9 +24,13 @@ from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.rules import assistant
 from mail_verdict.settings.credentials import ProviderCredentialRepository
 from mail_verdict.settings.service import SettingsService
+from tests.helpers.auth import act_as, owner_scope, user_scope
+from tests.helpers.pipeline_pg import insert_user, own_account
 from tests.pg.test_pipeline_api import (
+    _act_as,
     _configure_fake_ai_provider,
     _put,
+    _seed,
     _seed_account_and_folder,
     _seed_message,
 )
@@ -38,6 +42,7 @@ def client() -> Iterator[TestClient]:
     shares the TestClient's event loop (see test_pipeline_api.py)."""
     app = FastAPI()
     app.include_router(router)
+    act_as(app, owner_scope())
     with TestClient(app) as c:
         yield c
 
@@ -72,7 +77,7 @@ def _baseline(client: TestClient, migrated_db: DatabaseConnection) -> dict:
 def test_proposal_then_accept_is_an_ordinary_pipeline_write(
     client: TestClient, migrated_db: DatabaseConnection,
 ) -> None:
-    account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
+    account_id, folder_id = _seed(client, migrated_db)
     mail_id = client.portal.call(
         functools.partial(_seed_message, account_id=account_id, folder_id=folder_id),
         migrated_db,
@@ -157,8 +162,8 @@ def test_search_matches_substrings_literally_and_only_in_its_account(
 ) -> None:
     """`%` and `_` in a search term are literal, and another account's
     mail never shows up."""
-    account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
-    other_account, other_folder = client.portal.call(_seed_account_and_folder, migrated_db)
+    account_id, folder_id = _seed(client, migrated_db)
+    other_account, other_folder = _seed(client, migrated_db)
 
     async def seed() -> None:
         async with migrated_db.session() as session:
@@ -195,3 +200,31 @@ def test_search_matches_substrings_literally_and_only_in_its_account(
     assert client.portal.call(count, "", "off_deal") == (1, 1)
     assert client.portal.call(count, "", "50%") == (1, 1)
     assert client.portal.call(count, "SHOP@", "50") == (2, 2)
+
+
+def test_a_user_gets_a_proposal_on_their_own_document_only(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    user = client.portal.call(insert_user, migrated_db)
+    account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
+    client.portal.call(own_account, migrated_db, account_id, user)
+    mail_id = client.portal.call(
+        functools.partial(_seed_message, account_id=account_id, folder_id=folder_id),
+        migrated_db,
+    )
+    settings_service = client.portal.call(_configure_fake_ai_provider, migrated_db)
+    _baseline(client, migrated_db)
+    _act_as(client, user_scope(user, [account_id]))
+
+    with _patched(migrated_db, settings_service):
+        document = client.get("/pipeline").json()
+        resp = client.post(
+            "/pipeline/assistant", json={"message_id": str(mail_id), "prompt": "flag these"},
+        )
+    assert resp.status_code == 200, resp.text
+    change = resp.json()["change"]
+
+    assert change["base_revision"] == document["revision"]
+    assert [s["stage_id"] for s in change["stages"][:3]] == ["classify", "move-spam", "orders"]
+    assert "earlier" not in [s["stage_id"] for s in change["stages"]]
+    assert change["stages"][-1]["accounts"] == [str(account_id)]

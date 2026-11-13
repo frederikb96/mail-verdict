@@ -44,8 +44,11 @@ async def compute_health(
     Args:
         db: Database connection
         stages: The pipeline definition's stages
-        account_ids: Every account that exists -- used for a stage whose
-            own `accounts` is None (applies to all)
+        account_ids: The accounts the document's owner has -- used for a
+            stage whose own `accounts` is None (applies to all), and the
+            limit on one that names its own: an account outside it is
+            never resolved, so folder names of someone else's account
+            cannot surface here
 
     Returns:
         One entry per (stage, account, reference) combination checked;
@@ -63,7 +66,9 @@ async def compute_health(
         if not move_refs:
             continue
 
-        target_accounts = list(stage.accounts) if stage.accounts else account_ids
+        target_accounts = (
+            [a for a in stage.accounts if a in account_ids] if stage.accounts else account_ids
+        )
         for account_id in target_accounts:
             resolver = FolderResolver(db, account_id)
             for move in move_refs:

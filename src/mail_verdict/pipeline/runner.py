@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import Table, select, text
 
+from mail_verdict.auth.ownership import owner_of_account
 from mail_verdict.core.retry import RetryConfig
 from mail_verdict.database.models import Message, PipelineRun, VerdictSource
 from mail_verdict.orders.lookup import OrderLookup
@@ -57,6 +58,7 @@ from mail_verdict.pipeline.message_view import MessageView, load_message_view
 from mail_verdict.pipeline.neighbors import NeighborService
 from mail_verdict.pipeline.registry import build_stage
 from mail_verdict.pipeline.revisions import PipelineRevisionRepository
+from mail_verdict.pipeline.template import current_or_template
 from mail_verdict.queue.backoff import compute_backoff
 from mail_verdict.queue.manager import QueueManager
 from mail_verdict.queue.work_queue import WorkQueue
@@ -139,9 +141,9 @@ class PipelineRunner:
         origin: Literal["live", "historical"] = "live",
     ) -> _RunResult:
         """
-        Execute the current pipeline definition against one message
-        without applying anything or touching pipeline_runs -- the
-        POST /api/pipeline/test endpoint.
+        Execute the current pipeline definition of the message's owner
+        against one message without applying anything or touching
+        pipeline_runs -- the POST /api/pipeline/test endpoint.
 
         A synthetic row, never persisted: apply is forced False regardless
         of what a caller passes, since a dry run that could write would
@@ -282,16 +284,23 @@ class PipelineRunner:
         await self._finish_ok(row, outcome)
 
     async def _execute_run(self, row: Mapping[str, Any]) -> _RunResult:
-        """Execute the current pipeline definition against one claimed
-        row. Raises a Stage* exception on any stage failure; the caller
+        """Execute the current pipeline definition of the claimed row's
+        account owner against it. Raises a Stage* exception on any stage failure; the caller
         decides retry/suspend/fail from the exception type."""
         run_id = row["id"]
         account_id = row["account_id"]
         origin = row["origin"]
         apply_writes = bool(row["apply"])
 
-        definition = await self._revisions.current()
-        if definition is None or not definition.enabled:
+        # The mail's owner's own document runs -- never anyone else's.
+        async with self._db.session() as session:
+            owner = await owner_of_account(session, account_id)
+        if owner is None:
+            return _RunResult(
+                status="skipped", skip_reason="account has no owner", trace=(), model_calls=0,
+            )
+        definition = await current_or_template(self._revisions, owner)
+        if not definition.enabled:
             return _RunResult(
                 status="skipped", skip_reason="pipeline disabled", trace=(), model_calls=0,
             )

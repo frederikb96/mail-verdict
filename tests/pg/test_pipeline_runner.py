@@ -27,6 +27,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.repository import AccountPrefsRepository, VerdictRepository
 from mail_verdict.pipeline.revisions import PipelineRevisionRepository, build_migrated_definition
@@ -35,6 +36,7 @@ from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
 from mail_verdict.queue.manager import QueueManager
 from mail_verdict.settings.credentials import ProviderCredentialRepository
 from mail_verdict.settings.service import SettingsService
+from tests.helpers.pipeline_pg import insert_user, own_account
 
 
 async def _seed_account_and_folders(
@@ -56,6 +58,10 @@ async def _seed_account_and_folders(
             "'\\x00' || convert_to('pw', 'UTF8'))"
         ),
         {"id": account_id, "name": f"acct-{account_id}"},
+    )
+    await session.execute(
+        text("INSERT INTO account_owners (account_id, user_id) VALUES (:id, :owner)"),
+        {"id": account_id, "owner": OWNER_USER_ID},
     )
     await session.execute(
         text("INSERT INTO folders (id, account_id, imap_name) VALUES (:id, :account_id, 'INBOX')"),
@@ -101,14 +107,17 @@ async def _make_runner(db: DatabaseConnection) -> PipelineRunner:
     call, no real API key, deterministic on the seeded subject/body.
 
     Appends a fresh copy of the default classify + move-spam definition
-    as the current revision before returning -- see the module docstring
-    for why this cannot simply trust migrated_db's existing state."""
+    as the owner's current revision before returning -- see the module
+    docstring for why this cannot simply trust migrated_db's existing state."""
     document = build_migrated_definition(
         raw_rules=[],
         spam_settings={"enabled": True, "auto_move_to_junk": True, "auto_mark_read": True},
     )
-    await PipelineRevisionRepository(db).append(document, note="test baseline")
+    await PipelineRevisionRepository(db).append(OWNER_USER_ID, document, note="test baseline")
+    return await _runner_without_documents(db)
 
+
+async def _runner_without_documents(db: DatabaseConnection) -> PipelineRunner:
     settings_service = SettingsService(db)
     await settings_service.load()
     await settings_service.update("ai", {"provider": "fake"})
@@ -356,3 +365,107 @@ async def test_a_row_at_max_attempts_is_never_reclaimed_by_the_worker_loop(
     assert row.status == "pending"
     assert row.attempts == 2
     assert row.claimed_by is None
+
+
+@pytest.mark.asyncio
+async def test_a_mail_runs_its_account_owners_document_only(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """Two users, two documents: the spam mail on A's account meets A's
+    classify + move-spam; the identical mail on B's account meets only B's
+    document -- one tag rule, so it is neither classified nor moved."""
+    user_a, user_b = await insert_user(migrated_db), await insert_user(migrated_db)
+    repo = PipelineRevisionRepository(migrated_db)
+    await repo.append(user_a, build_migrated_definition(raw_rules=[], spam_settings={}), note="a")
+    await repo.append(user_b, {"enabled": True, "stages": [{
+        "stage_id": "b-only", "type": "match", "name": "B only",
+        "config": {"when": {"subject_contains": "viagra"}, "effects": [{"tag": {"add": ["b"]}}]},
+        "enabled": True, "halt": False, "accounts": None,
+    }]}, note="b")
+
+    seeded: dict[str, tuple[uuid.UUID, uuid.UUID, uuid.UUID, str]] = {}
+    for name, user in (("a", user_a), ("b", user_b)):
+        async with migrated_db.session() as session:
+            account_id, inbox_id, junk_id = await _seed_account_and_folders(session)
+            mail_id, header = await _seed_message(
+                session, account_id=account_id, folder_id=inbox_id,
+            )
+            await session.commit()
+        await own_account(migrated_db, account_id, user)
+        await AccountPrefsRepository(migrated_db).update(account_id, spam_enabled=True)
+        seeded[name] = (account_id, mail_id, junk_id, header)
+
+    runner = await _runner_without_documents(migrated_db)
+    for account_id, mail_id, _junk_id, header in seeded.values():
+        await _enqueue_and_run(
+            runner, migrated_db, account_id=account_id, mail_id=mail_id, msg_key=header,
+        )
+
+    async with migrated_db.session() as session:
+        runs = {
+            name: (await session.execute(
+                text("SELECT trace FROM pipeline_runs WHERE message_id = :id"),
+                {"id": mail_id},
+            )).scalar_one()
+            for name, (_a, mail_id, _j, _h) in seeded.items()
+        }
+        folder_of = {
+            name: (await session.execute(
+                text("SELECT folder_id FROM messages WHERE id = :id"), {"id": mail_id},
+            )).scalar_one()
+            for name, (_a, mail_id, _j, _h) in seeded.items()
+        }
+    assert [t["stage_id"] for t in runs["a"]] == ["classify", "move-spam", "orders"]
+    assert [t["stage_id"] for t in runs["b"]] == ["b-only"]
+    assert folder_of["a"] == seeded["a"][2]
+    assert folder_of["b"] != seeded["b"][2]
+
+
+@pytest.mark.asyncio
+async def test_a_user_without_a_document_runs_the_template(
+    migrated_db: DatabaseConnection,
+) -> None:
+    user = await insert_user(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, inbox_id, junk_id = await _seed_account_and_folders(session)
+        mail_id, header = await _seed_message(session, account_id=account_id, folder_id=inbox_id)
+        await session.commit()
+    await own_account(migrated_db, account_id, user)
+    await AccountPrefsRepository(migrated_db).update(account_id, spam_enabled=True)
+
+    runner = await _runner_without_documents(migrated_db)
+    await _enqueue_and_run(
+        runner, migrated_db, account_id=account_id, mail_id=mail_id, msg_key=header,
+    )
+
+    async with migrated_db.session() as session:
+        folder_id = (await session.execute(
+            text("SELECT folder_id FROM messages WHERE id = :id"), {"id": mail_id},
+        )).scalar_one()
+    assert folder_id == junk_id
+    assert await PipelineRevisionRepository(migrated_db).current(user) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_mail_on_an_account_nobody_owns_is_skipped(
+    migrated_db: DatabaseConnection,
+) -> None:
+    async with migrated_db.session() as session:
+        account_id, inbox_id, junk_id = await _seed_account_and_folders(session)
+        mail_id, header = await _seed_message(session, account_id=account_id, folder_id=inbox_id)
+        await session.execute(
+            text("DELETE FROM account_owners WHERE account_id = :a"), {"a": account_id},
+        )
+        await session.commit()
+
+    runner = await _make_runner(migrated_db)
+    await _enqueue_and_run(
+        runner, migrated_db, account_id=account_id, mail_id=mail_id, msg_key=header,
+    )
+
+    async with migrated_db.session() as session:
+        row = (await session.execute(
+            text("SELECT status, skip_reason FROM pipeline_runs WHERE message_id = :id"),
+            {"id": mail_id},
+        )).one()
+    assert (row.status, row.skip_reason) == ("skipped", "account has no owner")

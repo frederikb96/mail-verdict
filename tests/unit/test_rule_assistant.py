@@ -38,6 +38,7 @@ from mail_verdict.rules.conditions import (
     KNOWN_CONDITION_TYPES,
     render_condition_syntax,
 )
+from tests.helpers.auth import user_scope
 
 ACCOUNT = uuid.uuid4()
 OTHER_ACCOUNT = uuid.uuid4()
@@ -64,6 +65,7 @@ def _match_stage(stage_id: str, when: dict, effects: list, **extra: Any) -> dict
 
 def _scene(stages: list[dict], control: list[MessageView] | None = None) -> _Scene:
     return _Scene(
+        scope=user_scope(uuid.uuid4(), [ACCOUNT, OTHER_ACCOUNT], is_admin=True),
         view=_view(), verdict=None,
         definition=PipelineDefinition(revision=3, enabled=True, stages=()),
         stages=stages,

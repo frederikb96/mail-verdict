@@ -9,6 +9,7 @@ from mail_verdict.pipeline.contracts import Webhook
 from mail_verdict.pipeline.document_validation import DocumentValidationError, validate_document
 from mail_verdict.pipeline.effect_codec import EffectConfigError, effect_to_dict, parse_effect
 from mail_verdict.webhooks.spec import referenced_secrets, render_headers
+from tests.helpers.auth import owner_scope
 
 _VALID = {
     "name": "canteen",
@@ -72,7 +73,7 @@ class TestDocumentValidation:
             }],
         }
         with pytest.raises(DocumentValidationError, match="webhook"):
-            validate_document(document)
+            validate_document(document, scope=owner_scope())
 
     def test_a_valid_webhook_rule_is_accepted(self) -> None:
         document = {
@@ -82,7 +83,7 @@ class TestDocumentValidation:
                 "config": {"when": {"subject_contains": "x"}, "effects": [{"webhook": _VALID}]},
             }],
         }
-        assert len(validate_document(document)) == 1
+        assert len(validate_document(document, scope=owner_scope())) == 1
 
 
 class TestSecretReferences:

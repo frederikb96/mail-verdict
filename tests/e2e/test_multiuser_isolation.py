@@ -177,8 +177,7 @@ async def _seed_owned_rows(postgres_url: str, rows: dict[str, Any]) -> None:
             document = await conn.scalar(
                 text("SELECT document FROM pipeline_revisions ORDER BY revision DESC LIMIT 1")
             )
-            # A copy of the live document: while pipeline loading is not per
-            # user yet, the newest revision is what every account runs.
+            # B's own document, starting as a copy of the newest revision.
             rows["pipeline_revision"] = str(await conn.scalar(
                 text(
                     "INSERT INTO pipeline_revisions (document, note, user_id) "

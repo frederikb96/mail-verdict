@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import OrderJob
 from mail_verdict.database.repository import AccountPrefsRepository
@@ -109,7 +110,9 @@ async def test_a_broken_orders_model_does_not_open_classifys_or_embeddings_circu
     document = build_migrated_definition(
         raw_rules=[], spam_settings={"enabled": True, "auto_move_to_junk": True},
     )
-    await PipelineRevisionRepository(migrated_db).append(document, note="test baseline")
+    await PipelineRevisionRepository(migrated_db).append(
+        OWNER_USER_ID, document, note="test baseline",
+    )
 
     # The database is shared with every other test of the run; start from
     # breakers no earlier test has tripped.

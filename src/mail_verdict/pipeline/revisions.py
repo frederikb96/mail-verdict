@@ -2,12 +2,16 @@
 Pipeline definitions: an append-only revision history, never a row updated
 in place.
 
-The current definition is `max(revision)`. A misconfigured stage edit is
-recoverable by inspection ("what did it look like before this revision")
-without a separate audit table -- the revisions themselves are the audit
-trail. Building and storing the very first revision is also where an
-existing deployment's `settings.rules` and `spam.*` settings become a
-pipeline definition; see `build_migrated_definition`.
+Every user owns one document. A user's current definition is the highest
+`revision` among their rows; the revision number itself is one serial
+shared by all users, so a number identifies one row instance-wide and a
+base_revision is only ever compared against the author's own latest. A
+misconfigured stage edit is recoverable by inspection ("what did it look
+like before this revision") without a separate audit table -- the
+revisions themselves are the audit trail. Building and storing the very
+first revision is also where an existing deployment's `settings.rules` and
+`spam.*` settings become a pipeline definition; see
+`build_migrated_definition`.
 """
 
 from __future__ import annotations
@@ -18,20 +22,24 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import text
+from sqlalchemy import Row, text
 
 from mail_verdict.pipeline.contracts import JsonValue, StageDefinition
 from mail_verdict.pipeline.effect_codec import EffectConfigError, effect_to_dict, parse_effect
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from mail_verdict.database.connection import DatabaseConnection
 
 logger = logging.getLogger(__name__)
 
-# Guards the read-current-then-insert in append() below. Distinct from
-# every other advisory-lock key in the process (queue/manager.py's
-# reclaim timer at 761_034_221, embeddings/worker.py's backfill lock at
-# 761_034_222, pipeline/enqueue.py's reconciliation timer at 761_034_331).
+# Guards the read-current-then-insert in append() below, taken together
+# with a hash of the user id so two users append at once while one user's
+# writers queue. Distinct from every other advisory-lock key in the process
+# (queue/manager.py's reclaim timer at 761_034_221, embeddings/worker.py's
+# backfill lock at 761_034_222, pipeline/enqueue.py's reconciliation timer
+# at 761_034_331).
 _APPEND_LOCK_KEY = 761_034_402
 
 # Only mail.received rules migrate into a stage -- the pipeline is
@@ -69,32 +77,30 @@ class StaleRevisionError(Exception):
 
 
 class PipelineRevisionRepository:
-    """CRUD over `pipeline_revisions` -- append-only, current = max(revision)."""
+    """CRUD over `pipeline_revisions` -- append-only, one history per user,
+    current = the user's highest revision."""
 
     def __init__(self, db: DatabaseConnection) -> None:
         self._db = db
 
-    async def current(self) -> PipelineDefinition | None:
-        """The most recent revision, or None if no revision has ever been written."""
+    async def current(self, user_id: uuid.UUID) -> PipelineDefinition | None:
+        """The user's most recent revision, or None if they have never had one."""
         async with self._db.session() as session:
-            result = await session.execute(
-                text(
-                    "SELECT revision, document FROM pipeline_revisions "
-                    "ORDER BY revision DESC LIMIT 1"
-                )
-            )
-            row = result.one_or_none()
+            row = await _current_row(session, user_id)
         if row is None:
             return None
         return _parse_document(row.revision, row.document)
 
-    async def get(self, revision: int) -> PipelineDefinition | None:
-        """One specific revision's document, or None if it does not
-        exist -- the source a restore reads from."""
+    async def get(self, user_id: uuid.UUID, revision: int) -> PipelineDefinition | None:
+        """One of the user's revisions, or None if it does not exist or
+        belongs to someone else -- the source a restore reads from."""
         async with self._db.session() as session:
             result = await session.execute(
-                text("SELECT revision, document FROM pipeline_revisions WHERE revision = :r"),
-                {"r": revision},
+                text(
+                    "SELECT revision, document FROM pipeline_revisions "
+                    "WHERE revision = :r AND user_id = :user"
+                ),
+                {"r": revision, "user": user_id},
             )
             row = result.one_or_none()
         if row is None:
@@ -103,20 +109,23 @@ class PipelineRevisionRepository:
 
     async def append(
         self,
+        user_id: uuid.UUID,
         document: dict[str, Any],
         *,
         note: str | None = None,
         expected_base_revision: int | None = None,
     ) -> int:
         """
-        Append a new revision, returning its revision number.
+        Append a new revision to the user's history, returning its
+        revision number.
 
         Args:
+            user_id: The document's owner
             document: `{"enabled": bool, "stages": [...]}`
             note: Free-text, shown in the revision history
             expected_base_revision: If given, the revision the caller's
-                edit was computed against. Checked against the current
-                revision and the insert performed in the same
+                edit was computed against. Checked against the user's
+                current revision and the insert performed in the same
                 transaction, serialized by an advisory lock held for
                 its duration -- reading the current revision in one
                 session and appending in another (a caller checking
@@ -132,41 +141,110 @@ class PipelineRevisionRepository:
 
         Raises:
             StaleRevisionError: `expected_base_revision` no longer
-                matches the current revision
+                matches the user's current revision
         """
         async with self._db.session() as session:
-            await session.execute(
-                text("SELECT pg_advisory_xact_lock(:key)"), {"key": _APPEND_LOCK_KEY},
-            )
+            await _lock_user_history(session, user_id)
             if expected_base_revision is not None:
-                current_result = await session.execute(
-                    text("SELECT revision FROM pipeline_revisions ORDER BY revision DESC LIMIT 1")
-                )
-                current_revision = current_result.scalar_one_or_none() or 0
+                current_revision = await _latest_revision(session, user_id)
                 if current_revision != expected_base_revision:
                     raise StaleRevisionError(expected_base_revision, current_revision)
-            result = await session.execute(
-                text(
-                    "INSERT INTO pipeline_revisions (document, note) "
-                    "VALUES (CAST(:document AS jsonb), :note) RETURNING revision"
-                ),
-                {"document": json.dumps(document), "note": note},
-            )
-            return int(result.scalar_one())
+            return await _insert_revision(session, user_id, document, note)
 
-    async def list_revisions(self) -> list[dict[str, Any]]:
-        """Every revision, newest first -- the history the API surfaces."""
+    async def ensure(
+        self, user_id: uuid.UUID, document: dict[str, Any], *, note: str,
+    ) -> PipelineDefinition:
+        """
+        The user's current definition, first writing `document` as their
+        revision if they have none -- a user's first document comes from a
+        template (pipeline/template.py), made once under the same lock
+        append() takes so two requests arriving together write one.
+        """
+        async with self._db.session() as session:
+            await _lock_user_history(session, user_id)
+            row = await _current_row(session, user_id)
+            if row is not None:
+                return _parse_document(row.revision, row.document)
+            revision = await _insert_revision(session, user_id, document, note)
+        return _parse_document(revision, document)
+
+    async def list_revisions(self, user_id: uuid.UUID) -> list[dict[str, Any]]:
+        """The user's revisions, newest first -- the history the API surfaces."""
         async with self._db.session() as session:
             result = await session.execute(
                 text(
                     "SELECT revision, note, created_at FROM pipeline_revisions "
-                    "ORDER BY revision DESC"
-                )
+                    "WHERE user_id = :user ORDER BY revision DESC"
+                ),
+                {"user": user_id},
             )
             return [
                 {"revision": row.revision, "note": row.note, "created_at": row.created_at}
                 for row in result.all()
             ]
+
+    async def summaries(self) -> list[dict[str, Any]]:
+        """Every user's current document reduced to counts: revision, whether
+        it is enabled, how many stages and how many of those are enabled,
+        and when it last changed. The admin overview's source -- it reads no
+        stage content."""
+        async with self._db.session() as session:
+            result = await session.execute(
+                text(
+                    "SELECT DISTINCT ON (user_id) user_id, revision, created_at, "
+                    "COALESCE((document ->> 'enabled')::boolean, true) AS enabled, "
+                    "jsonb_array_length(COALESCE(document -> 'stages', '[]'::jsonb)) AS stages, "
+                    "(SELECT count(*) FROM jsonb_array_elements("
+                    "COALESCE(document -> 'stages', '[]'::jsonb)) AS s "
+                    "WHERE COALESCE((s ->> 'enabled')::boolean, true)) AS enabled_stages "
+                    "FROM pipeline_revisions WHERE user_id IS NOT NULL "
+                    "ORDER BY user_id, revision DESC"
+                )
+            )
+            return [
+                {
+                    "user_id": row.user_id, "revision": row.revision,
+                    "enabled": row.enabled, "stages": row.stages,
+                    "enabled_stages": row.enabled_stages, "changed_at": row.created_at,
+                }
+                for row in result.all()
+            ]
+
+
+async def _lock_user_history(session: AsyncSession, user_id: uuid.UUID) -> None:
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:key, hashtext(CAST(:user AS text)))"),
+        {"key": _APPEND_LOCK_KEY, "user": str(user_id)},
+    )
+
+
+async def _current_row(session: AsyncSession, user_id: uuid.UUID) -> Row[Any] | None:
+    result = await session.execute(
+        text(
+            "SELECT revision, document FROM pipeline_revisions "
+            "WHERE user_id = :user ORDER BY revision DESC LIMIT 1"
+        ),
+        {"user": user_id},
+    )
+    return result.one_or_none()
+
+
+async def _latest_revision(session: AsyncSession, user_id: uuid.UUID) -> int:
+    row = await _current_row(session, user_id)
+    return 0 if row is None else int(row.revision)
+
+
+async def _insert_revision(
+    session: AsyncSession, user_id: uuid.UUID, document: dict[str, Any], note: str | None,
+) -> int:
+    result = await session.execute(
+        text(
+            "INSERT INTO pipeline_revisions (user_id, document, note) "
+            "VALUES (:user, CAST(:document AS jsonb), :note) RETURNING revision"
+        ),
+        {"user": user_id, "document": json.dumps(document), "note": note},
+    )
+    return int(result.scalar_one())
 
 
 def _parse_document(revision: int, document: dict[str, Any]) -> PipelineDefinition:
