@@ -45,10 +45,11 @@ import uuid
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.schemas import (
     EventAttendeeOut,
     EventCreateRequest,
@@ -61,6 +62,7 @@ from mail_verdict.api.schemas import (
     OwnReplyOut,
     RespondRequest,
 )
+from mail_verdict.auth.scope import Scope
 from mail_verdict.calendar import expansion_cache, ical
 from mail_verdict.calendar.prefs import calendar_is_enabled
 from mail_verdict.calendar.repository import (
@@ -68,6 +70,7 @@ from mail_verdict.calendar.repository import (
     CalendarReplyRepository,
     CollectionRepository,
     DavObjectRepository,
+    get_identity_in_scope,
 )
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import CalendarPrefs, DavCollection, DavObject, Identity, Outbox
@@ -373,6 +376,7 @@ async def _expand_all(
 @router.get("", response_model=EventListResponse)
 async def list_events(
     month: str, calendars: str | None = None, tz: str | None = None,
+    scope: Scope = Depends(current_scope),
 ) -> EventListResponse:
     """Every instance (recurring series expanded) in one calendar-month
     window, across every enabled calendar unless `calendars` narrows it.
@@ -385,9 +389,9 @@ async def list_events(
     tz (an IANA zone name, e.g. "Europe/Berlin") builds the window
     against local-month boundaries rather than UTC ones -- see
     _parse_month's own docstring for why that matters. tz must stay the
-    LAST parameter here: mcp_tools.py's list_events calls this positionally
-    and a parameter inserted earlier silently reassigns calendar_ids onto
-    it instead."""
+    last request parameter here, ahead of the caller's scope:
+    mcp_tools.py's list_events calls this positionally and a parameter
+    inserted earlier silently reassigns calendar_ids onto it instead."""
     window_start, window_end = _parse_month(month, tz)
 
     db = get_db_connection()
@@ -404,8 +408,8 @@ async def list_events(
     # covers it.
     async with db.session() as session:
         await _require_support(session)
-        pairs = await collection_repo.list_by_kind("calendar", session)
-        all_prefs = await prefs_repo.list_all(session)
+        pairs = await collection_repo.list_by_kind("calendar", scope, session)
+        all_prefs = await prefs_repo.list_owned(scope, session)
 
         requested_ids = (
             {uuid.UUID(c) for c in calendars.split(",") if c} if calendars else None
@@ -447,7 +451,9 @@ async def list_events(
         identity_emails: dict[uuid.UUID, str] = {}
         if identity_ids:
             result = await session.execute(
-                select(Identity.id, Identity.email).where(Identity.id.in_(identity_ids))
+                select(Identity.id, Identity.email).where(
+                    Identity.id.in_(identity_ids), scope.account_filter(Identity.account_id),
+                )
             )
             identity_emails = dict(result.tuples().all())
 
@@ -462,7 +468,7 @@ async def list_events(
 
         collection_ids = [c.id for c, _ in visible]
         objects = await object_repo.list_in_collections(
-            collection_ids, window_start, window_end, session,
+            collection_ids, scope, window_start, window_end, session,
         )
         errors = await object_repo.get_write_errors([o.id for o in objects], session)
         own_replies = await _own_replies_for_month(reply_repo, session, [o.id for o in objects])
@@ -492,7 +498,10 @@ async def list_events(
 
 
 @router.get("/{object_id}", response_model=EventInstanceOut)
-async def get_event(object_id: uuid.UUID, recurrence_id: str | None = None) -> EventInstanceOut:
+async def get_event(
+    object_id: uuid.UUID, recurrence_id: str | None = None,
+    scope: Scope = Depends(current_scope),
+) -> EventInstanceOut:
     """One event instance -- the master, or one named occurrence."""
     await _require_support()
     db = get_db_connection()
@@ -500,6 +509,7 @@ async def get_event(object_id: uuid.UUID, recurrence_id: str | None = None) -> E
     obj = await object_repo.get_by_id(object_id)
     if obj is None or obj.deleted_at is not None or obj.kind != "calendar":
         raise HTTPException(status_code=404, detail="Event not found")
+    scope.require_dav_account(obj.account_id)
 
     master, exceptions = ical.parse_master_and_exceptions(obj.data)
     parsed: ical.ParsedEvent | None = master
@@ -531,7 +541,9 @@ async def get_event(object_id: uuid.UUID, recurrence_id: str | None = None) -> E
     if prefs is not None and prefs.identity_id is not None:
         async with db.session() as session:
             identity_email = await session.scalar(
-                select(Identity.email).where(Identity.id == prefs.identity_id)
+                select(Identity.email).where(
+                    Identity.id == prefs.identity_id, scope.account_filter(Identity.account_id),
+                )
             )
     errors = await object_repo.get_write_errors([obj.id])
     return await _to_instance(
@@ -542,7 +554,9 @@ async def get_event(object_id: uuid.UUID, recurrence_id: str | None = None) -> E
 
 
 @router.post("", response_model=EventInstanceOut, status_code=201)
-async def create_event(request: EventCreateRequest) -> EventInstanceOut:
+async def create_event(
+    request: EventCreateRequest, scope: Scope = Depends(current_scope),
+) -> EventInstanceOut:
     """Create an event. With attendees, the calendar needs a linked
     identity -- MailVerdict sends the invitations itself over its outbox
     rather than leaving the server's own scheduling engine to do it."""
@@ -552,6 +566,7 @@ async def create_event(request: EventCreateRequest) -> EventInstanceOut:
     collection = await collection_repo.get_by_id(request.calendar_id)
     if collection is None or collection.kind != "calendar":
         raise HTTPException(status_code=404, detail="Calendar not found")
+    scope.require_dav_account(collection.account_id)
 
     organizer_email = None
     organizer_identity: Identity | None = None
@@ -559,10 +574,7 @@ async def create_event(request: EventCreateRequest) -> EventInstanceOut:
         prefs = await CalendarPrefsRepository(db).get(request.calendar_id)
         if prefs is None or prefs.identity_id is None:
             raise HTTPException(status_code=409, detail="calendar has no identity")
-        async with db.session() as session:
-            organizer_identity = await session.scalar(
-                select(Identity).where(Identity.id == prefs.identity_id)
-            )
+        organizer_identity = await get_identity_in_scope(db, scope, prefs.identity_id)
         if organizer_identity is None:
             raise HTTPException(status_code=409, detail="calendar has no identity")
         organizer_email = organizer_identity.email
@@ -620,7 +632,9 @@ async def _send_itip(
 
 
 @router.patch("/{object_id}", response_model=EventInstanceOut)
-async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> EventInstanceOut:
+async def update_event(
+    object_id: uuid.UUID, request: EventUpdateRequest, scope: Scope = Depends(current_scope),
+) -> EventInstanceOut:
     """Edit an event. scope="all" edits the whole series (or the only edit
     path for a non-recurring event); scope="this" edits one occurrence
     without touching the others; scope="following" is not implemented.
@@ -652,11 +666,18 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
     obj = await object_repo.get_by_id(object_id)
     if obj is None or obj.deleted_at is not None or obj.kind != "calendar":
         raise HTTPException(status_code=404, detail="Event not found")
+    scope.require_dav_account(obj.account_id)
 
     collection_repo = CollectionRepository(db)
     collection = await collection_repo.get_by_id(obj.collection_id)
     if collection is not None and collection.read_only:
         raise HTTPException(status_code=400, detail="This calendar is read-only")
+    if request.calendar_id is not None and request.calendar_id != obj.collection_id:
+        # Moving an event is a write into the target calendar too.
+        target = await collection_repo.get_by_id(request.calendar_id)
+        if target is None or target.deleted_at is not None or target.kind != "calendar":
+            raise HTTPException(status_code=404, detail="Calendar not found")
+        scope.require_dav_account(target.account_id)
 
     if request.recurrence_id is not None and request.scope != "this":
         raise HTTPException(
@@ -668,10 +689,7 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
     identity_email = None
     organizer_identity: Identity | None = None
     if prefs is not None and prefs.identity_id is not None:
-        async with db.session() as session:
-            identity = await session.scalar(
-                select(Identity).where(Identity.id == prefs.identity_id)
-            )
+        identity = await get_identity_in_scope(db, scope, prefs.identity_id)
         if identity is not None:
             identity_email = identity.email
             if current_master.organizer and identity.email.lower() == (
@@ -748,7 +766,10 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
 
 
 @router.delete("/{object_id}", status_code=204)
-async def delete_event(object_id: uuid.UUID, request: EventDeleteRequest | None = None) -> None:
+async def delete_event(
+    object_id: uuid.UUID, request: EventDeleteRequest | None = None,
+    scope: Scope = Depends(current_scope),
+) -> None:
     """
     Delete an event. scope="all" (or no scope, non-recurring) removes it
     from the calendar; scope="this" marks that one occurrence cancelled
@@ -756,9 +777,9 @@ async def delete_event(object_id: uuid.UUID, request: EventDeleteRequest | None 
     An event this identity organizes with attendees sends CANCEL first.
     """
     await _require_support()
-    scope = request.scope if request else None
+    delete_scope = request.scope if request else None
     recurrence_id = request.recurrence_id if request else None
-    if scope == "following":
+    if delete_scope == "following":
         raise HTTPException(
             status_code=422, detail="scope=following (splitting a series) is not implemented",
         )
@@ -768,6 +789,7 @@ async def delete_event(object_id: uuid.UUID, request: EventDeleteRequest | None 
     obj = await object_repo.get_by_id(object_id)
     if obj is None or obj.deleted_at is not None or obj.kind != "calendar":
         raise HTTPException(status_code=404, detail="Event not found")
+    scope.require_dav_account(obj.account_id)
 
     master, _ = ical.parse_master_and_exceptions(obj.data)
     prefs = await CalendarPrefsRepository(db).get(obj.collection_id)
@@ -778,10 +800,11 @@ async def delete_event(object_id: uuid.UUID, request: EventDeleteRequest | None 
                 select(Identity).where(
                     Identity.id == prefs.identity_id,
                     Identity.email.ilike(master.organizer.email),
+                    scope.account_filter(Identity.account_id),
                 )
             )
 
-    if scope == "this":
+    if delete_scope == "this":
         if recurrence_id is None:
             raise HTTPException(status_code=400, detail="scope=this requires recurrence_id")
         # See update_event's own comment: SEQUENCE only advances for a
@@ -815,7 +838,9 @@ async def delete_event(object_id: uuid.UUID, request: EventDeleteRequest | None 
 
 
 @router.post("/{object_id}/respond", response_model=EventInstanceOut)
-async def respond_to_event(object_id: uuid.UUID, request: RespondRequest) -> EventInstanceOut:
+async def respond_to_event(
+    object_id: uuid.UUID, request: RespondRequest, scope: Scope = Depends(current_scope),
+) -> EventInstanceOut:
     """
     Accept, decline or tentatively accept an invitation: updates PARTSTAT
     on the stored object immediately, and sends the REPLY over the
@@ -830,9 +855,9 @@ async def respond_to_event(object_id: uuid.UUID, request: RespondRequest) -> Eve
     obj = await object_repo.get_by_id(object_id)
     if obj is None or obj.deleted_at is not None or obj.kind != "calendar":
         raise HTTPException(status_code=404, detail="Event not found")
+    scope.require_dav_account(obj.account_id)
 
-    async with db.session() as session:
-        identity = await session.scalar(select(Identity).where(Identity.id == request.identity_id))
+    identity = await get_identity_in_scope(db, scope, request.identity_id)
     if identity is None:
         raise HTTPException(status_code=404, detail="Identity not found")
 

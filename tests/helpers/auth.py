@@ -22,10 +22,13 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 
 from fastapi import FastAPI
+from sqlalchemy import select
 
 from mail_verdict.api.deps import current_scope, require_principal
 from mail_verdict.auth.principal import OWNER_USER_ID, Principal, bind_principal
 from mail_verdict.auth.scope import Scope
+from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.database.models import Account, DavAccount
 
 
 def owner_scope(
@@ -59,6 +62,24 @@ def act_as(app: FastAPI, scope: Scope) -> None:
         user_id=scope.require_user(), subject=f"test:{scope.user_id}", is_admin=scope.is_admin,
     )
     app.dependency_overrides[current_scope] = lambda: scope
+    app.dependency_overrides[require_principal] = lambda: principal
+
+
+def act_as_owner_of_everything(app: FastAPI, db: DatabaseConnection) -> None:
+    """Make every request to a bare app act as the owner of every mail and
+    DAV account in the database at the moment of the request -- for tests of
+    an endpoint's own behaviour on rows they seed directly, without writing
+    ownership rows. Isolation between users is what tests with real
+    ownership rows check."""
+    principal = Principal(user_id=OWNER_USER_ID, subject="test:owner", is_admin=True)
+
+    async def everything() -> Scope:
+        async with db.session() as session:
+            accounts = (await session.execute(select(Account.id))).scalars().all()
+            dav_accounts = (await session.execute(select(DavAccount.id))).scalars().all()
+        return owner_scope(accounts, dav_accounts)
+
+    app.dependency_overrides[current_scope] = everything
     app.dependency_overrides[require_principal] = lambda: principal
 
 

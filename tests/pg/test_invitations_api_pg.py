@@ -21,14 +21,16 @@ from mail_verdict.api.invitations import router as invitations_router
 from mail_verdict.calendar import ical
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
+from tests.helpers.auth import act_as_owner_of_everything
 
 _TARGET = "mail_verdict.api.invitations.get_db_connection"
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(invitations_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

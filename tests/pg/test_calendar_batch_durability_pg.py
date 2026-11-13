@@ -34,6 +34,7 @@ from mail_verdict.api.calendars import router as calendars_router
 from mail_verdict.calendar import ical
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.postimap.actions import create_object
+from tests.helpers.auth import act_as_owner_of_everything
 
 _TARGET = "mail_verdict.api.calendar_events.get_db_connection"
 
@@ -42,10 +43,11 @@ _CONCURRENT_SIZE = 25
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(events_router)
     app.include_router(calendars_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

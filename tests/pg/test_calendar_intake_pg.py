@@ -28,6 +28,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.calendar import ical
 from mail_verdict.calendar.intake import CalendarIntakeHandler
 from mail_verdict.calendar.repository import (
@@ -164,8 +165,18 @@ def _attacker_cancel_ics(uid: str, *, sequence: int = 99) -> str:
     )
 
 
+async def _seed_user(session: AsyncSession) -> uuid.UUID:
+    """An ordinary user other than the instance owner."""
+    user_id = uuid.uuid4()
+    await session.execute(
+        text("INSERT INTO users (id, display_name, role) VALUES (:id, 'Second', 'user')"),
+        {"id": user_id},
+    )
+    return user_id
+
+
 async def _seed_mail_account_folder_and_identity(
-    session: AsyncSession, *, email: str | None,
+    session: AsyncSession, *, email: str | None, owner: uuid.UUID = OWNER_USER_ID,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID | None]:
     account_id, folder_id = uuid.uuid4(), uuid.uuid4()
     await session.execute(
@@ -175,6 +186,10 @@ async def _seed_mail_account_folder_and_identity(
             "'\\x00' || convert_to('pw', 'UTF8'))"
         ),
         {"id": account_id, "name": f"acct-{account_id}"},
+    )
+    await session.execute(
+        text("INSERT INTO account_owners (account_id, user_id) VALUES (:account_id, :owner)"),
+        {"account_id": account_id, "owner": owner},
     )
     await session.execute(
         text("INSERT INTO folders (id, account_id, imap_name) VALUES (:id, :account_id, 'INBOX')"),
@@ -189,7 +204,7 @@ async def _seed_mail_account_folder_and_identity(
 
 
 async def _seed_dav_calendar(
-    session: AsyncSession, *, is_active: bool = True,
+    session: AsyncSession, *, is_active: bool = True, owner: uuid.UUID = OWNER_USER_ID,
 ) -> tuple[uuid.UUID, uuid.UUID]:
     dav_account_id, collection_id = uuid.uuid4(), uuid.uuid4()
     await session.execute(
@@ -199,6 +214,13 @@ async def _seed_dav_calendar(
             "'\\x00' || convert_to('pw', 'UTF8'), :is_active)"
         ),
         {"id": dav_account_id, "name": f"dav-{dav_account_id}", "is_active": is_active},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO dav_account_owners (dav_account_id, user_id) "
+            "VALUES (:dav_account_id, :owner)"
+        ),
+        {"dav_account_id": dav_account_id, "owner": owner},
     )
     await session.execute(
         text(
@@ -1099,6 +1121,135 @@ class TestAuthentication:
         # own), and the other account's object is untouched.
         assert status == "unlinked"
         assert stored == original_data
+
+
+class TestIntakeActsAsTheAccountOwner:
+    """An invitation is applied as the owner of the mail account it arrived
+    in: only that user's calendars and DAV accounts exist for it."""
+
+    @pytest.mark.asyncio
+    async def test_a_calendar_of_another_user_is_never_the_intake_target(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            other_user = await _seed_user(session)
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            # The identity is linked to an intake calendar in someone
+            # else's DAV account.
+            _dav_account_id, collection_id = await _seed_dav_calendar(session, owner=other_user)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_request_ics(uid), message_id_hdr="<foreign-intake@example.com>",
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            row = (
+                await session.execute(
+                    text("SELECT status, object_id FROM calendar_intake WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).one()
+            object_count = (
+                await session.execute(
+                    text("SELECT count(*) FROM dav_objects WHERE collection_id = :c"),
+                    {"c": collection_id},
+                )
+            ).scalar_one()
+        assert row.status == "unlinked"
+        assert row.object_id is None
+        assert object_count == 0
+
+    @pytest.mark.asyncio
+    async def test_an_object_of_another_user_is_never_the_existing_event(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Even a DAV account the mail account's identity is linked to is
+        out of reach when someone else owns it: a UID collision there is no
+        "existing object" to review or update."""
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            other_user = await _seed_user(session)
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            dav_account_id, collection_id = await _seed_dav_calendar(session, owner=other_user)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            original_data = _stored_event_data(uid)
+            existing_object_id = await _seed_existing_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid=uid, data=original_data,
+            )
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_request_ics(uid), message_id_hdr="<foreign-object@example.com>",
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT status, object_id FROM calendar_intake WHERE account_id = :a"
+                    ),
+                    {"a": account_id},
+                )
+            ).one()
+            stored = (
+                await session.execute(
+                    text("SELECT data FROM dav_objects WHERE id = :id"),
+                    {"id": existing_object_id},
+                )
+            ).scalar_one()
+        assert row.status == "unlinked"
+        assert row.object_id is None
+        assert stored == original_data
+
+    @pytest.mark.asyncio
+    async def test_a_mail_account_nobody_owns_imports_nothing(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            await session.execute(
+                text("DELETE FROM account_owners WHERE account_id = :a"), {"a": account_id},
+            )
+            _dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_request_ics(uid), message_id_hdr="<ownerless@example.com>",
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            row = (
+                await session.execute(
+                    text("SELECT status, object_id FROM calendar_intake WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).one()
+        assert row.status == "unlinked"
+        assert row.object_id is None
 
 
 class TestPendingRetry:

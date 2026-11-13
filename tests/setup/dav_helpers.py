@@ -175,6 +175,10 @@ def create_addressbook(
     return url
 
 
+# The month sample_event()'s default dates fall in ("YYYY-MM").
+SAMPLE_EVENT_MONTH = "2026-09"
+
+
 def sample_event(
     uid: str,
     summary: str = "Sample Event",

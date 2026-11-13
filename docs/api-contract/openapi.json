@@ -12256,7 +12256,7 @@
     },
     "/calendar/events": {
       "get": {
-        "description": "Every instance (recurring series expanded) in one calendar-month\nwindow, across every enabled calendar unless `calendars` narrows it.\nA disabled calendar's instances are never returned; a hidden one's\nare -- is_visible is a client-side view concept, filtered by the\nclient from each instance's own calendar_id, so toggling it never\nchanges what this endpoint returns or invalidates this response's\ncache.\n\ntz (an IANA zone name, e.g. \"Europe/Berlin\") builds the window\nagainst local-month boundaries rather than UTC ones -- see\n_parse_month's own docstring for why that matters. tz must stay the\nLAST parameter here: mcp_tools.py's list_events calls this positionally\nand a parameter inserted earlier silently reassigns calendar_ids onto\nit instead.",
+        "description": "Every instance (recurring series expanded) in one calendar-month\nwindow, across every enabled calendar unless `calendars` narrows it.\nA disabled calendar's instances are never returned; a hidden one's\nare -- is_visible is a client-side view concept, filtered by the\nclient from each instance's own calendar_id, so toggling it never\nchanges what this endpoint returns or invalidates this response's\ncache.\n\ntz (an IANA zone name, e.g. \"Europe/Berlin\") builds the window\nagainst local-month boundaries rather than UTC ones -- see\n_parse_month's own docstring for why that matters. tz must stay the\nlast request parameter here, ahead of the caller's scope:\nmcp_tools.py's list_events calls this positionally and a parameter\ninserted earlier silently reassigns calendar_ids onto it instead.",
         "operationId": "list_events_calendar_events_get",
         "parameters": [
           {

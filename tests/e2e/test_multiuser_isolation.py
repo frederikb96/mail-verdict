@@ -48,8 +48,22 @@ from tests.setup.containers import (
     RADICALE_ALIAS,
     RADICALE_PORT,
 )
-from tests.setup.dav_helpers import create_calendar, discover, put_object, sample_event
+from tests.setup.dav_helpers import (
+    SAMPLE_EVENT_MONTH,
+    create_addressbook,
+    create_calendar,
+    discover,
+    put_object,
+    sample_contact,
+    sample_event,
+)
 from tests.setup.mail_delivery import build_eml, deliver_message
+
+# A 1x1 PNG, base64: B's contact photo.
+_PIXEL = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5E"
+    "rkJggg=="
+)
 
 # Sent as the Authorization header to make a request carry no token at all,
 # overriding the owner's token app_client sends by default.
@@ -283,12 +297,20 @@ def world(
 
     radicale_host, radicale_port = radicale_endpoint
     b_dav_user = f"iso-b-{tag}"
+    b_contact_name, b_contact_email = f"B contact {tag}", f"b-contact-{tag}@example.com"
     with httpx.Client(auth=(b_dav_user, "unused"), timeout=10.0) as dav:
-        calendar_url = create_calendar(
-            dav, discover(dav, f"http://{radicale_host}:{radicale_port}/"), "b", f"B cal {tag}",
-        )
+        principal = discover(dav, f"http://{radicale_host}:{radicale_port}/")
+        calendar_url = create_calendar(dav, principal, "b", f"B cal {tag}")
         put_object(dav, f"{calendar_url}isolation-{tag}.ics",
                    sample_event(f"isolation-{tag}", b_subject), "text/calendar; charset=utf-8")
+        book_url = create_addressbook(dav, principal, "b-book", f"B book {tag}")
+        # A category and an embedded photo, so the groups index, the photo
+        # index and the photo route each have something of B's to leak.
+        card = sample_contact(f"isolation-{tag}", b_contact_name, b_contact_email).replace(
+            "END:VCARD",
+            f"CATEGORIES:B group {tag}\r\nPHOTO;ENCODING=b;TYPE=PNG:{_PIXEL}\r\nEND:VCARD",
+        )
+        put_object(dav, f"{book_url}isolation-{tag}.vcf", card, "text/vcard; charset=utf-8")
     a_dav_account_id = _add_dav_account(app_client, a_token, f"iso-a-{tag}")
     b_dav_account_id = _add_dav_account(app_client, b_token, b_dav_user)
 
@@ -299,6 +321,31 @@ def world(
         )
 
     calendar_id = _poll(_b_calendar, "B's calendar being discovered")
+
+    def _b_addressbook() -> str | None:
+        account = app_client.get(f"/api/dav-accounts/{b_dav_account_id}", headers=_as(b_token))
+        return next(
+            (c["id"] for c in account.json()["collections"] if c["kind"] == "addressbook"), None,
+        )
+
+    addressbook_id = _poll(_b_addressbook, "B's address book being discovered")
+
+    def _b_event() -> str | None:
+        month = app_client.get(
+            "/api/calendar/events", headers=_as(b_token),
+            params={"month": SAMPLE_EVENT_MONTH, "calendars": calendar_id},
+        )
+        return next((e["object_id"] for e in month.json()["events"]), None)
+
+    event_id = _poll(_b_event, "B's event being synced")
+
+    def _b_contact() -> str | None:
+        listing = app_client.get(
+            "/api/contacts", headers=_as(b_token), params={"addressbook_id": addressbook_id},
+        )
+        return next((c["id"] for c in listing.json()["contacts"]), None)
+
+    contact_id = _poll(_b_contact, "B's contact being synced")
 
     rows: dict[str, Any] = {
         "tag": tag, "b_user_id": b_user_id, "account_id": b_account_id,
@@ -312,6 +359,8 @@ def world(
     b = {
         "account_id": b_account_id, "dav_account_id": b_dav_account_id,
         "folder_id": folder_id, "message_id": message_id, "calendar_id": calendar_id,
+        "addressbook_id": addressbook_id, "event_id": event_id, "contact_id": contact_id,
+        "contact_email": b_contact_email,
         **{key: rows[key] for key in (
             "view_id", "alert_id", "order_id", "subscription_id", "identity_id",
             "pipeline_revision",
@@ -325,7 +374,7 @@ def world(
         b=b,
         b_markers=frozenset({
             b_user_id, b_email, b_subject, b_sender, f"B cal {tag}", f"B view {tag}",
-            f"Merchant {tag}",
+            f"Merchant {tag}", f"B book {tag}", f"B group {tag}", b_contact_name,
             *(value for key, value in b.items() if key != "pipeline_revision"),
         }),
         b_content=frozenset({b_subject, b_sender}),

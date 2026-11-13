@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   account to another user. Nothing there returns mail, events or contacts.
 - Every mail and DAV account belongs to the user who added it. Two users may give an account the
   same name.
+- DAV accounts, calendars, events, invitations, address books and contacts are per user: every
+  list shows only the caller's own, a calendar, event or contact of someone else answers `403`, and
+  a calendar can only be linked to the caller's own identities. An invitation is imported on behalf
+  of the owner of the mailbox it arrived in and never lands in another user's calendar.
 - `scripts/devstack.py --as owner|second` runs its own token issuer and acts as the chosen user.
 - The web UI asks `/api/me` who is signed in before it renders: the Pipeline entry and the AI
   and automation settings are for admins, and `AdminOnly` explains an admin page to anyone else.

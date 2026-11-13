@@ -88,11 +88,11 @@ def _to_response(account: DavAccount, collections: list[DavCollection]) -> DavAc
 
 
 @router.get("", response_model=list[DavAccountResponse])
-async def list_dav_accounts() -> list[DavAccountResponse]:
+async def list_dav_accounts(scope: Scope = Depends(current_scope)) -> list[DavAccountResponse]:
     """List every DAV account with its collections."""
     await _require_support()
     repo = DavAccountRepository(get_db_connection())
-    accounts = await repo.list_all()
+    accounts = await repo.list_owned(scope)
     responses = []
     for account in accounts:
         collections = await repo.list_collections(account.id)
@@ -101,13 +101,16 @@ async def list_dav_accounts() -> list[DavAccountResponse]:
 
 
 @router.get("/{dav_account_id}", response_model=DavAccountResponse)
-async def get_dav_account(dav_account_id: uuid.UUID) -> DavAccountResponse:
+async def get_dav_account(
+    dav_account_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> DavAccountResponse:
     """Get one DAV account with its collections."""
     await _require_support()
     repo = DavAccountRepository(get_db_connection())
     account = await repo.get_by_id(dav_account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="DAV account not found")
+    scope.require_dav_account(account.id)
     collections = await repo.list_collections(dav_account_id)
     return _to_response(account, collections)
 
@@ -134,6 +137,7 @@ async def create_dav_account_endpoint(
 @router.patch("/{dav_account_id}", response_model=DavAccountResponse)
 async def update_dav_account_endpoint(
     dav_account_id: uuid.UUID, request: DavAccountUpdateRequest,
+    scope: Scope = Depends(current_scope),
 ) -> DavAccountResponse:
     """Update name, password or is_active."""
     await _require_support()
@@ -146,6 +150,7 @@ async def update_dav_account_endpoint(
     existing = await repo.get_by_id(dav_account_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="DAV account not found")
+    scope.require_dav_account(existing.id)
     credentials_changed = "password" in values
     was_active = existing.is_active
 
@@ -172,7 +177,9 @@ async def update_dav_account_endpoint(
 
 
 @router.delete("/{dav_account_id}", status_code=204)
-async def delete_dav_account_endpoint(dav_account_id: uuid.UUID) -> None:
+async def delete_dav_account_endpoint(
+    dav_account_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> None:
     """Permanently remove a DAV account and everything mirrored under it.
     Nothing on the server itself is touched."""
     await _require_support()
@@ -180,13 +187,16 @@ async def delete_dav_account_endpoint(dav_account_id: uuid.UUID) -> None:
     repo = DavAccountRepository(db)
     if await repo.get_by_id(dav_account_id) is None:
         raise HTTPException(status_code=404, detail="DAV account not found")
+    scope.require_dav_account(dav_account_id)
     async with db.session() as session:
         await forget_dav_account_owner(session, dav_account_id)
         await delete_dav_account(session, dav_account_id)
 
 
 @router.post("/{dav_account_id}/sync")
-async def trigger_dav_sync(dav_account_id: uuid.UUID) -> dict[str, str]:
+async def trigger_dav_sync(
+    dav_account_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> dict[str, str]:
     """Wake this account's sync early, via the same postimap_commands
     channel mail accounts use -- both orchestrators listen, and the one
     owning the id acts."""
@@ -194,5 +204,6 @@ async def trigger_dav_sync(dav_account_id: uuid.UUID) -> dict[str, str]:
     repo = DavAccountRepository(get_db_connection())
     if await repo.get_by_id(dav_account_id) is None:
         raise HTTPException(status_code=404, detail="DAV account not found")
+    scope.require_dav_account(dav_account_id)
     await request_sync_now(get_db_connection(), dav_account_id)
     return {"status": "sync_requested", "dav_account_id": str(dav_account_id)}

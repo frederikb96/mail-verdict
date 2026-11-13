@@ -18,13 +18,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.mcp_tools import mcp
+from mail_verdict.auth.principal import OWNER_USER_ID, Principal
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
+from tests.helpers.auth import as_principal
 
 _TARGETS = (
     "mail_verdict.api.calendar_events.get_db_connection",
     "mail_verdict.api.calendars.get_db_connection",
     "mail_verdict.api.contacts.get_db_connection",
+    "mail_verdict.api.deps.get_db_connection",
 )
 
 
@@ -37,6 +40,10 @@ async def _seed_calendar(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
             "'\\x00' || convert_to('pw', 'UTF8'))"
         ),
         {"id": dav_account_id, "name": f"dav-{dav_account_id}"},
+    )
+    await session.execute(
+        text("INSERT INTO dav_account_owners (dav_account_id, user_id) VALUES (:id, :owner)"),
+        {"id": dav_account_id, "owner": OWNER_USER_ID},
     )
     collection_id = uuid.uuid4()
     await session.execute(
@@ -59,6 +66,10 @@ async def _seed_addressbook(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID
         ),
         {"id": dav_account_id, "name": f"dav-{dav_account_id}"},
     )
+    await session.execute(
+        text("INSERT INTO dav_account_owners (dav_account_id, user_id) VALUES (:id, :owner)"),
+        {"id": dav_account_id, "owner": OWNER_USER_ID},
+    )
     collection_id = uuid.uuid4()
     await session.execute(
         text(
@@ -75,7 +86,8 @@ async def mcp_client(migrated_db: DatabaseConnection) -> AsyncIterator[Client]:
     """The MCP calendar/contact tools call directly into api/calendar_events.py,
     api/calendars.py and api/contacts.py -- each resolves its own database
     connection at call time, so all three need patching, not just
-    api/mcp_tools.py's own."""
+    api/mcp_tools.py's own, and so does the one that resolves the caller's
+    scope. The tools act as the instance owner, who owns the seeded accounts."""
     # list_calendars/create_event/update_event go through api/calendars.py's
     # _to_response(), which resolves a calendar's default reminder against
     # the global settings.calendar category -- the same settings service
@@ -84,9 +96,11 @@ async def mcp_client(migrated_db: DatabaseConnection) -> AsyncIterator[Client]:
     patchers = [patch(target, return_value=migrated_db) for target in _TARGETS]
     for p in patchers:
         p.start()
+    owner = Principal(user_id=OWNER_USER_ID, subject="test:owner", is_admin=True)
     try:
-        async with Client(mcp) as client:
-            yield client
+        with as_principal(owner):
+            async with Client(mcp) as client:
+                yield client
     finally:
         for p in patchers:
             p.stop()

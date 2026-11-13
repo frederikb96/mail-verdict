@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.calendar.repository import DavObjectRepository
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import owner_scope
 
 
 async def _seed_dav_calendar(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
@@ -83,7 +84,7 @@ class TestWindowFilter:
             )
 
         objects = await DavObjectRepository(migrated_db).list_in_collections(
-            [collection_id],
+            [collection_id], owner_scope(dav_account_ids=[dav_account_id]),
             datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 10, 1, tzinfo=timezone.utc),
         )
         assert {o.id for o in objects} == {inside_id}
@@ -105,7 +106,7 @@ class TestWindowFilter:
             )
 
         objects = await DavObjectRepository(migrated_db).list_in_collections(
-            [collection_id],
+            [collection_id], owner_scope(dav_account_ids=[dav_account_id]),
             datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 10, 1, tzinfo=timezone.utc),
         )
         assert {o.id for o in objects} == {recurring_id}
@@ -127,7 +128,7 @@ class TestWindowFilter:
             )
 
         objects = await DavObjectRepository(migrated_db).list_in_collections(
-            [collection_id],
+            [collection_id], owner_scope(dav_account_ids=[dav_account_id]),
             datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 10, 1, tzinfo=timezone.utc),
         )
         assert objects == []
@@ -148,7 +149,7 @@ class TestWindowFilter:
             )
 
         objects = await DavObjectRepository(migrated_db).list_in_collections(
-            [collection_id],
+            [collection_id], owner_scope(dav_account_ids=[dav_account_id]),
             datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 10, 1, tzinfo=timezone.utc),
         )
         assert {o.id for o in objects} == {pending_id}
@@ -172,7 +173,7 @@ class TestWindowFilter:
             )
 
         objects = await DavObjectRepository(migrated_db).list_in_collections(
-            [collection_id],
+            [collection_id], owner_scope(dav_account_ids=[dav_account_id]),
             datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 10, 1, tzinfo=timezone.utc),
         )
         assert {o.id for o in objects} == {all_day_id}
@@ -192,7 +193,7 @@ class TestWindowFilter:
             )
 
         objects = await DavObjectRepository(migrated_db).list_in_collections(
-            [collection_id],
+            [collection_id], owner_scope(dav_account_ids=[dav_account_id]),
             datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 10, 1, tzinfo=timezone.utc),
         )
         assert objects == []
@@ -207,5 +208,7 @@ class TestWindowFilter:
                 dtend=datetime(2024, 1, 1, 1, tzinfo=timezone.utc),
             )
 
-        objects = await DavObjectRepository(migrated_db).list_in_collections([collection_id])
+        objects = await DavObjectRepository(migrated_db).list_in_collections(
+            [collection_id], owner_scope(dav_account_ids=[dav_account_id]),
+        )
         assert {o.id for o in objects} == {old_id}
