@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.folder_management import update_folder_prefs
 from mail_verdict.api.schemas import FolderPrefsUpdate
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import owner_owns_everything
 
 
 async def _seed_account_with_glacier(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
@@ -63,10 +65,13 @@ async def test_unified_view_membership_updates_on_the_glacier_folder(
         _account_id, glacier_folder_id = await _seed_account_with_glacier(session)
         view_id = uuid.uuid4()
         await session.execute(
-            text("INSERT INTO unified_views (id, name) VALUES (:id, 'Everything')"),
-            {"id": view_id},
+            text(
+                "INSERT INTO unified_views (id, name, user_id) VALUES (:id, 'Everything', :owner)"
+            ),
+            {"id": view_id, "owner": OWNER_USER_ID},
         )
         await session.commit()
+    await owner_owns_everything()
 
     response = await update_folder_prefs(
         glacier_folder_id, FolderPrefsUpdate(unified_view_ids=[view_id]),

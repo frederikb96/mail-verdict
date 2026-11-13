@@ -307,6 +307,9 @@ folders, enforced in the query itself, and `received_after`/`received_before` (i
 the time window — on semantic search before the results are tiered, so the tiers are drawn within
 the window. Full-text results are always ordered by field tier, then newest first.
 
+Both search only the caller's own accounts. `account_id` narrows to one of them; an account, folder or
+cursor of someone else's matches nothing (an invalid cursor is `400`).
+
 Semantic search is single-page and has no tuning parameters. When the query cannot be embedded
 in time (the provider rate-limits twice, errors, times out, or none is configured) it answers `503`
 with the detail `semantic_unavailable`; a client keeps showing its text results then. Each result carries `tier`: `1` for

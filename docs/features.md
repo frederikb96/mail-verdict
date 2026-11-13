@@ -22,8 +22,8 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
 
 - Multiple accounts, a folder tree with live counts, conversation threading, and a virtualized
   list that stays smooth on large mailboxes.
-- **Unified views:** any set of folders, across accounts, merged into one list with an icon of its
-  own in the sidebar. One folder can sit in several views.
+- **Unified views:** any set of your folders, across your accounts, merged into one list with an
+  icon of its own in the sidebar. One folder can sit in several views. Views are yours alone.
 - A conversation reads newest first. Any earlier message in it can be made the open one, so the
   toolbar and the reply act on that message instead of the newest. An open conversation updates
   live: a reply arriving, or your own sent reply, shows up in it without reopening it.
@@ -258,7 +258,9 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
 Connect an MCP client at `/mcp` and let it search, read, organise and send mail — including
 replying to or forwarding a message by its id, saved as a draft for you to review and send, with
 attachments — and read, create, edit and delete calendar events and contacts. It wraps a curated
-subset of the REST API ([api.md](api.md)) as typed tools.
+subset of the REST API ([api.md](api.md)) as typed tools. Every tool acts for the signed-in
+caller: it lists, searches and changes only that user's own accounts, and a message or account of
+someone else's answers `forbidden`.
 
 ## Installable
 

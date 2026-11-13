@@ -22,12 +22,12 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from mail_verdict.api.deps import current_scope, require_principal
 from mail_verdict.auth.principal import OWNER_USER_ID, Principal, bind_principal
 from mail_verdict.auth.scope import Scope
-from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.database.connection import DatabaseConnection, get_db_connection
 from mail_verdict.database.models import Account, DavAccount
 
 
@@ -81,6 +81,23 @@ def act_as_owner_of_everything(app: FastAPI, db: DatabaseConnection) -> None:
 
     app.dependency_overrides[current_scope] = everything
     app.dependency_overrides[require_principal] = lambda: principal
+
+
+async def owner_owns_everything() -> Scope:
+    """The instance owner's scope over every mail account in the database
+    right now, after giving the owner every account that has no owner row --
+    for tests of an endpoint's own behaviour on rows they seed directly.
+    Reads the global connection, which the pg layer's `migrated_db` sets."""
+    db = get_db_connection()
+    async with db.session() as session:
+        await session.execute(
+            text(
+                "INSERT INTO account_owners (account_id, user_id) "
+                "SELECT id, :owner FROM accounts ON CONFLICT DO NOTHING"
+            ),
+            {"owner": OWNER_USER_ID},
+        )
+    return await Scope.for_user(db, OWNER_USER_ID)
 
 
 @contextmanager

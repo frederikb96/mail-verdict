@@ -321,9 +321,16 @@ async def list_message_page(
     _list_filters). list_messages's docstring describes the paging and
     threading; a unified view's list pages and threads the same way.
 
+    Nothing here knows who is asking: a list names an account the caller
+    owns, or a folder_scope already limited to the caller's accounts
+    (api/unified.py's member_folder_ids). A call naming neither would list
+    every user's mail, so it is refused.
+
     `as_of` is taken after the rows are read, from the clock rather than
     the transaction start (`now()`), so it is never earlier than the
     mirror time of anything the page could see."""
+    if account_id is None and folder_scope is None:
+        raise ValueError("A message list names an account or a folder scope")
     page = await _read_message_page(
         session, account_id=account_id, folder_id=folder_id, folder_scope=folder_scope,
         threaded=threaded, is_seen=is_seen, since=since, before=before, after=after,
@@ -370,6 +377,8 @@ async def _read_message_page(
         cursor_stmt = select(entity.received_at, entity.id).where(entity.id == cursor_param)
         if account_id is not None:
             cursor_stmt = cursor_stmt.where(entity.account_id == account_id)
+        if folder_scope is not None:
+            cursor_stmt = cursor_stmt.where(entity.folder_id.in_(folder_scope))
         cursor_result = await session.execute(cursor_stmt)
         cursor_row = cursor_result.one_or_none()
         if cursor_row is None:

@@ -29,6 +29,7 @@ from mail_verdict.api.unified import (
     set_folder_views,
 )
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import owner_owns_everything as _owner_scope
 
 # list_messages/list_unified_messages are FastAPI route functions whose
 # non-Annotated parameters default to `= Query(...)` -- calling one
@@ -321,14 +322,17 @@ async def test_a_unified_view_including_the_glacier_lists_it(
             subject="In the view", received_at=now,
         )
 
-    view = await create_unified_view(UnifiedViewCreate(name="Everything Archived"))
+    view = await create_unified_view(
+        UnifiedViewCreate(name="Everything Archived"), scope=await _owner_scope(),
+    )
     async with migrated_db.session() as session:
+        scope = await _owner_scope()
         await set_folder_views(session, glacier_folder_id, [view.id])
 
-    folders = await list_unified_folders()
+    folders = await list_unified_folders(scope=await _owner_scope())
     this_view = next(v for v in folders if v.id == view.id)
     assert any(f.folder_id == glacier_folder_id for f in this_view.folders)
     assert this_view.total_count == 1
 
-    messages = await _list(migrated_db, folder_scope=member_folder_ids(view.id))
+    messages = await _list(migrated_db, folder_scope=member_folder_ids(view.id, scope.account_ids))
     assert [m.id for m in messages.messages] == [glacier_id]

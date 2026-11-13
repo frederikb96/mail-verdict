@@ -38,6 +38,7 @@ from mail_verdict.api.unified import (
     update_unified_view,
 )
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import owner_owns_everything as _owner_scope
 from tests.pg.test_threaded_messages import _seed_account_and_inbox, _seed_message
 
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -61,6 +62,7 @@ async def _activate(session: AsyncSession, account_id: uuid.UUID) -> None:
 
 
 async def _assign(folder_id: uuid.UUID, *view_ids: uuid.UUID) -> list[uuid.UUID]:
+    await _owner_scope()
     response = await update_folder_prefs(
         folder_id, FolderPrefsUpdate(unified_view_ids=list(view_ids)),
     )
@@ -74,6 +76,7 @@ async def _list_ids(
     page = await list_unified_messages(
         folder_name=view_name, before=None, limit=50,
         threaded=threaded, is_seen=is_seen, after=None, around=around, since=None,
+        scope=await _owner_scope(),
     )
     return [m.id for m in page.messages]
 
@@ -101,14 +104,17 @@ async def test_a_folder_in_two_views_lists_its_mail_in_both(
 
     everything = await create_unified_view(
         UnifiedViewCreate(name=_unique("Everything"), emoji="📥"),
+        scope=await _owner_scope(),
     )
-    work_only = await create_unified_view(UnifiedViewCreate(name=_unique("Work only")))
+    work_only = await create_unified_view(
+        UnifiedViewCreate(name=_unique("Work only")), scope=await _owner_scope(),
+    )
 
     assert await _assign(inbox_id, everything.id) == [everything.id]
     # Sidebar order: everything was created first, so it leads.
     assert await _assign(work_id, work_only.id, everything.id) == [everything.id, work_only.id]
 
-    views = {v.id: v for v in await list_unified_folders()}
+    views = {v.id: v for v in await list_unified_folders(scope=await _owner_scope())}
     assert {f.folder_id for f in views[everything.id].folders} == {inbox_id, work_id}
     assert {f.folder_id for f in views[work_only.id].folders} == {work_id}
     assert views[everything.id].emoji == "📥"
@@ -125,8 +131,8 @@ async def test_a_folder_in_two_views_lists_its_mail_in_both(
 
     # Deleting a view removes only the grouping.
     await _assign(work_id, work_only.id, everything.id)
-    await delete_unified_view(work_only.id)
-    remaining = {v.id for v in await list_unified_folders()}
+    await delete_unified_view(work_only.id, scope=await _owner_scope())
+    remaining = {v.id for v in await list_unified_folders(scope=await _owner_scope())}
     assert work_only.id not in remaining
     assert set(await _list_ids(everything.name)) == {in_inbox, in_work}
     async with migrated_db.session() as session:
@@ -143,7 +149,9 @@ async def test_an_unknown_view_is_refused_without_changing_the_membership(
 ) -> None:
     async with migrated_db.session() as session:
         _account_id, inbox_id = await _seed_account_and_inbox(session)
-    view = await create_unified_view(UnifiedViewCreate(name=_unique("Real")))
+    view = await create_unified_view(
+        UnifiedViewCreate(name=_unique("Real")), scope=await _owner_scope(),
+    )
     await _assign(inbox_id, view.id)
 
     with pytest.raises(HTTPException) as exc:
@@ -182,7 +190,9 @@ async def test_a_unified_list_threads_a_conversation_across_two_member_folders(
             received_at=_BASE_TIME + timedelta(minutes=1), is_seen=True, uid=1,
         )
 
-    view = await create_unified_view(UnifiedViewCreate(name=_unique("All")))
+    view = await create_unified_view(
+        UnifiedViewCreate(name=_unique("All")), scope=await _owner_scope(),
+    )
     for folder_id in (inbox_a, sent_a, inbox_b):
         await _assign(folder_id, view.id)
 
@@ -191,6 +201,7 @@ async def test_a_unified_list_threads_a_conversation_across_two_member_folders(
     threaded = await list_unified_messages(
         folder_name=view.name, before=None, limit=50,
         threaded=True, is_seen=None, after=None, around=None, since=None,
+        scope=await _owner_scope(),
     )
     assert [m.id for m in threaded.messages] == [reply, other]
     assert (threaded.messages[0].thread_count, threaded.messages[0].unread_in_thread) == (2, 1)
@@ -214,23 +225,35 @@ async def test_a_unified_list_threads_a_conversation_across_two_member_folders(
 async def test_views_are_named_uniquely_renamed_and_reordered(
     migrated_db: DatabaseConnection,
 ) -> None:
-    first = await create_unified_view(UnifiedViewCreate(name=_unique("First")))
-    second = await create_unified_view(UnifiedViewCreate(name=_unique("Second"), emoji="⭐"))
+    first = await create_unified_view(
+        UnifiedViewCreate(name=_unique("First")), scope=await _owner_scope(),
+    )
+    second = await create_unified_view(
+        UnifiedViewCreate(name=_unique("Second"), emoji="⭐"), scope=await _owner_scope(),
+    )
 
     with pytest.raises(HTTPException) as exc:
-        await create_unified_view(UnifiedViewCreate(name=first.name))
+        await create_unified_view(UnifiedViewCreate(name=first.name), scope=await _owner_scope())
     assert exc.value.status_code == 409
 
-    renamed = await update_unified_view(first.id, UnifiedViewUpdate(name=_unique("Renamed")))
+    renamed = await update_unified_view(
+        first.id, UnifiedViewUpdate(name=_unique("Renamed")), scope=await _owner_scope(),
+    )
     assert renamed.name != first.name
-    cleared = await update_unified_view(second.id, UnifiedViewUpdate(emoji=None))
+    cleared = await update_unified_view(
+        second.id, UnifiedViewUpdate(emoji=None), scope=await _owner_scope(),
+    )
     assert cleared.emoji is None
     with pytest.raises(HTTPException) as exc:
-        await update_unified_view(second.id, UnifiedViewUpdate(name=renamed.name))
+        await update_unified_view(
+            second.id, UnifiedViewUpdate(name=renamed.name), scope=await _owner_scope(),
+        )
     assert exc.value.status_code == 409
 
-    await set_unified_folder_order(UnifiedFolderOrderUpdate(order=[second.name, "no such view"]))
-    order = (await get_unified_folder_order()).order
+    await set_unified_folder_order(
+        UnifiedFolderOrderUpdate(order=[second.name, "no such view"]), scope=await _owner_scope(),
+    )
+    order = (await get_unified_folder_order(scope=await _owner_scope())).order
     assert order.index(second.name) < order.index(renamed.name)
 
 
@@ -291,8 +314,12 @@ async def test_overlapping_membership_writes_for_one_folder_never_collide(
     the two sets, never a mix."""
     async with migrated_db.session() as session:
         _account_id, inbox_id = await _seed_account_and_inbox(session)
-    first = await create_unified_view(UnifiedViewCreate(name=_unique("One")))
-    second = await create_unified_view(UnifiedViewCreate(name=_unique("Two")))
+    first = await create_unified_view(
+        UnifiedViewCreate(name=_unique("One")), scope=await _owner_scope(),
+    )
+    second = await create_unified_view(
+        UnifiedViewCreate(name=_unique("Two")), scope=await _owner_scope(),
+    )
     await _assign(inbox_id, first.id)
 
     for _ in range(15):

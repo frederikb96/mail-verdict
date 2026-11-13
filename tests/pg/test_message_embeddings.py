@@ -558,7 +558,7 @@ async def test_semantic_search_returns_tier_one_then_tier_two_each_newest_first(
 
     results = await semantic_search(
         migrated_db, exact_scan_max_rows=exact_scan_max_rows,
-        query_vector=_QUERY_VECTOR, model=model, account_id=account_id, k=10,
+        query_vector=_QUERY_VECTOR, model=model, account_ids=[account_id], k=10,
     )
 
     assert [(r.message.id, r.tier) for r in results] == [
@@ -580,7 +580,7 @@ async def test_a_small_pool_is_all_tier_one_even_for_a_noise_level_hit(
 
     results = await semantic_search(
         migrated_db, exact_scan_max_rows=exact_scan_max_rows,
-        query_vector=_QUERY_VECTOR, model=model, account_id=account_id, k=10,
+        query_vector=_QUERY_VECTOR, model=model, account_ids=[account_id], k=10,
     )
 
     assert [(r.message.id, r.tier) for r in results] == [(ids[1], 1), (ids[0], 1)]
@@ -597,7 +597,7 @@ async def test_a_message_without_a_date_sorts_last_within_its_tier(
 
     results = await semantic_search(
         migrated_db, exact_scan_max_rows=exact_scan_max_rows,
-        query_vector=_QUERY_VECTOR, model=model, account_id=account_id, k=10,
+        query_vector=_QUERY_VECTOR, model=model, account_ids=[account_id], k=10,
     )
 
     assert [(r.message.id, r.tier) for r in results] == [
@@ -620,13 +620,13 @@ async def test_date_range_narrows_the_pool_before_tiering(
 
     everything = await semantic_search(
         migrated_db, exact_scan_max_rows=exact_scan_max_rows,
-        query_vector=_QUERY_VECTOR, model=model, account_id=account_id, k=10,
+        query_vector=_QUERY_VECTOR, model=model, account_ids=[account_id], k=10,
     )
     assert ids[4] not in {r.message.id for r in everything}
 
     windowed = await semantic_search(
         migrated_db, exact_scan_max_rows=exact_scan_max_rows,
-        query_vector=_QUERY_VECTOR, model=model, account_id=account_id, k=10,
+        query_vector=_QUERY_VECTOR, model=model, account_ids=[account_id], k=10,
         received_after=_day(3), received_before=_day(7),
     )
     assert {r.message.id: r.tier for r in windowed} == {mail_id: 1 for mail_id in ids[:5]}
@@ -664,10 +664,10 @@ async def test_the_index_path_gives_the_exact_scans_result(
 ) -> None:
     model = _unique_model()
     account_id, _ids = await _seed_scored_pool(migrated_db, model, _SPREAD, _spread_dates())
-    exact = await _search(migrated_db, model, _EXACT, account_id=account_id, k=10)
+    exact = await _search(migrated_db, model, _EXACT, account_ids=[account_id], k=10)
 
     _forbid_the_exact_scan(monkeypatch)
-    indexed = await _search(migrated_db, model, _INDEX, account_id=account_id, k=10)
+    indexed = await _search(migrated_db, model, _INDEX, account_ids=[account_id], k=10)
 
     assert len(exact) > 0
     assert indexed == exact
@@ -687,10 +687,10 @@ async def test_the_index_path_skips_expunged_messages_and_refills_the_pool(
             text("UPDATE messages SET expunged_at = now() WHERE id = ANY(:ids)"),
             {"ids": ids[:12]},
         )
-    exact = await _search(migrated_db, model, _EXACT, account_id=account_id, k=10)
+    exact = await _search(migrated_db, model, _EXACT, account_ids=[account_id], k=10)
 
     _forbid_the_exact_scan(monkeypatch)
-    indexed = await _search(migrated_db, model, _INDEX, account_id=account_id, k=10)
+    indexed = await _search(migrated_db, model, _INDEX, account_ids=[account_id], k=10)
 
     assert indexed == exact
     assert indexed and not {message_id for message_id, _ in indexed} & set(ids[:12])
@@ -707,7 +707,7 @@ async def test_a_window_never_lets_a_message_outside_it_through(
     before = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=20)
 
     results = await semantic_search(
-        migrated_db, query_vector=_QUERY_VECTOR, model=model, account_id=account_id,
+        migrated_db, query_vector=_QUERY_VECTOR, model=model, account_ids=[account_id],
         exact_scan_max_rows=exact_scan_max_rows, k=10,
         received_after=after, received_before=before,
     )
@@ -726,7 +726,7 @@ async def test_a_folder_scope_holds_on_both_paths(
     account_id, _ids = await _seed_scored_pool(migrated_db, model, _SPREAD, _spread_dates())
 
     elsewhere = await _search(
-        migrated_db, model, exact_scan_max_rows, account_id=account_id, k=10,
+        migrated_db, model, exact_scan_max_rows, account_ids=[account_id], k=10,
         folder_ids=[uuid.uuid4()],
     )
 
@@ -790,7 +790,7 @@ async def test_the_index_query_is_answered_by_the_hnsw_index_not_by_a_scan_of_th
     models = (_unique_model(), _unique_model())
     account_id = await _seed_production_shaped_table(migrated_db, models)
     scope = _Scope(
-        model=models[0], query_vector=_QUERY_VECTOR, account_id=account_id, folder_ids=None,
+        model=models[0], query_vector=_QUERY_VECTOR, account_ids=[account_id], folder_ids=None,
         received_after=datetime.now(timezone.utc) - timedelta(days=90), received_before=None,
     )
     statement = _index_candidates_stmt(scope, 400).compile(
@@ -822,7 +822,7 @@ async def test_a_dropped_production_shaped_table_leaves_the_index_able_to_find_n
     for _ in range(3):
         model = _unique_model()
         account_id, ids = await _seed_scored_pool(migrated_db, model, _SCORES, [None] * 8)
-        found = await _search(migrated_db, model, _INDEX, account_id=account_id, k=10)
+        found = await _search(migrated_db, model, _INDEX, account_ids=[account_id], k=10)
         assert {message_id for message_id, _ in found} == set(ids[:4])
 
 
@@ -842,8 +842,8 @@ async def test_the_index_path_leaves_out_a_row_whose_copy_of_received_at_is_miss
         "received_before": datetime(2026, 3, 1, tzinfo=timezone.utc),
     }
 
-    assert await _search(migrated_db, model, _INDEX, account_id=account_id, k=10, **window) == []
-    assert await _search(migrated_db, model, _EXACT, account_id=account_id, k=10, **window)
+    assert await _search(migrated_db, model, _INDEX, account_ids=[account_id], k=10, **window) == []
+    assert await _search(migrated_db, model, _EXACT, account_ids=[account_id], k=10, **window)
 
 
 @pytest.mark.asyncio

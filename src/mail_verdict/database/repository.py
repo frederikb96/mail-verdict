@@ -448,7 +448,7 @@ def _display(row: Any) -> MessageDisplay:
 
 async def _build_candidate_query(
     session: AsyncSession,
-    account_id: uuid.UUID | None,
+    account_ids: Collection[uuid.UUID],
     tokens: list[str],
     folder_ids: Sequence[uuid.UUID] | None,
     fields: frozenset[str],
@@ -498,9 +498,9 @@ async def _build_candidate_query(
         return None
     primary = Message.search_vector.op("@@")(func.to_tsquery("simple", tsquery_text))
 
-    base = _candidate_select(Message, is_glacier=False).where(Message.expunged_at.is_(None))
-    if account_id is not None:
-        base = base.where(Message.account_id == account_id)
+    base = _candidate_select(Message, is_glacier=False).where(
+        Message.expunged_at.is_(None), Message.account_id.in_(account_ids),
+    )
     if folder_ids is not None:
         base = base.where(Message.folder_id.in_(folder_ids))
     if received_after is not None:
@@ -517,7 +517,9 @@ async def _build_candidate_query(
         )
         arms.append(base.where(to_predicate))
 
-    glacier_folders = await touches_glacier(session, account_id=account_id, folder_ids=folder_ids)
+    glacier_folders = await touches_glacier(
+        session, account_ids=account_ids, folder_ids=folder_ids,
+    )
     if glacier_folders:
         glacier_primary = GlacierMessage.search_vector.op("@@")(
             func.to_tsquery("simple", tsquery_text)
@@ -726,7 +728,7 @@ class MessageRepository:
 
     async def search_fulltext_with_snippet(
         self,
-        account_id: uuid.UUID | None,
+        account_ids: Collection[uuid.UUID],
         query: str,
         *,
         limit: int = 20,
@@ -740,7 +742,9 @@ class MessageRepository:
         subject/sender rather than an empty one.
 
         Args:
-            account_id: Account scope, or None to search across all accounts
+            account_ids: The accounts to search -- the caller's own, narrowed
+                to the one it named (auth/scope.py's Scope.narrow); never
+                "every account"
             query: Search query string
             limit: Max results
 
@@ -764,12 +768,11 @@ class MessageRepository:
 
             live_stmt = select(Message, snippet.label("snippet"), rank.label("rank")).where(
                 Message.expunged_at.is_(None), Message.search_vector.op("@@")(ts_query),
+                Message.account_id.in_(account_ids),
             )
-            if account_id is not None:
-                live_stmt = live_stmt.where(Message.account_id == account_id)
 
             glacier_folders = await touches_glacier(
-                session, account_id=account_id, folder_ids=None,
+                session, account_ids=account_ids, folder_ids=None,
             )
             if not glacier_folders:
                 stmt = live_stmt.order_by(desc(rank)).limit(limit)
@@ -791,10 +794,11 @@ class MessageRepository:
             glacier_stmt = (
                 glacier_as_message_select()
                 .add_columns(glacier_snippet.label("snippet"), glacier_rank.label("rank"))
-                .where(GlacierMessage.search_vector.op("@@")(ts_query))
+                .where(
+                    GlacierMessage.search_vector.op("@@")(ts_query),
+                    GlacierMessage.account_id.in_(account_ids),
+                )
             )
-            if account_id is not None:
-                glacier_stmt = glacier_stmt.where(GlacierMessage.account_id == account_id)
 
             sub = live_stmt.union_all(glacier_stmt).subquery()
             entity = aliased(Message, sub)
@@ -818,22 +822,25 @@ class MessageRepository:
             return await resolve_lexemes(session, query)
 
     async def resolve_search_cursor(
-        self, message_id: uuid.UUID, tokens: list[str],
+        self, account_ids: Collection[uuid.UUID], message_id: uuid.UUID, tokens: list[str],
     ) -> tuple[datetime | None, uuid.UUID, int] | None:
         """
         (received_at, id, tier) for a keyset cursor row.
 
         Args:
+            account_ids: The accounts the search covers; a cursor naming a
+                message of any other account is invalid
             message_id: The cursor row (GET /api/search's `before`)
             tokens: This search's tokens, from tokenize()
 
         Returns:
-            None if the message does not exist (an invalid cursor)
+            None if the message does not exist, or is not in one of the
+            accounts (an invalid cursor)
         """
         async with self._db.session() as session:
             tier = _match_tier(Message, tokens)
             stmt = select(Message.received_at, Message.id, tier).where(
-                Message.id == message_id
+                Message.id == message_id, Message.account_id.in_(account_ids),
             )
             row = (await session.execute(stmt)).one_or_none()
             if row is not None:
@@ -843,7 +850,10 @@ class MessageRepository:
             glacier_tier = _match_tier(GlacierMessage, tokens)
             glacier_stmt = select(
                 GlacierMessage.received_at, GlacierMessage.id, glacier_tier,
-            ).where(GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None))
+            ).where(
+                GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None),
+                GlacierMessage.account_id.in_(account_ids),
+            )
             glacier_row = (await session.execute(glacier_stmt)).one_or_none()
             if glacier_row is None:
                 return None
@@ -851,7 +861,7 @@ class MessageRepository:
 
     async def count_search_candidates(
         self,
-        account_id: uuid.UUID | None,
+        account_ids: Collection[uuid.UUID],
         tokens: list[str],
         *,
         folder_ids: Sequence[uuid.UUID] | None = None,
@@ -866,7 +876,7 @@ class MessageRepository:
         number a person sees does not move as they scroll.
 
         Args:
-            account_id, tokens, folder_ids, fields: As in search_messages
+            account_ids, tokens, folder_ids, fields: As in search_messages
             received_after, received_before, is_seen: As in search_messages
 
         Returns:
@@ -874,7 +884,7 @@ class MessageRepository:
         """
         async with self._db.session() as session:
             built = await _build_candidate_query(
-                session, account_id, tokens, folder_ids, fields,
+                session, account_ids, tokens, folder_ids, fields,
                 received_after=received_after, received_before=received_before,
                 is_seen=is_seen,
             )
@@ -887,7 +897,7 @@ class MessageRepository:
 
     async def search_messages(
         self,
-        account_id: uuid.UUID | None,
+        account_ids: Collection[uuid.UUID],
         tokens: list[str],
         *,
         folder_ids: Sequence[uuid.UUID] | None = None,
@@ -935,7 +945,9 @@ class MessageRepository:
         count_search_candidates, rather than each of them repeating it.
 
         Args:
-            account_id: Account scope, or None to search across every account
+            account_ids: The accounts to search -- the caller's own, narrowed
+                to the one it named (auth/scope.py's Scope.narrow); never
+                "every account"
             tokens: This search's tokens, from tokenize()
             folder_ids: Restrict to these folders, or None for no restriction
             fields: Which of "subject"/"from"/"to"/"body" to search
@@ -954,7 +966,7 @@ class MessageRepository:
         """
         async with self._db.session() as session:
             built = await _build_candidate_query(
-                session, account_id, tokens, folder_ids, fields,
+                session, account_ids, tokens, folder_ids, fields,
                 received_after=received_after, received_before=received_before,
                 is_seen=is_seen,
             )
@@ -996,7 +1008,7 @@ class MessageRepository:
 
     async def search_messages_fallback(
         self,
-        account_id: uuid.UUID | None,
+        account_ids: Collection[uuid.UUID],
         tokens: list[str],
         *,
         folder_ids: Sequence[uuid.UUID] | None = None,
@@ -1014,7 +1026,7 @@ class MessageRepository:
         Already newest-first with no tier of its own.
 
         Args:
-            account_id: Account scope, or None to search across every account
+            account_ids: As in search_messages
             tokens: This search's tokens, from tokenize()
             folder_ids: Restrict to these folders, or None for no restriction
             received_after, received_before, is_seen: As in search_messages
@@ -1039,9 +1051,7 @@ class MessageRepository:
             base = select(
                 *[Message.__table__.c[name] for name in DISPLAY_COLUMNS],
                 false().label("is_glacier"),
-            ).where(Message.expunged_at.is_(None))
-            if account_id is not None:
-                base = base.where(Message.account_id == account_id)
+            ).where(Message.expunged_at.is_(None), Message.account_id.in_(account_ids))
             if folder_ids is not None:
                 base = base.where(Message.folder_id.in_(folder_ids))
             if received_after is not None:
@@ -1055,7 +1065,7 @@ class MessageRepository:
             )
 
             glacier_folders = await touches_glacier(
-                session, account_id=account_id, folder_ids=folder_ids,
+                session, account_ids=account_ids, folder_ids=folder_ids,
             )
             ordered: Any = Message
             if glacier_folders:

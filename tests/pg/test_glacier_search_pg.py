@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.search import search_messages
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import owner_scope
 
 
 async def _seed_account(session: AsyncSession) -> uuid.UUID:
@@ -131,7 +132,7 @@ async def test_a_glaciered_message_is_found_scoped_to_its_account(
 
     page = await search_messages(
         q="quarterly", account_id=account_id, folder_ids=None,
-        fields=["subject"], before=None, limit=50,
+        fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
     )
     ids = {r.id for r in page.results}
     assert ids == {live_id, glacier_id}
@@ -146,8 +147,8 @@ async def test_a_glaciered_message_is_found_scoped_to_its_account(
 async def test_a_glaciered_message_is_found_scoped_to_nothing(
     migrated_db: DatabaseConnection,
 ) -> None:
-    """No account_id, no folder_ids -- an instance-wide search, the
-    widest scope search offers."""
+    """No account_id, no folder_ids -- the widest scope search offers: all
+    of the caller's own mail."""
     now = datetime.now(timezone.utc)
     async with migrated_db.session() as session:
         account_id = await _seed_account(session)
@@ -159,7 +160,7 @@ async def test_a_glaciered_message_is_found_scoped_to_nothing(
 
     page = await search_messages(
         q="findme12345", account_id=None, folder_ids=None,
-        fields=["subject"], before=None, limit=50,
+        fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
     )
     assert glacier_id in {r.id for r in page.results}
 
@@ -184,7 +185,7 @@ async def test_search_scoped_to_the_glacier_folder_alone(
 
     page = await search_messages(
         q="abcdefgh", account_id=account_id, folder_ids=[glacier_folder_id],
-        fields=["subject"], before=None, limit=50,
+        fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
     )
     assert {r.id for r in page.results} == {glacier_id}
 
@@ -216,7 +217,7 @@ async def test_a_search_cursor_can_land_on_a_glaciered_result(
 
     next_page = await search_messages(
         q="cursorword", account_id=account_id, folder_ids=None,
-        fields=["subject"], before=cursor_glacier_id, limit=50,
+        fields=["subject"], before=cursor_glacier_id, limit=50, scope=owner_scope([account_id])
     )
     ids = {r.id for r in next_page.results}
     assert ids == {oldest_id}
@@ -254,7 +255,7 @@ async def test_default_fields_do_not_crash_once_a_glacier_exists(
     # body -- the browser's own default search.
     page = await search_messages(
         q="defaultfield", account_id=account_id, folder_ids=None, fields=None,
-        before=None, limit=50,
+        before=None, limit=50, scope=owner_scope([account_id])
     )
     assert {r.id for r in page.results} == {live_id, glacier_id}
 
@@ -282,7 +283,7 @@ async def test_searching_the_to_field_alone_does_not_crash(
 
     page = await search_messages(
         q="nomatch", account_id=account_id, folder_ids=None,
-        fields=["to"], before=None, limit=50,
+        fields=["to"], before=None, limit=50, scope=owner_scope([account_id])
     )
     assert page.results == []
 
@@ -307,6 +308,6 @@ async def test_a_real_folder_search_never_reaches_the_glacier(
 
     page = await search_messages(
         q="xyzscoped", account_id=account_id, folder_ids=[live_folder_id],
-        fields=["subject"], before=None, limit=50,
+        fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
     )
     assert {r.id for r in page.results} == {live_id}
