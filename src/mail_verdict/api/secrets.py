@@ -1,5 +1,5 @@
 """
-Secret store API. Values are write-only: nothing here returns one.
+Secret store API (admin only). Values are write-only: nothing here returns one.
 
 GET    /api/secrets          -- names and timestamps
 PUT    /api/secrets/{name}   -- create or replace; body {"value": "..."}
@@ -16,13 +16,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
+from mail_verdict.api.deps import require_admin
 from mail_verdict.settings.credentials import EncryptionUnavailableError
 from mail_verdict.settings.secret_store import get_secret_repo
 
-router = APIRouter(prefix="/secrets", tags=["secrets"])
+router = APIRouter(
+    prefix="/secrets", tags=["secrets"], dependencies=[Depends(require_admin)],
+)
 
 _MAX_VALUE_CHARS = 8192
 

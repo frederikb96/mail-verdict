@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from mail_verdict.api.queues import router
 from mail_verdict.queue.circuit import CircuitState, CircuitStatus
 from mail_verdict.queue.manager import QueueSummary
+from tests.helpers.auth import act_as, owner_scope
 
 
 def _summary(**overrides: object) -> QueueSummary:
@@ -33,6 +34,7 @@ def _summary(**overrides: object) -> QueueSummary:
 def client() -> TestClient:
     app = FastAPI()
     app.include_router(router)
+    act_as(app, owner_scope())
     return TestClient(app)
 
 

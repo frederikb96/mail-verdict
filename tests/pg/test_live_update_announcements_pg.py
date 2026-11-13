@@ -31,6 +31,7 @@ from mail_verdict.settings.credentials import (
     reset_provider_credential_repo,
 )
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
+from tests.helpers.auth import act_as, owner_scope
 
 
 @pytest.fixture()
@@ -143,15 +144,20 @@ class TestAccountOrderAnnouncesItself:
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
         account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+        act_as(client.app, owner_scope([account_id]))  # type: ignore[arg-type]
+        client.portal.call(init_settings_service, migrated_db)
         event_ring = EventRing()
         client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
-        with (
-            patch(_ACCOUNT_ORDER_TARGET, return_value=migrated_db),
-            patch(_ACCOUNT_ORDER_EVENT_RING_TARGET, return_value=event_ring),
-        ):
-            resp = client.put("/account-order", json={"order": [str(account_id)]})
+        try:
+            with (
+                patch(_ACCOUNT_ORDER_TARGET, return_value=migrated_db),
+                patch(_ACCOUNT_ORDER_EVENT_RING_TARGET, return_value=event_ring),
+            ):
+                resp = client.put("/account-order", json={"order": [str(account_id)]})
+        finally:
+            reset_settings_service()
         assert resp.status_code == 200, resp.text
 
         new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
@@ -243,6 +249,7 @@ class TestSettingsAnnouncesItself:
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
         account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+        act_as(client.app, owner_scope())  # type: ignore[arg-type]
         client.portal.call(init_settings_service, migrated_db)
         event_ring = EventRing()
         client.portal.call(event_ring.add, account_id, "connected", {})
@@ -264,6 +271,7 @@ class TestSettingsAnnouncesItself:
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
         account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+        act_as(client.app, owner_scope())  # type: ignore[arg-type]
         client.portal.call(init_settings_service, migrated_db)
         client.portal.call(init_provider_credential_repo, migrated_db, "")
         event_ring = EventRing()

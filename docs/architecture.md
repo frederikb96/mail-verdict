@@ -1103,6 +1103,25 @@ Two separate mechanisms that must not overlap:
 - **Settings** are application behaviour — each AI task's provider, model and reasoning effort,
   spam handling, rules, and provider API keys. They live in the database and change at runtime through the API.
 
+Every settings key belongs either to the instance or to each user (`SETTING_SCOPE` in
+`settings/defaults.py`, which a test holds to cover every key). The **admin** keys are the
+machinery: the models and providers, the queues and their retry and lease mechanics, the
+embedding settings, the three order model tasks. One value serves everyone, and only an admin
+reads or writes it. The **user** keys are a person's own preferences: the `mail` and `calendar`
+categories, `outbox.undo_send_seconds`, `orders.language`, `orders.filter` and the two
+`orders.auto_close_*` keys, and the order their accounts are listed in (`mail.account_order`).
+A user's values sit in `user_settings` beside the instance's rows in `settings`; a user who has
+set nothing gets the default from `settings/defaults.py`, not another user's value.
+`SettingsService.get()` is the instance view and is for code that acts for nobody;
+`get_for_user()` is one person's view — the instance's admin keys with that person's user keys —
+and is what anything acting for a user reads (the owner of the account in hand, for background
+work). The settings routes follow the same line: an admin sees and writes every key, with user
+keys going to their own values; anyone else sees only user keys, is refused (403) a category that
+has none, and is refused any write naming an admin key. `GET /api/settings/schema` lists every key
+with its scope and type so a client shows a person only what they may change. Secrets, webhooks,
+queues, provider status, the embedding coverage and backfill routes and settings import are
+admin-only.
+
 Provider API keys are write-only: settable, reportable as present with a last-four-character hint,
 never returned by any read. One key per provider name (`settings/credentials.py`'s
 `PROVIDER_ENV_VARS`) rather than per task — every task whose provider is `"custom"` shares the one

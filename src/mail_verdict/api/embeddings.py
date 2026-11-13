@@ -2,9 +2,10 @@
 Semantic layer API.
 
 GET  /api/embeddings/status    -- coverage for the currently configured model
+                                   (admin only)
 POST /api/embeddings/backfill  -- enqueue every message missing a current
                                    embedding, right now, rather than waiting
-                                   out the periodic reconciler
+                                   out the periodic reconciler (admin only)
 GET  /api/embeddings/search    -- semantic search: embeds the query text
                                    and returns the likely hits, then the
                                    less likely ones, each newest first
@@ -22,8 +23,9 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from mail_verdict.api.deps import require_admin
 from mail_verdict.api.schemas import (
     EmbeddingStatusResponse,
     SemanticSearchHit,
@@ -91,7 +93,9 @@ async def _status_response(
     )
 
 
-@router.get("/status", response_model=EmbeddingStatusResponse)
+@router.get(
+    "/status", response_model=EmbeddingStatusResponse, dependencies=[Depends(require_admin)],
+)
 async def get_status(
     account_id: uuid.UUID | None = Query(default=None),
     model: str | None = Query(default=None),
@@ -108,7 +112,9 @@ async def get_status(
     return await _status_response(repo, model=model or _current_model(), account_id=account_id)
 
 
-@router.post("/backfill", response_model=EmbeddingStatusResponse)
+@router.post(
+    "/backfill", response_model=EmbeddingStatusResponse, dependencies=[Depends(require_admin)],
+)
 async def trigger_backfill(
     account_id: uuid.UUID | None = Query(default=None),
 ) -> EmbeddingStatusResponse:

@@ -5,6 +5,12 @@ Single source of truth for all application settings defaults.
 Categories: ai, assistant, retry, pipeline, semantic, calendar, outbox, mail,
 orders.
 
+Every key is also tagged in SETTING_SCOPE: "admin" keys are the instance's
+machinery (models, providers, queues, retry and lease mechanics) and have one
+value for everyone; "user" keys are a person's own preferences and each user
+has their own value (stored in user_settings, see settings/service.py), with
+the default here for anyone who has not set one.
+
 Every AI task picks its own provider and model: "ai" (spam verdicts),
 "semantic" (embeddings), "assistant" (the rule assistant), and the
 `decide_`, `write_` and `read_` key groups of "orders". A provider's API key is
@@ -29,7 +35,7 @@ outside that same migration ever looks at again.
 from __future__ import annotations
 
 import enum
-from typing import Any
+from typing import Any, Literal
 
 
 class SettingCategory(str, enum.Enum):
@@ -232,6 +238,10 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # provider circuit breaker, short enough that a stalled provider
         # never means a silent mailbox for long.
         "notify_wait_seconds": 120.0,
+        # The order the person's accounts render in: account ids, first to
+        # last. Ids of accounts that are gone, or not theirs, are ignored
+        # on read; an account not listed sorts after the listed ones.
+        "account_order": [],
     },
     SettingCategory.ORDERS: {
         # Three model tasks, each with its own provider, server address, model,
@@ -379,3 +389,104 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "call_timeout_seconds": 120.0,
     },
 }
+
+
+SettingScope = Literal["admin", "user"]
+
+# Categories whose every key is the instance's machinery: a key added to
+# one of them is admin without being tagged, so a new knob never reaches a
+# user by omission.
+_ADMIN_CATEGORIES = (
+    SettingCategory.AI,
+    SettingCategory.ASSISTANT,
+    SettingCategory.RETRY,
+    SettingCategory.PIPELINE,
+    SettingCategory.SEMANTIC,
+)
+
+# The orders keys a person sets for themselves; every other orders key
+# (the three model tasks, their budgets, the worker's lease and retry
+# mechanics) is the instance's.
+_ORDERS_USER_KEYS = frozenset({
+    "language", "filter", "auto_close_days", "auto_close_grace_days",
+})
+
+SETTING_SCOPE: dict[str, dict[str, SettingScope]] = {
+    **{
+        category: {key: "admin" for key in SETTING_DEFAULTS[category]}
+        for category in _ADMIN_CATEGORIES
+    },
+    SettingCategory.CALENDAR: {
+        "default_event_duration_minutes": "user",
+        "default_calendar_id": "user",
+        "default_reminder_minutes": "user",
+    },
+    SettingCategory.OUTBOX: {
+        "undo_send_seconds": "user",
+    },
+    SettingCategory.MAIL: {
+        "mark_read_on_file_to_archive_or_junk": "user",
+        "bell_badge_counts_new_mail": "user",
+        "notify_wait_seconds": "user",
+        "account_order": "user",
+    },
+    SettingCategory.ORDERS: {
+        key: "user" if key in _ORDERS_USER_KEYS else "admin"
+        for key in SETTING_DEFAULTS[SettingCategory.ORDERS]
+    },
+}
+
+
+def setting_scope(category: str, key: str) -> SettingScope:
+    """
+    Who owns a setting's value: "user" if each user has their own, "admin"
+    if the instance has one.
+
+    A key with no tag -- one outside SETTING_DEFAULTS, such as a stray field
+    in a request -- is "admin": it is never a user's to set or see.
+
+    Args:
+        category: Setting category name
+        key: Key within the category
+    """
+    return SETTING_SCOPE.get(category, {}).get(key, "admin")
+
+
+def user_keys(category: str) -> frozenset[str]:
+    """The keys of a category each user has their own value of."""
+    return frozenset(
+        key for key, scope in SETTING_SCOPE.get(category, {}).items() if scope == "user"
+    )
+
+
+def schema() -> dict[str, dict[str, dict[str, str]]]:
+    """
+    Every category's keys with their scope and value type, for a client
+    deciding which settings to show: {category: {key: {scope, type}}}.
+    A nullable key (default None) has no type to report and says "any".
+    """
+    return {
+        str(category.value): {
+            key: {
+                "scope": setting_scope(category.value, key),
+                "type": _type_name(default),
+            }
+            for key, default in SETTING_DEFAULTS[category].items()
+        }
+        for category in SettingCategory
+    }
+
+
+def _type_name(default: Any) -> str:
+    """The JSON type name of a default value; "any" for a nullable key."""
+    if default is None:
+        return "any"
+    if isinstance(default, bool):
+        return "boolean"
+    if isinstance(default, int | float):
+        return "number"
+    if isinstance(default, str):
+        return "string"
+    if isinstance(default, list):
+        return "array"
+    return "object"

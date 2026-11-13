@@ -12,9 +12,6 @@ defining the endpoint.
 from __future__ import annotations
 
 PENDING_ROUTES: frozenset[str] = frozenset({
-    # api/account_order.py
-    "GET /api/account-order",
-    "PUT /api/account-order",
     # api/accounts.py
     "GET /api/accounts",
     "POST /api/accounts",
@@ -74,9 +71,7 @@ PENDING_ROUTES: frozenset[str] = frozenset({
     "PATCH /api/dav-accounts/{dav_account_id}",
     "POST /api/dav-accounts/{dav_account_id}/sync",
     # api/embeddings.py
-    "POST /api/embeddings/backfill",
     "GET /api/embeddings/search",
-    "GET /api/embeddings/status",
     # api/events.py
     "GET /api/events",
     # api/folder_management.py
@@ -149,10 +144,6 @@ PENDING_ROUTES: frozenset[str] = frozenset({
     "PATCH /api/pipeline/stages/{stage_id}",
     "POST /api/pipeline/stages/{stage_id}/test",
     "POST /api/pipeline/test",
-    # api/queues.py
-    "GET /api/queues",
-    "GET /api/queues/{name}",
-    "PATCH /api/queues/{name}",
     # api/runs.py
     "GET /api/mails/{mail_id}/runs",
     "GET /api/runs",
@@ -160,16 +151,6 @@ PENDING_ROUTES: frozenset[str] = frozenset({
     "POST /api/runs/{run_id}/retry",
     # api/search.py
     "GET /api/search",
-    # api/secrets.py
-    "GET /api/secrets",
-    "DELETE /api/secrets/{name}",
-    "PUT /api/secrets/{name}",
-    # api/settings_api.py
-    "GET /api/settings",
-    "POST /api/settings/import",
-    "GET /api/settings/providers",
-    "GET /api/settings/{category}",
-    "PUT /api/settings/{category}",
     # api/stats.py
     "GET /api/stats",
     # api/unified.py
@@ -186,11 +167,6 @@ PENDING_ROUTES: frozenset[str] = frozenset({
     "GET /api/mails/{mail_id}/verdict",
     "GET /api/verdicts",
     "GET /api/verdicts/spam-review",
-    # api/webhooks.py
-    "GET /api/webhooks/deliveries",
-    "POST /api/webhooks/deliveries/{delivery_id}/retry",
-    "POST /api/webhooks/{name}/backfill",
-    "POST /api/webhooks/{name}/retry-failed",
 })
 
 PENDING_TOOLS: frozenset[str] = frozenset({

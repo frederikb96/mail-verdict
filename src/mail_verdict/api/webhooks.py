@@ -1,5 +1,5 @@
 """
-Webhook delivery API: what a rule's webhook action has queued, retrying a
+Webhook delivery API (admin only): what a rule's webhook action has queued, retrying a
 failed delivery, and the backfill over existing mail.
 
 GET  /api/webhooks/deliveries               -- newest first; ?name= &status= &limit=
@@ -25,9 +25,10 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from mail_verdict.api.deps import require_admin
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import WebhookDelivery
 from mail_verdict.pipeline.revisions import PipelineRevisionRepository
@@ -39,7 +40,9 @@ from mail_verdict.webhooks.backfill import (
     find_webhook,
 )
 
-router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+router = APIRouter(
+    prefix="/webhooks", tags=["webhooks"], dependencies=[Depends(require_admin)],
+)
 
 _MAX_BACKFILL_MESSAGES = 5000
 
