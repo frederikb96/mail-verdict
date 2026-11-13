@@ -505,7 +505,9 @@ async def test_every_contract_write_survives_the_restricted_grant(
             s, [doomed_message_id], expected_folder_id=doomed_folder_id,
         )),
         ("expunge_bulk", lambda s: expunge_bulk(s, [doomed_message_id])),
-        ("acknowledge_notification", lambda s: acknowledge_notification(s, account_id, notification_id)),
+        ("acknowledge_notification", lambda s: acknowledge_notification(
+            s, account_id, notification_id,
+        )),
         ("acknowledge_all_notifications", lambda s: acknowledge_all_notifications(s, account_id)),
         ("create_folder", lambda s: create_folder(
             s, account_id=account_id, imap_name=f"Sweep-{uuid.uuid4().hex[:8]}",
