@@ -48,8 +48,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   only the author's own accounts, and only an admin may write a webhook. `GET
   /api/admin/pipeline/overview` shows an admin each user's rules as counts.
 
+- Rules page (`/rules`, `Ctrl+Alt+0`) for every user: their rules grouped by purpose with a
+  sentence each, per-account spam and orders switches, a filter, reordering by drag or menu,
+  test with a recent mail, history, pause all, and a form editor for conditions and actions with
+  "Edit as JSON" as the advanced view. "Describe a rule" opens the rule assistant from the page,
+  and its proposals show each rule as a sentence above the diff.
+- Admin → Users: people with role, accounts by name and last seen; make or remove admin, disable
+  or enable sign-in, rename, pre-create a user, and reassign a mail or calendar account.
+
 ### Changed
 
+- Admin → Processing shows the queues as compact tiles (pause, worker count and circuit reset in a
+  menu), failed runs, each user's rule set as counts, and the live tail; the shared stage list is
+  gone, since every user edits their own rules on the Rules page. Failures and the tail wrap on a
+  phone instead of cutting off stage names.
 - Settings routes: an admin reads and writes every key (their own values for the user keys), anyone
   else only the user keys, and writing an admin key is `403`. Secrets, webhooks, queues, provider
   status, embedding coverage and backfill and settings import are admin-only.

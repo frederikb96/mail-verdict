@@ -1626,3 +1626,54 @@ export interface ProvidersStatus {
   breakers: TaskBreakerStatus[];
   usage_export: UsageExportStatus;
 }
+
+// --- Admin: users, who owns which account, rule sets ---
+
+export interface AdminUser {
+  id: string;
+  email: string | null;
+  display_name: string;
+  role: "admin" | "user";
+  disabled: boolean;
+  is_owner: boolean;
+  subjects: string[];
+  account_count: number;
+  dav_account_count: number;
+  created_at: string;
+  last_seen_at: string | null;
+}
+
+export interface AdminUserCreateRequest {
+  subject: string;
+  display_name: string;
+  email?: string | null;
+  role?: "admin" | "user";
+}
+
+export interface AdminUserUpdateRequest {
+  display_name?: string;
+  role?: "admin" | "user";
+  disabled?: boolean;
+}
+
+/** A mail or DAV account as an admin sees it: name, owner and state only. */
+export interface AdminAccount {
+  id: string;
+  name: string;
+  owner_user_id: string | null;
+  is_active: boolean;
+  state: string;
+}
+
+/** One user's rule document as counts; never its content. */
+export interface AdminRuleSet {
+  user_id: string;
+  display_name: string;
+  /** Null for a user who has not opened Rules yet. */
+  revision: number | null;
+  enabled: boolean | null;
+  stages: number;
+  enabled_stages: number;
+  changed_at: string | null;
+  failed_runs: number;
+}

@@ -12,6 +12,11 @@ import type {
   AlertResponse,
   AlertUnseenCountResponse,
   AccountUpdateRequest,
+  AdminAccount,
+  AdminRuleSet,
+  AdminUser,
+  AdminUserCreateRequest,
+  AdminUserUpdateRequest,
   MeResponse,
   PushSubscriptionResponse,
   VapidPublicKeyResponse,
@@ -515,6 +520,39 @@ export const api = {
   me: {
     get(): Promise<MeResponse> {
       return request("/me");
+    },
+  },
+
+  admin: {
+    users(): Promise<AdminUser[]> {
+      return request("/admin/users");
+    },
+    createUser(data: AdminUserCreateRequest): Promise<AdminUser> {
+      return request("/admin/users", { method: "POST", body: JSON.stringify(data) });
+    },
+    updateUser(id: string, data: AdminUserUpdateRequest): Promise<AdminUser> {
+      return request(`/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+    },
+    accounts(): Promise<AdminAccount[]> {
+      return request("/admin/accounts");
+    },
+    davAccounts(): Promise<AdminAccount[]> {
+      return request("/admin/dav-accounts");
+    },
+    setAccountOwner(accountId: string, userId: string): Promise<AdminAccount> {
+      return request(`/admin/accounts/${accountId}/owner`, {
+        method: "PUT",
+        body: JSON.stringify({ user_id: userId }),
+      });
+    },
+    setDavAccountOwner(accountId: string, userId: string): Promise<AdminAccount> {
+      return request(`/admin/dav-accounts/${accountId}/owner`, {
+        method: "PUT",
+        body: JSON.stringify({ user_id: userId }),
+      });
+    },
+    ruleSets(): Promise<AdminRuleSet[]> {
+      return request("/admin/pipeline/overview");
     },
   },
 

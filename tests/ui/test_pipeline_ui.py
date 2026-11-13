@@ -1,7 +1,7 @@
 """
-The Pipeline settings page's queue cards: a suspended circuit is shown,
-and "Retry now" closes it immediately through the existing reset
-endpoint rather than making a person wait out its own probe interval.
+The Processing page's queue tiles: a suspended circuit is shown, and
+"Retry now" (in the tile's menu) closes it immediately through the existing
+reset endpoint rather than making a person wait out its own probe interval.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class TestQueueCardCircuitControl:
             pool.submit(asyncio.run, _suspend_pipeline_circuit(postgres_url)).result()
 
         page.goto(f"{app_server}/pipeline")
-        pipeline_card = page.locator('[data-slot="card"]').filter(has_text="pipeline")
+        pipeline_card = page.get_by_test_id("queue-tile").filter(has_text="pipeline")
         expect(pipeline_card.get_by_text("Circuit suspended", exact=False)).to_be_visible(
             timeout=15_000,
         )
@@ -54,9 +54,11 @@ class TestQueueCardCircuitControl:
             pipeline_card.get_by_text("openai rejected the API key", exact=False)
         ).to_be_visible()
 
-        pipeline_card.get_by_role("button", name="Retry now").click()
+        pipeline_card.get_by_role("button", name="Controls for the pipeline queue").click()
+        page.get_by_role("menuitem", name="Retry now").click()
 
         expect(pipeline_card.get_by_text("Circuit suspended", exact=False)).not_to_be_visible(
             timeout=15_000,
         )
-        expect(pipeline_card.get_by_role("button", name="Retry now")).not_to_be_visible()
+        pipeline_card.get_by_role("button", name="Controls for the pipeline queue").click()
+        expect(page.get_by_role("menuitem", name="Retry now")).not_to_be_visible()

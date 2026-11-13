@@ -21,6 +21,7 @@ const ROUTES: Partial<Record<ShortcutActionId, string>> = {
   go_accounts: "/settings/accounts",
   go_pipeline: "/admin/processing",
   go_settings: "/settings",
+  go_rules: "/rules",
 };
 
 /** Shortcuts whose page is the administrators' alone. */
