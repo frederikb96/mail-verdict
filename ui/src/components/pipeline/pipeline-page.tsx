@@ -24,10 +24,10 @@ export function PipelinePage() {
   const [revisionsOpen, setRevisionsOpen] = useState(false);
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Pipeline</h1>
+          <h2 className="text-xl font-semibold">Processing</h2>
           <p className="text-sm text-muted-foreground">
             Every message is embedded, then run through this stage list. Spam
             classification is a stage; a rule is a <span className="font-mono">match</span> stage.

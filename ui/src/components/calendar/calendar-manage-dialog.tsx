@@ -352,7 +352,7 @@ export function CalendarManageDialog() {
         <p className="text-xs text-muted-foreground">
           Which identity a calendar belongs to, and which one receives its invitations, is set on
           the{" "}
-          <Link href="/settings#calendar" className="underline">
+          <Link href="/settings/calendar" className="underline">
             Settings
           </Link>{" "}
           page.

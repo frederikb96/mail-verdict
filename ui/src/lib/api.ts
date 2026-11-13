@@ -89,6 +89,8 @@ import type {
   StageUpdateRequest,
   StatsResponse,
   ProvidersStatus,
+  EmbeddingStatusResponse,
+  SettingsSchema,
   SyncStatusResponse,
   ThreadResponse,
   UnifiedFolderOrderResponse,
@@ -556,6 +558,14 @@ export const api = {
     ): Promise<SemanticSearchResponse> {
       return request(`/embeddings/search${qs(params)}`, { signal });
     },
+    /** Coverage of the configured embedding model. */
+    embeddingStatus(): Promise<EmbeddingStatusResponse> {
+      return request("/embeddings/status");
+    },
+    /** Queue every in-scope message that lacks a current-model embedding. */
+    embeddingBackfill(): Promise<EmbeddingStatusResponse> {
+      return request("/embeddings/backfill", { method: "POST" });
+    },
   },
 
   settings: {
@@ -567,6 +577,9 @@ export const api = {
     },
     providers(): Promise<ProvidersStatus> {
       return request("/settings/providers");
+    },
+    schema(): Promise<SettingsSchema> {
+      return request("/settings/schema");
     },
     update(
       category: string,

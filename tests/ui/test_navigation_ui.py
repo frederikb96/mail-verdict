@@ -65,8 +65,8 @@ def inbox_folder(api_client: httpx.Client, ui_account: dict[str, Any]) -> dict[s
 
 @pytest.fixture(scope="module")
 def second_ui_account(api_client: httpx.Client) -> dict[str, Any]:
-    """The Account Order card on Settings only renders with more than one
-    account -- the test below needs it mounted to reproduce the
+    """The Account Order card under Settings > Accounts only renders with
+    more than one account -- the test below needs it mounted to reproduce the
     regression it guards."""
     return create_account(api_client, "nav2")
 
@@ -131,17 +131,16 @@ class TestNavigationShellUi:
         which is what makes that card render at all."""
         # A fresh page.goto() is a hard reload, which drops any
         # client-side selection made before it -- the account switcher
-        # picked here has to happen on /settings itself, the way a real
-        # visit reaches Settings from wherever the sidebar already had
+        # picked here has to happen on the Accounts category itself, the way
+        # a real visit reaches Settings from wherever the sidebar already had
         # selected, for the assertion below to check a known folder
         # rather than whichever account the auto-select effect lands on.
-        page.goto(f"{app_server}/settings")
+        page.goto(f"{app_server}/settings/accounts")
         expect(page.get_by_role("heading", name="Settings")).to_be_visible(timeout=15_000)
         select_account(page, ui_account)
 
-        # Scoped to the sidebar: the Settings page's own section-jump nav
-        # (SectionNav in settings-page.tsx) carries an identically-named
-        # "Mail" anchor to its own #mail heading.
+        # Scoped to the sidebar: the settings category list carries an
+        # identically-named "Mail" link of its own.
         page.locator('[data-slot="sidebar-footer"]').get_by_role(
             "link", name="Mail", exact=True,
         ).click()

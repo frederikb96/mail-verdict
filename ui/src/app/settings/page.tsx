@@ -1,5 +1,5 @@
-import { SettingsPage } from "@/components/settings/settings-page";
+import { SettingsShell } from "@/components/settings/settings-shell";
 
 export default function SettingsRoute() {
-  return <SettingsPage />;
+  return <SettingsShell area="settings" category={null} />;
 }

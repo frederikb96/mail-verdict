@@ -1,7 +1,7 @@
 """
-The Settings page's information architecture: which categories the "AI &
-automation" tabs offer, and the calendar invitations picker that used to
-render one table column per calendar.
+The settings shell: category routes and the administrator's Models, Providers
+and System categories, the calendar invitations picker, and the notification
+folder picker.
 """
 
 from __future__ import annotations
@@ -34,47 +34,31 @@ from tests.setup.containers import (  # isort: skip
 )
 
 
-class TestSettingsCategoriesUi:
-    def test_ai_and_automation_offers_every_live_category_and_not_spam(
+class TestAdminCategoriesUi:
+    def test_models_lists_every_ai_task_as_one_row(self, page: Page, app_server: str) -> None:
+        """Every AI task has a row in the one Models table, including the
+        three orders tasks, and nothing offers "spam" as a task of its own:
+        spam detection is a pipeline stage that calls the Spam verdicts
+        model."""
+        page.goto(f"{app_server}/admin/models")
+
+        rows = page.get_by_test_id("model-row")
+        expect(rows).to_have_count(6, timeout=15_000)
+        for task in ("ai", "semantic", "assistant", "orders.decide", "orders.write", "orders.read"):
+            expect(page.locator(f'[data-testid="model-row"][data-task="{task}"]')).to_be_visible()
+
+    def test_processing_tuning_shows_the_queue_mechanics(
         self, page: Page, app_server: str,
     ) -> None:
-        """The regression this guards: "spam" stopped being a settings
-        category on the server (classification and rule actions moved into
-        the pipeline), but the tab stayed in the interface -- opening it
-        showed an unexplained empty box. "semantic" and "pipeline" are the
-        opposite case: both are real server categories with no tab at all,
-        reachable only by calling the API directly."""
-        page.goto(f"{app_server}/settings")
+        """The worker mechanics (pipeline, retry, orders queue keys) are
+        real server categories with a form of their own under System, shut
+        until asked for."""
+        page.goto(f"{app_server}/admin/system")
 
-        tablist = page.get_by_role("tablist")
-        expect(tablist.get_by_role("tab", name="Spam verdicts", exact=True)).to_be_visible(
-            timeout=15_000,
-        )
-        expect(tablist.get_by_role("tab", name="Semantic search", exact=True)).to_be_visible()
-        expect(tablist.get_by_role("tab", name="Orders", exact=True)).to_be_visible()
-        expect(tablist.get_by_role("tab", name="Rule assistant", exact=True)).to_be_visible()
-        expect(tablist.get_by_role("tab", name="Retry", exact=True)).to_be_visible()
-        expect(tablist.get_by_role("tab", name="Pipeline", exact=True)).to_be_visible()
-
-        with pytest.raises(AssertionError):
-            expect(tablist.get_by_role("tab", name="Spam", exact=True)).to_be_visible(timeout=8_000)
-
-        # Both new tabs render real, saved settings rather than the
-        # "category is missing" fallback -- proves the category name here
-        # actually matches what the server has under SettingCategory.
-        # Field labels are humanized from the raw key ("provider" ->
-        # "Provider"), which stays reachable as the label's title attribute.
-        tablist.get_by_role("tab", name="Semantic search", exact=True).click()
-        expect(page.get_by_text("Provider", exact=True)).to_be_visible(timeout=8_000)
-        with pytest.raises(AssertionError):
-            expect(page.get_by_text("didn't return settings", exact=False)).to_be_visible(
-                timeout=8_000,
-            )
-
-        tablist.get_by_role("tab", name="Pipeline", exact=True).click()
+        page.get_by_role("button", name="Show settings", exact=True).click()
         # Hand-authored label, not the mechanical humanizer's own "Lease
-        # seconds" -- see SETTING_LABELS in settings-page.tsx.
-        expect(page.get_by_text("Worker lease (seconds)", exact=True)).to_be_visible(
+        # seconds" -- see SETTING_LABELS in setting-labels.ts.
+        expect(page.get_by_text("Worker lease (seconds)", exact=True).first).to_be_visible(
             timeout=8_000,
         )
 
@@ -88,7 +72,10 @@ class TestProviderKeyFormUi:
         exists and reaches PUT /api/settings/ai, and that a save refused
         for lacking ENCRYPTION_KEY (the test stack's own state, same as a
         fresh install) names that reason rather than failing silently."""
-        page.goto(f"{app_server}/settings")
+        page.goto(f"{app_server}/admin/providers")
+
+        row = page.locator('[data-testid="provider-row"][data-provider="anthropic"]')
+        row.get_by_role("button", name="Add key", exact=True).click(timeout=15_000)
 
         # The button's own name deliberately does not contain the input's --
         # a name that contains another makes every locator over this form a
@@ -122,12 +109,15 @@ class TestDefaultCalendarSettingUi:
         server, and the event editor's own initial Calendar value actually
         reads it back, not just the settings page displaying what it just
         wrote."""
-        page.goto(f"{app_server}/settings")
+        page.goto(f"{app_server}/settings/calendar")
 
         default_calendar_select = page.get_by_label("Default calendar")
         expect(default_calendar_select).to_be_visible(timeout=15_000)
         default_calendar_select.click()
         page.get_by_role("option", name=settings_calendar["display_name"], exact=True).click()
+        page.get_by_test_id("settings-save-bar").get_by_role(
+            "button", name="Save", exact=True,
+        ).click()
 
         def _persisted() -> dict[str, Any] | None:
             data = api_client.get("/api/settings/calendar").json()
@@ -235,7 +225,7 @@ class TestCalendarLinksPickerUi:
         before thirty. A chip picker replaces it -- this proves linking a
         calendar through it actually reaches the server, not just the
         local row state."""
-        page.goto(f"{app_server}/settings")
+        page.goto(f"{app_server}/settings/calendar")
 
         identity_row = page.get_by_text(settings_identity["address"], exact=True).locator("..")
         identity_row.get_by_placeholder("Link a calendar...").click()
@@ -275,7 +265,7 @@ class TestCalendarLinksPickerUi:
         """The regression this guards: the calendar picker and the "which
         one receives invitations" select were both unlabelled -- two
         unexplained controls per identity."""
-        page.goto(f"{app_server}/settings")
+        page.goto(f"{app_server}/settings/calendar")
 
         identity_row = page.get_by_text(settings_identity["address"], exact=True).locator("..")
         expect(identity_row.get_by_text("Linked calendars", exact=True)).to_be_visible(
@@ -290,7 +280,7 @@ class TestCalendarLinksPickerUi:
     ) -> None:
         """The regression this guards: an unlabelled `<>` icon button sat
         directly in the card header -- nothing said what it did."""
-        page.goto(f"{app_server}/settings")
+        page.goto(f"{app_server}/settings/calendar")
 
         expect(page.get_by_text(settings_identity["address"], exact=True)).to_be_visible(
             timeout=15_000,
@@ -304,35 +294,52 @@ class TestCalendarLinksPickerUi:
         json_item = page.get_by_role("menuitem", name="Edit as JSON", exact=True)
         expect(json_item).to_be_visible(timeout=8_000)
         json_item.click()
-        # The raw-JSON textarea's own class, not a generic role query -- the
-        # AI/Retry/Semantic tabs render their own text fields elsewhere on
-        # this same page.
+        # The raw-JSON textarea's own class, not a generic role query.
         expect(page.locator("textarea.font-mono")).to_be_visible(timeout=8_000)
 
 
-class TestSectionNavigationUi:
-    def test_a_nav_link_jumps_to_its_section(self, page: Page, app_server: str) -> None:
-        """The regression this guards: Settings was one long undifferentiated
-        scroll with no way to jump to a section."""
+class TestSettingsShellUi:
+    def test_a_category_link_opens_its_own_route(self, page: Page, app_server: str) -> None:
+        """Settings is a list of categories with one open at a time, each at
+        an address of its own, rather than one long scroll."""
+        page.goto(f"{app_server}/settings/appearance")
+
+        nav = page.get_by_role("navigation", name="Settings categories")
+        expect(nav.get_by_role("link", name="Unified views")).to_be_visible(timeout=15_000)
+        nav.get_by_role("link", name="Unified views").click()
+
+        expect(page).to_have_url(f"{app_server}/settings/views")
+        expect(page.get_by_role("heading", name="Unified views", exact=True)).to_be_visible()
+
+    def test_the_bare_settings_address_opens_the_first_category(
+        self, page: Page, app_server: str,
+    ) -> None:
         page.goto(f"{app_server}/settings")
 
-        nav = page.get_by_role("navigation")
-        expect(nav.get_by_role("link", name="AI & automation", exact=True)).to_be_visible(
+        expect(page).to_have_url(f"{app_server}/settings/appearance", timeout=15_000)
+
+    def test_the_old_accounts_and_pipeline_addresses_still_open(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """/accounts and /pipeline are links people have saved: they open
+        the Accounts category and the administrator's Processing category."""
+        page.goto(f"{app_server}/accounts")
+        expect(page.get_by_role("heading", name="Accounts", exact=True)).to_be_visible(
             timeout=15_000,
         )
-        ai_heading = page.get_by_role("heading", name="AI & automation", exact=True)
-        expect(ai_heading).not_to_be_in_viewport()
+        expect(page.get_by_role("link", name="Unified views")).to_be_visible()
 
-        nav.get_by_role("link", name="AI & automation", exact=True).click()
-        expect(ai_heading).to_be_in_viewport(timeout=8_000)
-        expect(page).to_have_url(f"{app_server}/settings#ai")
+        page.goto(f"{app_server}/pipeline")
+        expect(page.get_by_role("heading", name="Processing", exact=True)).to_be_visible(
+            timeout=15_000,
+        )
 
 
 class TestNotifyForFoldersRespectsVisibilityUi:
     def test_a_hidden_folder_is_absent_from_the_notify_list(
         self, page: Page, app_server: str, api_client: httpx.Client,
     ) -> None:
-        """The regression this guards: the notify-folder checklist listed
+        """The regression this guards: the notify-folder picker listed
         every server folder, including ones the mail sidebar itself hides
         (an Exchange account's non-mail folders among them) -- the
         folder-visibility preference existed and simply wasn't reused
@@ -359,20 +366,19 @@ class TestNotifyForFoldersRespectsVisibilityUi:
         )
         assert prefs_resp.status_code == 200, prefs_resp.text
 
-        page.goto(f"{app_server}/settings")
+        page.goto(f"{app_server}/settings/notifications")
 
-        # Two levels up: the immediate parent only wraps the "Notify for
-        # these folders" label and its "Select all" button; the folder
-        # list itself is a sibling of that pair, one level further out.
-        notify_section = page.get_by_text("Notify for these folders", exact=True).locator("../..")
-        # Both names are unique to this test run, so neither can collide
-        # with another account's own folders -- no need to scope further
-        # by account, which the account-name header does not even render
-        # when this is the only account (a module run in isolation, -k).
-        expect(notify_section.get_by_text(visible_name, exact=True)).to_be_visible(
-            timeout=15_000,
+        page.get_by_role("button", name="Customize", exact=True).click(timeout=15_000)
+        picker = page.get_by_test_id("folder-picker")
+        # The picker groups by account and collapses each group once there
+        # is more than one account; open this test's own.
+        group = picker.get_by_test_id("folder-picker-account").filter(
+            has=page.get_by_text(account["name"], exact=True),
         )
+        if group.get_by_test_id("folder-picker-folder").count() == 0:
+            group.get_by_role("button", name=account["name"]).click()
+        # Both names are unique to this test run, so neither can collide
+        # with another account's own folders.
+        expect(picker.get_by_text(visible_name, exact=True)).to_be_visible(timeout=15_000)
         with pytest.raises(AssertionError):
-            expect(notify_section.get_by_text(hidden_name, exact=True)).to_be_visible(
-                timeout=3_000,
-            )
+            expect(picker.get_by_text(hidden_name, exact=True)).to_be_visible(timeout=3_000)

@@ -22,7 +22,7 @@ import {
   ChevronDown,
   RefreshCw,
   Snowflake,
-  Workflow,
+  Wrench,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -75,6 +75,16 @@ import type {
   FolderOrderItem,
   UnifiedFolderResponse,
 } from "@/types/api";
+
+/** Accounts and shortcuts keep their own addresses and open as Settings
+ * categories, so the sidebar entry lights up for them too. */
+function isSettingsPath(pathname: string): boolean {
+  return pathname.startsWith("/settings") || pathname === "/accounts" || pathname === "/shortcuts";
+}
+
+function isAdminPath(pathname: string): boolean {
+  return pathname.startsWith("/admin") || pathname === "/pipeline";
+}
 
 const SPECIAL_USE_ICONS: Record<string, typeof Inbox> = {
   inbox: Inbox,
@@ -597,7 +607,7 @@ export function AppSidebar() {
               {isUnified && (!unifiedFolders || unifiedFolders.length === 0) && (
                 <div className="px-4 py-3 text-sm text-muted-foreground">
                   No unified views yet.{" "}
-                  <Link href="/settings" className="underline">
+                  <Link href="/settings/views" className="underline">
                     Create one in Settings
                   </Link>{" "}
                   and choose which folders, from any account, it shows.
@@ -667,33 +677,25 @@ export function AppSidebar() {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
-              render={<Link href="/accounts" prefetch={false} />}
-              isActive={pathname === "/accounts"}
-            >
-              <UserCircle className="h-4 w-4" />
-              <span>Accounts</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          {isAdmin && (
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                render={<Link href="/pipeline" prefetch={false} />}
-                isActive={pathname === "/pipeline"}
-              >
-                <Workflow className="h-4 w-4" />
-                <span>Pipeline</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          )}
-          <SidebarMenuItem>
-            <SidebarMenuButton
               render={<Link href="/settings" prefetch={false} />}
-              isActive={pathname === "/settings"}
+              isActive={isSettingsPath(pathname)}
             >
               <Settings className="h-4 w-4" />
               <span>Settings</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
+          {isAdmin && (
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                render={<Link href="/admin" prefetch={false} />}
+                isActive={isAdminPath(pathname)}
+                className="text-amber-700 dark:text-amber-400"
+              >
+                <Wrench className="h-4 w-4" />
+                <span>Admin</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
         </SidebarMenu>
       </SidebarFooter>
     </Sidebar>

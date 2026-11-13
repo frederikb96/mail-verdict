@@ -24,8 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a calendar can only be linked to the caller's own identities. An invitation is imported on behalf
   of the owner of the mailbox it arrived in and never lands in another user's calendar.
 - `scripts/devstack.py --as owner|second` runs its own token issuer and acts as the chosen user.
-- The web UI asks `/api/me` who is signed in before it renders: the Pipeline entry and the AI
-  and automation settings are for admins, and `AdminOnly` explains an admin page to anyone else.
+- The web UI asks `/api/me` who is signed in before it renders: the Admin entry (models,
+  providers and keys, processing, secrets, system) is for admins, and `AdminOnly` explains an
+  admin page to anyone else.
   A 401, or a 403 that is not JSON (the auth proxy refusing the token), reloads the page into the
   sign-in.
 - Everything the web UI keeps in the browser -- query cache, queued mail actions, compose
@@ -48,6 +49,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Settings routes: an admin reads and writes every key (their own values for the user keys), anyone
   else only the user keys, and writing an admin key is `403`. Secrets, webhooks, queues, provider
   status, embedding coverage and backfill and settings import are admin-only.
+- Settings is a two-pane layout with one category open at a time (`/settings/appearance`,
+  `/mail`, `/views`, `/notifications`, `/calendar`, `/accounts`, `/shortcuts`) instead of one long
+  page, and a list of categories as its own screen on a phone. `/accounts` and `/shortcuts` open
+  the matching category; `/pipeline` opens Admin → Processing.
+- Unified views and the notification folders are chosen with one folder picker (filter, hide system
+  folders, collapsible tri-state account groups) instead of a per-folder dropdown for every folder
+  and a checkbox for every folder. A view opens in place to pick its folders.
+- Mail and calendar settings render as switches and selects with a single save bar per category;
+  the notification bell options moved to Settings → Notifications and undo send to Settings → Mail.
+- Admin (`/admin/models`, `/providers`, `/processing`, `/secrets`, `/system`) replaces the AI and
+  automation section: one Models table with a row per AI task (a model name suggestion list, the
+  reasoning efforts the chosen provider accepts, the server address only for a custom provider),
+  provider keys with a status dot and a confirmed Clear, the usage export, semantic index coverage
+  and the queue tuning under System.
 - Requests without a valid bearer token get `401`, a disabled user `403` `user_disabled`. The
   authenticating proxy in front of the web UI must forward the browser's ID token as
   `Authorization: Bearer ...`.

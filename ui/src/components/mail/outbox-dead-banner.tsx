@@ -42,7 +42,7 @@ export function OutboxDeadBanner() {
         {dead.length} message{dead.length > 1 ? "s" : ""} could not be sent —
         check SMTP settings on {names && names.length > 0 ? names.join(", ") : "this account"}.
       </span>
-      <Link href="/accounts" className="ml-auto shrink-0 underline">
+      <Link href="/settings/accounts" className="ml-auto shrink-0 underline">
         Open account settings
       </Link>
     </div>
