@@ -1,12 +1,21 @@
 """
 Settings API endpoints.
 
-GET /api/settings — all settings by category
+GET /api/settings — the caller's settings by category
+GET /api/settings/schema — every key's scope (admin or user) and type
 GET /api/settings/{category} — single category
 PUT /api/settings/{category} — update category (merge)
-POST /api/settings/import — bulk import
+POST /api/settings/import — bulk import (admin)
 GET /api/settings/providers — which provider keys are configured, the
     health of every AI task's circuit breaker, and the token usage export
+    (admin)
+
+A key is either the instance's (admin) or each user's own (user) -- see
+SETTING_SCOPE in settings/defaults.py. A read shows an admin every key (the
+instance's, plus their own values of the user keys) and anyone else only
+their user keys; a category with none of those is refused to them. A write
+puts user keys into the caller's own values and instance keys into the
+instance's, which only an admin may change.
 
 A provider API key is a write-only extension of the JSON any category
 accepts: PUT anthropic_api_key / openai_api_key / custom_api_key
@@ -35,11 +44,14 @@ import re
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 
+from mail_verdict.api.account_order import narrow_account_order
+from mail_verdict.api.deps import current_scope, require_admin
 from mail_verdict.api.events import broadcast_event, get_event_ring
+from mail_verdict.auth.scope import Scope, ScopeDenied
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import CircuitBreakerState
 from mail_verdict.embeddings.provider import (
@@ -59,7 +71,10 @@ from mail_verdict.settings.credentials import (
     EncryptionUnavailableError,
     get_provider_credential_repo,
 )
+from mail_verdict.settings.defaults import schema as settings_schema
+from mail_verdict.settings.defaults import user_keys
 from mail_verdict.settings.orders_validation import validate_orders_settings
+from mail_verdict.settings.service import AdminSettingError
 from mail_verdict.usage.export import CREDENTIAL as USAGE_EXPORT_CREDENTIAL
 from mail_verdict.usage.export import export_status
 
@@ -169,6 +184,10 @@ async def _announce_settings_changed(category: str | None = None) -> None:
     """
     Push settings.changed to every connected viewer.
 
+    The event carries only the category name, so a user's change of their
+    own values reaches everyone's open tabs and is harmless there: a tab
+    refetches its own view, which does not hold anyone else's values.
+
     The settings table is MailVerdict's own, with nothing upstream to fire
     a notification on a write to it -- a category changed here reaches
     another open tab only if something pushes it by hand. Broadcast rather
@@ -184,6 +203,24 @@ async def _announce_settings_changed(category: str | None = None) -> None:
         return
     data: dict[str, Any] = {"category": category} if category else {}
     await broadcast_event(get_db_connection(), event_ring, "settings.changed", data)
+
+
+def _require_known_category(category: str) -> None:
+    """Raise 400 for a name that is not a settings category."""
+    if category not in _VALID_CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid category '{category}'. Valid: {sorted(_VALID_CATEGORIES)}",
+        )
+
+
+def _narrow_user_values(scope: Scope, category: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Make the user values of a write safe to store for this caller: the
+    account order keeps only accounts they own (ids the client names are
+    never trusted). Everything else passes through."""
+    if category == "mail" and "account_order" in data:
+        return {**data, "account_order": narrow_account_order(scope, data["account_order"])}
+    return data
 
 
 _EMBEDDING_IDENTITY_FIELDS = ("model", "provider", "base_url")
@@ -277,22 +314,46 @@ async def _apply_credential_writes(data: dict[str, Any]) -> dict[str, Any]:
     return _strip_credential_shaped_fields(data)
 
 
+def _view(service: Any, scope: Scope, category: str) -> dict[str, Any]:
+    """A category as the caller may see it: everything for an admin (the
+    instance's keys, their own values of the user keys), the user keys
+    alone for anyone else."""
+    if scope.is_admin:
+        return dict(service.get_for_user(category, scope.user_id))
+    return dict(service.get_user_keys(category, scope.user_id))
+
+
 @router.get("")
-async def get_all_settings() -> dict[str, dict[str, Any]]:
-    """Get all settings grouped by category."""
+async def get_all_settings(scope: Scope = Depends(current_scope)) -> dict[str, dict[str, Any]]:
+    """Get the caller's settings grouped by category."""
     service = get_settings_service()
     all_settings = {
-        category: _strip_credential_shaped_fields(data)
-        for category, data in service.get_all().items()
+        category.value: _strip_credential_shaped_fields(_view(service, scope, category.value))
+        for category in SettingCategory
+        if scope.is_admin or user_keys(category.value)
     }
-    all_settings["ai"] = await _with_ai_credential_status(all_settings["ai"])
+    if scope.is_admin:
+        all_settings["ai"] = await _with_ai_credential_status(all_settings["ai"])
     return all_settings
 
 
-@router.get("/providers", response_model=ProvidersStatus)
+@router.get("/schema")
+async def get_schema() -> dict[str, dict[str, dict[str, str]]]:
+    """Every category's keys with their scope (admin or user) and value type.
+
+    The same for every caller: it names the keys, never holds a value. Lets
+    a client show a person only the keys they may set. Registered before
+    `/{category}`, which would otherwise read "schema" as a category name.
+    """
+    return settings_schema()
+
+
+@router.get(
+    "/providers", response_model=ProvidersStatus, dependencies=[Depends(require_admin)],
+)
 async def get_providers_status() -> ProvidersStatus:
     """Provider key presence, the circuit breakers of the AI tasks and the
-    token usage export.
+    token usage export. Admin only.
 
     Registered before `/{category}`, which would otherwise read "providers"
     as a category name.
@@ -336,71 +397,80 @@ async def get_providers_status() -> ProvidersStatus:
 
 
 @router.get("/{category}")
-async def get_settings(category: str) -> dict[str, Any]:
-    """Get settings for a single category."""
-    if category not in _VALID_CATEGORIES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid category '{category}'. Valid: {sorted(_VALID_CATEGORIES)}",
-        )
-    service = get_settings_service()
-    data = _strip_credential_shaped_fields(service.get(category))
+async def get_settings(
+    category: str, scope: Scope = Depends(current_scope),
+) -> dict[str, Any]:
+    """Get the caller's view of a single category."""
+    _require_known_category(category)
+    if not scope.is_admin and not user_keys(category):
+        raise ScopeDenied("admin_only")
+    data = _strip_credential_shaped_fields(_view(get_settings_service(), scope, category))
     if category == "ai":
         data = await _with_ai_credential_status(data)
     return data
 
 
 @router.put("/{category}")
-async def update_settings(category: str, request: SettingsUpdateRequest) -> dict[str, Any]:
-    """Update settings for a category (merge semantics)."""
-    if category not in _VALID_CATEGORIES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid category '{category}'. Valid: {sorted(_VALID_CATEGORIES)}",
-        )
+async def update_settings(
+    category: str, request: SettingsUpdateRequest, scope: Scope = Depends(current_scope),
+) -> dict[str, Any]:
+    """Update settings for a category (merge semantics): the caller's user
+    keys to their own values, the instance's keys to the instance (admin
+    only -- a non-admin naming one gets 403 and nothing is written)."""
+    _require_known_category(category)
+    user_id = scope.require_user()
+    own_keys = user_keys(category)
+    if not scope.is_admin and not request.data.keys() <= own_keys:
+        raise ScopeDenied("admin_only")
     service = get_settings_service()
     # Applied whichever category this is: a provider key is shared across
     # categories by provider name, not scoped to "ai" (settings/
     # credentials.py), and the request body is an arbitrary dict for every
     # category alike -- nothing about the route restricts a key-shaped
-    # field to arriving only where one is expected.
+    # field to arriving only where one is expected. Past the check above
+    # only an admin can reach it.
     data = await _apply_credential_writes(request.data)
+    data = _narrow_user_values(scope, category, data)
 
+    # Validation sees the values as they will read after the write: the
+    # caller's own view of the category with the request merged over it.
+    current = service.get_for_user(category, user_id)
     if category == "ai":
-        effective = {**service.get("ai"), **data}
         try:
-            validate_ai_settings(effective)
+            validate_ai_settings({**current, **data})
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if category == "assistant":
-        effective = {**service.get("assistant"), **data}
         try:
-            validate_assistant_settings(effective)
+            validate_assistant_settings({**current, **data})
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if category == "semantic":
-        current = service.get("semantic")
         data = _freeze_active_embedding_identity(current, data)
-        effective = {**current, **data}
         try:
-            validate_semantic_settings(effective)
+            validate_semantic_settings({**current, **data})
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if category == "orders":
-        effective = {**service.get("orders"), **data}
         try:
-            validate_orders_settings(effective)
+            validate_orders_settings({**current, **data})
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        result = await service.update(category, data)
+        result = await service.update_for_user(
+            category, user_id, data, is_admin=scope.is_admin,
+        )
+    except AdminSettingError as exc:
+        raise ScopeDenied("admin_only") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _announce_settings_changed(category)
+    if not scope.is_admin:
+        result = {key: result[key] for key in own_keys}
     # Defensive as well as prospective: masks a credential-shaped field
     # already sitting in this category's stored blob from before writes
     # were stripped everywhere, not only one this request just wrote.
@@ -411,8 +481,13 @@ async def update_settings(category: str, request: SettingsUpdateRequest) -> dict
 
 
 @router.post("/import")
-async def import_settings(request: SettingsImportRequest) -> dict[str, dict[str, Any]]:
-    """Bulk import settings (merge semantics per category). Never imports provider keys."""
+async def import_settings(
+    request: SettingsImportRequest, scope: Scope = Depends(require_admin),
+) -> dict[str, dict[str, Any]]:
+    """Bulk import settings as an admin (merge semantics per category): the
+    instance's keys to the instance, user keys to the admin's own values.
+    Never imports provider keys."""
+    user_id = scope.require_user()
     invalid = set(request.data.keys()) - _VALID_CATEGORIES
     if invalid:
         raise HTTPException(
@@ -427,22 +502,23 @@ async def import_settings(request: SettingsImportRequest) -> dict[str, dict[str,
         category: _strip_credential_shaped_fields(cat_data)
         for category, cat_data in request.data.items()
     }
+    service = get_settings_service()
     if "ai" in data:
-        effective = {**get_settings_service().get("ai"), **data["ai"]}
+        effective = {**service.get_for_user("ai", user_id), **data["ai"]}
         try:
             validate_ai_settings(effective)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if "assistant" in data:
-        effective = {**get_settings_service().get("assistant"), **data["assistant"]}
+        effective = {**service.get_for_user("assistant", user_id), **data["assistant"]}
         try:
             validate_assistant_settings(effective)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if "semantic" in data:
-        current = get_settings_service().get("semantic")
+        current = service.get_for_user("semantic", user_id)
         semantic_data = _freeze_active_embedding_identity(current, data["semantic"])
         effective = {**current, **semantic_data}
         try:
@@ -452,15 +528,17 @@ async def import_settings(request: SettingsImportRequest) -> dict[str, dict[str,
         data["semantic"] = semantic_data
 
     if "orders" in data:
-        effective = {**get_settings_service().get("orders"), **data["orders"]}
+        effective = {**service.get_for_user("orders", user_id), **data["orders"]}
         try:
             validate_orders_settings(effective)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    service = get_settings_service()
+    if "mail" in data:
+        data["mail"] = _narrow_user_values(scope, "mail", data["mail"])
+
     try:
-        result = await service.bulk_import(data)
+        result = await service.bulk_import(data, user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _announce_settings_changed()

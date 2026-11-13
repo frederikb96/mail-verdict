@@ -9842,7 +9842,7 @@
   "paths": {
     "/account-order": {
       "get": {
-        "description": "Get the stored account display order.",
+        "description": "Get the caller's account display order.",
         "operationId": "get_account_order_account_order_get",
         "responses": {
           "200": {
@@ -9862,7 +9862,7 @@
         ]
       },
       "put": {
-        "description": "Save the account display order.",
+        "description": "Save the caller's account display order; accounts that are not theirs\nare left out.",
         "operationId": "set_account_order_account_order_put",
         "requestBody": {
           "content": {
@@ -16800,7 +16800,7 @@
     },
     "/settings": {
       "get": {
-        "description": "Get all settings grouped by category.",
+        "description": "Get the caller's settings grouped by category.",
         "operationId": "get_all_settings_settings_get",
         "responses": {
           "200": {
@@ -16827,7 +16827,7 @@
     },
     "/settings/import": {
       "post": {
-        "description": "Bulk import settings (merge semantics per category). Never imports provider keys.",
+        "description": "Bulk import settings as an admin (merge semantics per category): the\ninstance's keys to the instance, user keys to the admin's own values.\nNever imports provider keys.",
         "operationId": "import_settings_settings_import_post",
         "requestBody": {
           "content": {
@@ -16874,7 +16874,7 @@
     },
     "/settings/providers": {
       "get": {
-        "description": "Provider key presence, the circuit breakers of the AI tasks and the\ntoken usage export.\n\nRegistered before `/{category}`, which would otherwise read \"providers\"\nas a category name.",
+        "description": "Provider key presence, the circuit breakers of the AI tasks and the\ntoken usage export. Admin only.\n\nRegistered before `/{category}`, which would otherwise read \"providers\"\nas a category name.",
         "operationId": "get_providers_status_settings_providers_get",
         "responses": {
           "200": {
@@ -16894,9 +16894,41 @@
         ]
       }
     },
+    "/settings/schema": {
+      "get": {
+        "description": "Every category's keys with their scope (admin or user) and value type.\n\nThe same for every caller: it names the keys, never holds a value. Lets\na client show a person only the keys they may set. Registered before\n`/{category}`, which would otherwise read \"schema\" as a category name.",
+        "operationId": "get_schema_settings_schema_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "additionalProperties": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "type": "object"
+                    },
+                    "type": "object"
+                  },
+                  "title": "Response Get Schema Settings Schema Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Schema",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
     "/settings/{category}": {
       "get": {
-        "description": "Get settings for a single category.",
+        "description": "Get the caller's view of a single category.",
         "operationId": "get_settings_settings__category__get",
         "parameters": [
           {
@@ -16939,7 +16971,7 @@
         ]
       },
       "put": {
-        "description": "Update settings for a category (merge semantics).",
+        "description": "Update settings for a category (merge semantics): the caller's user\nkeys to their own values, the instance's keys to the instance (admin\nonly -- a non-admin naming one gets 403 and nothing is written).",
         "operationId": "update_settings_settings__category__put",
         "parameters": [
           {

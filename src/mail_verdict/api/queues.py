@@ -1,5 +1,5 @@
 """
-Queue lifecycle API.
+Queue lifecycle API (admin only).
 
 GET   /api/queues            -- summary of every registered queue
 GET   /api/queues/{name}     -- one queue's summary
@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from mail_verdict.api.deps import require_admin
 from mail_verdict.api.schemas import (
     CircuitStatusResponse,
     QueueConcurrency,
@@ -27,7 +28,9 @@ from mail_verdict.queue.manager import QueueSummary, get_queue_manager
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/queues", tags=["queues"])
+router = APIRouter(
+    prefix="/queues", tags=["queues"], dependencies=[Depends(require_admin)],
+)
 
 
 def _to_response(summary: QueueSummary) -> QueueResponse:

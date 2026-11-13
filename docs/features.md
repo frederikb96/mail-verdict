@@ -238,6 +238,17 @@ A browser that supports it offers to install the site, which then runs in its ow
 own icon. The installed application registers as a `mailto:` handler, so it can be the machine's
 mail client: a `mailto:` link opens the composer filled in from the link.
 
+## Settings
+
+- Each setting is either the instance's or the user's own. Admins set the machinery: models and
+  providers, queues and their retry mechanics, secrets, webhooks, and the pipeline's and orders'
+  worker settings. Everyone sets their own mail behaviour (marking mail read as it is filed,
+  the bell badge, how long a new-mail alert waits for the rules), calendar defaults, undo-send,
+  the language, first filter and automatic closing of orders, and the order their accounts are
+  listed in. A user who has not changed one gets its default.
+- An admin's own preferences are theirs alone; changing them changes nothing for anyone else.
+- Anyone else is refused the machinery outright.
+
 ## Keyboard shortcuts
 
 - From any page, `Ctrl+Alt+1` to `Ctrl+Alt+9` jump to mail, calendar, contacts, orders & tickets,

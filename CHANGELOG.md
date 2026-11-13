@@ -28,9 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   recovery, search and view preferences, shortcut bindings, the push subscription id -- is
   stored per user, so two people on one browser never see or replay each other's state. Entries
   from before this are discarded on first load, and another user's cached data is removed.
+- Settings are either the instance's or each user's own. The `mail` and `calendar` categories,
+  `outbox.undo_send_seconds`, `orders.language`, `orders.filter` and `orders.auto_close_*` are
+  per user, and the account order is a per-user setting (`mail.account_order`) that only names the
+  user's own accounts; the models, providers, queues and retry mechanics stay the instance's.
+  `GET /api/settings/schema` lists every key with its scope and type.
 
 ### Changed
 
+- Settings routes: an admin reads and writes every key (their own values for the user keys), anyone
+  else only the user keys, and writing an admin key is `403`. Secrets, webhooks, queues, provider
+  status, embedding coverage and backfill and settings import are admin-only.
 - Requests without a valid bearer token get `401`, a disabled user `403` `user_disabled`. The
   authenticating proxy in front of the web UI must forward the browser's ID token as
   `Authorization: Bearer ...`.

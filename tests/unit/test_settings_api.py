@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from mail_verdict.settings.defaults import SETTING_DEFAULTS, SettingCategory
+from mail_verdict.settings.defaults import SETTING_DEFAULTS, SettingCategory, user_keys
+from tests.helpers.auth import act_as, owner_scope
 
 
 def _make_mock_service(
@@ -20,12 +21,16 @@ def _make_mock_service(
     data = settings or {cat.value: dict(v) for cat, v in SETTING_DEFAULTS.items()}
     service.get = MagicMock(side_effect=lambda cat: dict(data.get(cat, {})))
     service.get_all = MagicMock(return_value=data)
+    service.get_for_user = MagicMock(side_effect=lambda cat, uid: dict(data.get(cat, {})))
+    service.get_user_keys = MagicMock(
+        side_effect=lambda cat, uid: {k: data[cat][k] for k in user_keys(cat)},
+    )
 
-    async def _update(cat: str, d: dict[str, Any]) -> dict[str, Any]:
+    async def _update(cat: str, uid: Any, d: dict[str, Any], *, is_admin: bool) -> dict[str, Any]:
         data[cat] = {**data.get(cat, {}), **d}
         return dict(data[cat])
 
-    service.update = AsyncMock(side_effect=_update)
+    service.update_for_user = AsyncMock(side_effect=_update)
     service.bulk_import = AsyncMock(return_value=data)
     return service
 
@@ -69,6 +74,7 @@ def client(cred_repo: MagicMock) -> TestClient:
 
     app = FastAPI()
     app.include_router(router)
+    act_as(app, owner_scope())
 
     mock_service = _make_mock_service()
     with (
@@ -100,6 +106,7 @@ def client_without_credential_repo() -> TestClient:
 
     app = FastAPI()
     app.include_router(router)
+    act_as(app, owner_scope())
 
     mock_service = _make_mock_service()
 
@@ -317,7 +324,7 @@ class TestSemanticSettings:
         from mail_verdict.api import settings_api as settings_api_module
 
         service = settings_api_module.get_settings_service()
-        service.update.side_effect = ValueError("Setting 'retry.max_retries' expects int")
+        service.update_for_user.side_effect = ValueError("Setting 'retry.max_retries' expects int")
 
         resp = client.put("/settings/retry", json={"data": {"max_retries": "banana"}})
         assert resp.status_code == 400
@@ -342,7 +349,7 @@ class TestSemanticSettings:
         resp = client.put("/settings/ai", json={"data": fetched})
         assert resp.status_code == 200
 
-        stored_data = service.update.await_args.args[1]  # type: ignore[union-attr]
+        stored_data = service.update_for_user.await_args.args[2]  # type: ignore[union-attr]
         assert "openai_api_key_configured" not in stored_data
         assert "openai_api_key_hint" not in stored_data
         assert "anthropic_api_key_configured" not in stored_data

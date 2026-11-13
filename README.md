@@ -117,7 +117,9 @@ fallback.
 
 Anything that changes at runtime is a **setting**, stored in the database and edited on the
 Settings page or through the API: the AI providers and models, spam behaviour, rules, and provider
-API keys (stored encrypted).
+API keys (stored encrypted). The machinery (models, providers, queues, secrets, webhooks) belongs
+to admins; each user has their own mail, calendar, undo-send and orders preferences, and an
+admin's own preferences are theirs alone.
 
 - **One provider and model per AI task:** spam verdicts (`ai`), embeddings (`semantic`), the
   order-matching, order-text and image-reading calls (`orders`' `decide_*`, `write_*` and `read_*`

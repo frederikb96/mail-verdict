@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,7 +22,12 @@ def _make_service(
     service._repo.get_all = AsyncMock(return_value=db_settings or {})
     service._repo.get_category = AsyncMock(return_value=None)
     service._repo.upsert_category = AsyncMock()
+    service._repo.get_all_user_settings = AsyncMock(return_value={})
+    service._repo.upsert_user_category = AsyncMock()
     return service
+
+
+_ADMIN = uuid.uuid4()
 
 
 class TestDefaults:
@@ -137,7 +143,7 @@ class TestSettingsServiceUpdate:
         await service.bulk_import({
             "ai": {"model": "bulk-model"},
             "retry": {"max_retries": 3},
-        })
+        }, _ADMIN)
         assert service._repo.upsert_category.await_count == 2
 
     @pytest.mark.asyncio
@@ -181,7 +187,7 @@ class TestSettingsServiceUpdate:
         await service.load()
 
         with pytest.raises(ValueError, match="retry.max_retries"):
-            await service.bulk_import({"retry": {"max_retries": "banana"}})
+            await service.bulk_import({"retry": {"max_retries": "banana"}}, _ADMIN)
 
         service._repo.upsert_category.assert_not_awaited()
 
@@ -210,7 +216,7 @@ class TestSettingsServiceUpdate:
         service = _make_service()
         await service.load()
 
-        await service.bulk_import({"retry": {"base_delay_seconds": 1}})
+        await service.bulk_import({"retry": {"base_delay_seconds": 1}}, _ADMIN)
 
         service._repo.upsert_category.assert_awaited_once_with(
             "retry", {"base_delay_seconds": 1.0},
@@ -238,6 +244,6 @@ class TestSettingsServiceUpdate:
             await service.bulk_import({
                 "ai": {"model": "bulk-model"},
                 "retry": {"max_retries": "banana"},
-            })
+            }, _ADMIN)
 
         service._repo.upsert_category.assert_not_awaited()

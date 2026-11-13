@@ -24,8 +24,8 @@ Route kinds and what is checked:
 - account_path: a path naming one of B's accounts, called by A: 403 or 404.
 - resource_id: a path naming one of B's rows (a message, an order, ...),
   called by A: 403 or 404.
-- admin: A (not admin) gets 403; the owner gets 2xx and the body carries none
-  of B's mail content (World.b_content).
+- admin: A (not admin) gets 403; the owner gets 2xx (or one of `owner_also`)
+  and the body carries none of B's mail content (World.b_content).
 
 A case may need more than path parameters: `params` fills the path from the
 World, `query` and `body` build the rest. A write case must send a body that
@@ -105,6 +105,11 @@ class RouteCase:
     params: Callable[[World], dict[str, str]] | None = None
     query: Callable[[World], dict[str, str]] | None = None
     body: Callable[[World], Any] | None = None
+    # Admin routes only: statuses the owner may get instead of 2xx, for a
+    # route whose success needs state the World lacks (a delivery to retry,
+    # an encryption key). Anything but a refusal proves the gate let the
+    # owner through.
+    owner_also: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

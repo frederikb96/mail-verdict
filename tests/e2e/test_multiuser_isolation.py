@@ -363,7 +363,9 @@ def test_route(app_client: TestClient, world: World, case: RouteCase) -> None:
         refused = call(_as(world.a_token))
         assert refused.status_code == 403, refused.text
         allowed = call(_as(world.owner_token))
-        assert 200 <= allowed.status_code < 300, allowed.text
+        assert (
+            200 <= allowed.status_code < 300 or allowed.status_code in case.owner_also
+        ), allowed.text
         assert not _leaked(allowed.text, world.b_content)
 
 

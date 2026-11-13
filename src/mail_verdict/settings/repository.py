@@ -1,18 +1,21 @@
 """
-Settings repository: CRUD for the settings table.
+Settings repository: CRUD for the settings table and the per-user
+user_settings table.
 
-Each row is one category with a JSONB data blob.
+Each row is one category with a JSONB data blob; a user_settings row is one
+user's values of one category.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from sqlalchemy import select
 
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Setting
+from mail_verdict.database.models import Setting, UserSetting
 
 logger = logging.getLogger(__name__)
 
@@ -79,3 +82,46 @@ class SettingsRepository:
             else:
                 session.add(Setting(category=category, data=data))
         logger.info("Settings upserted", extra={"category": category})
+
+    async def get_all_user_settings(self) -> dict[uuid.UUID, dict[str, dict[str, Any]]]:
+        """
+        Load every user's settings, grouped by user and category.
+
+        Returns:
+            Dict mapping user id to {category name: JSONB data}
+        """
+        async with self._db.session() as session:
+            result = await session.execute(select(UserSetting))
+            rows = list(result.scalars().all())
+        grouped: dict[uuid.UUID, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(row.user_id, {})[row.category] = row.data
+        return grouped
+
+    async def upsert_user_category(
+        self, user_id: uuid.UUID, category: str, data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Insert or update one user's settings for a category (merge semantics,
+        like upsert_category).
+
+        Args:
+            user_id: The user the values belong to
+            category: Setting category name
+            data: Partial or full JSONB data to merge
+
+        Returns:
+            The category's stored data for this user after the write
+        """
+        async with self._db.session() as session:
+            existing = await session.get(UserSetting, (user_id, category))
+            if existing is not None:
+                existing.data = {**existing.data, **data}
+                stored = dict(existing.data)
+            else:
+                session.add(UserSetting(user_id=user_id, category=category, data=data))
+                stored = dict(data)
+        logger.info(
+            "User settings upserted", extra={"category": category, "user_id": str(user_id)},
+        )
+        return stored
