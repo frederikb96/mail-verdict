@@ -79,8 +79,7 @@ class FolderResolutionError(Exception):
 # covers the toolbar/drag-and-drop side of the same setting; not shared
 # code, on purpose -- the two call sites answer a different question
 # ("what role is the target folder" vs. "what role does this ruling
-# imply"), the same reasoning pipeline/runner.py's own duplicated
-# _SKIP_FOLDER_SPECIAL_USE documents for itself.
+# imply").
 _MARK_READ_ON_FILE_ROLE = "junk"
 
 

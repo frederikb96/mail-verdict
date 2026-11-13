@@ -769,7 +769,8 @@ One row is both the dispatch queue a periodic pass claims from and, once deliver
 record a bell reads back — `delivered_at` distinguishes the two states, and `idx_alerts_due` is
 what that pass's claim query scans. A message no `pipeline_runs` row will ever exist for --
 arriving directly into a folder the pipeline never runs against (Sent, Drafts, Trash, Junk,
-Archive), a folder with no watermark yet, or mail older than `pipeline.live_max_age_days` --
+Archive, or one switched off by `folder_prefs.pipeline_enabled`; `pipeline/scope.py`), a folder
+with no watermark yet, or mail older than `pipeline.live_max_age_days` --
 is delivered at insert: `pipeline/enqueue.py`'s `is_live_pipeline_possible` re-derives the whole
 eligibility predicate the pipeline's own live-arrival enqueue checks, not merely the folder's
 role, so waiting for a run that can never exist means waiting out the bound every time. Anything

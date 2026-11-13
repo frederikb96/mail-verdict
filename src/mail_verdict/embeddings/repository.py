@@ -35,7 +35,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from mail_verdict.database.models import Folder, GlacierMessage, Message, MessageEmbedding
+from mail_verdict.database.models import (
+    Folder,
+    FolderPrefs,
+    GlacierMessage,
+    Message,
+    MessageEmbedding,
+)
 from mail_verdict.database.msg_key import compute_msg_key
 
 if TYPE_CHECKING:
@@ -249,10 +255,12 @@ class EmbeddingRepository:
                     Message.from_addr, Message.subject, Message.received_at, Message.size_bytes,
                 )
                 .join(Folder, Folder.id == Message.folder_id)
+                .outerjoin(FolderPrefs, FolderPrefs.folder_id == Folder.id)
                 .where(
                     Message.expunged_at.is_(None),
                     Folder.deleted_at.is_(None),
                     Folder.initial_sync_done.is_(True),
+                    FolderPrefs.pipeline_enabled.is_not(False),
                     not_embedded,
                     # A message that can never be inserted -- its header is
                     # shared with a live sibling already holding this
@@ -429,10 +437,15 @@ class EmbeddingRepository:
                 select(
                     Message.account_id, Message.message_id.label("message_id_hdr"),
                     Message.from_addr, Message.subject, Message.received_at, Message.size_bytes,
-                    Message.expunged_at, Message.is_draft,
-                ).where(Message.id == message_id, Message.account_id == account_id)
+                    Message.expunged_at, Message.is_draft, FolderPrefs.pipeline_enabled,
+                )
+                .outerjoin(FolderPrefs, FolderPrefs.folder_id == Message.folder_id)
+                .where(Message.id == message_id, Message.account_id == account_id)
             )).one_or_none()
-            if row is None or row.expunged_at is not None or row.is_draft:
+            if (
+                row is None or row.expunged_at is not None or row.is_draft
+                or row.pipeline_enabled is False
+            ):
                 return False
 
             key = compute_msg_key(
@@ -623,10 +636,12 @@ class EmbeddingRepository:
                 select(func.count())
                 .select_from(Message)
                 .join(Folder, Folder.id == Message.folder_id)
+                .outerjoin(FolderPrefs, FolderPrefs.folder_id == Folder.id)
                 .where(
                     Message.expunged_at.is_(None),
                     Folder.deleted_at.is_(None),
                     Folder.initial_sync_done.is_(True),
+                    FolderPrefs.pipeline_enabled.is_not(False),
                 )
             )
             if account_id is not None:
@@ -732,10 +747,12 @@ class EmbeddingRepository:
                 select(func.count())
                 .select_from(Message)
                 .join(Folder, Folder.id == Message.folder_id)
+                .outerjoin(FolderPrefs, FolderPrefs.folder_id == Folder.id)
                 .where(
                     Message.expunged_at.is_(None),
                     Folder.deleted_at.is_(None),
                     Folder.initial_sync_done.is_(True),
+                    FolderPrefs.pipeline_enabled.is_not(False),
                     Message.message_id.is_not(None),
                     ~own_embedding_exists,
                     _sibling_holds_embedding(model),

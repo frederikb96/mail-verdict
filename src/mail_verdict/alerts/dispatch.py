@@ -18,8 +18,8 @@ a per-folder notification preference, against the folder it merely
 arrived in.
 
 A message no pipeline run will ever exist for -- arriving directly into
-a folder the pipeline never runs against (sent/drafts/trash/junk/
-archive), a folder with no watermark yet (pipeline/enqueue.py's own
+a folder the pipeline never runs against (pipeline/scope.py), a folder
+with no watermark yet (pipeline/enqueue.py's own
 is_live_pipeline_possible re-derives the whole eligibility predicate,
 not just the folder's role, for exactly this reason), or mail older than
 pipeline.live_max_age_days -- skips staging entirely and is delivered
@@ -53,6 +53,7 @@ from mail_verdict.database.models import Alert, Message
 from mail_verdict.database.msg_key import compute_msg_key
 from mail_verdict.database.repository import AlertRepository
 from mail_verdict.pipeline.enqueue import is_live_pipeline_possible
+from mail_verdict.pipeline.scope import folder_in_pipeline_scope
 from mail_verdict.push.relay import get_relay_client_if_ready
 from mail_verdict.push.send import dispatch_push_for_alert
 from mail_verdict.queue.notify import ReconciliationTimer
@@ -69,11 +70,6 @@ logger = logging.getLogger(__name__)
 # dropdown row stays one line -- the same rough shape a notification
 # popup itself would truncate to.
 _BODY_MAX_LEN = 120
-
-# Kept in sync with pipeline/enqueue.py's own gate (and pipeline/runner.py's
-# re-check of it) -- a message in one of these can never produce a
-# pipeline_runs row, so waiting for one would wait out the bound every time.
-_SKIP_FOLDER_SPECIAL_USE = frozenset({"sent", "drafts", "trash", "junk", "archive"})
 
 # Distinct from pipeline/enqueue.py's _RECONCILE_LOCK_KEY (761_034_331) and
 # outbox/pending.py's _PENDING_SEND_LOCK_KEY (761_034_500) -- every
@@ -323,6 +319,7 @@ async def _finalize_pending_mail_alerts_once(
                            m.folder_id AS current_folder_id, m.expunged_at, m.is_draft,
                            coalesce(fp.special_use_override, f.special_use, '')
                                AS effective_special_use,
+                           fp.pipeline_enabled,
                            pr.status AS pipeline_status,
                            extract(epoch FROM now() - a.created_at) AS age_seconds
                     FROM alerts a
@@ -354,7 +351,12 @@ async def _finalize_pending_mail_alerts_once(
             terminal = row.pipeline_status is not None and row.pipeline_status not in (
                 "pending", "claimed",
             )
-            never_eligible = row.is_draft or row.effective_special_use in _SKIP_FOLDER_SPECIAL_USE
+            # A message in a folder outside the pipeline's scope can never
+            # produce a pipeline_runs row, so waiting for one would wait out
+            # the bound every time.
+            never_eligible = row.is_draft or not folder_in_pipeline_scope(
+                row.effective_special_use, row.pipeline_enabled,
+            )
             # The bound is the owner's own mail.notify_wait_seconds.
             bound_seconds = float(
                 settings_service.get_for_user("mail", row.user_id)["notify_wait_seconds"]

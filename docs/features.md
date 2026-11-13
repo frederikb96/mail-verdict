@@ -31,6 +31,16 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
   line comma-separated.
 - Folders can be created and deleted. Renaming and re-nesting are an IMAP limitation and not
   implemented ([Known limitations](../README.md#known-limitations-deliberately)).
+- **Gmail and iCloud** have presets in the add-account form (servers filled in, a link to the
+  provider's app-password instructions, the address and app password as the only fields); setup
+  and limits are in the [README](../README.md#gmail-and-icloud). Google Workspace accounts are
+  not supported.
+- **A folder can be taken out of the AI.** Each folder without a role of its own (not Sent,
+  Drafts, Trash, Junk or Archive) has a switch for whether its new mail is classified and added to
+  the semantic index. Gmail's label folders, Starred and Important start switched off and its All
+  Mail becomes the Archive, so mail the server shows in several folders is processed once, through
+  the copy in a folder that runs the AI. The switch only governs mail arriving afterwards; embeddings
+  made earlier stay searchable.
 - A quick filter narrows the open folder or view by subject, sender or recipient. Its rows carry
   the same actions an ordinary row does, and a toggle beside it shows only unread mail.
 - Opening a reply collapses the quoted original behind a "Show quoted text" control. Ctrl+F (or a
@@ -106,7 +116,8 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
   loop when it gets one wrong.
 - A review screen lists every message currently called spam with no ruling yet, across every
   account and folder including Junk, for confirming or correcting them singly or in bulk.
-- Historical mail is never classified, and nothing is classified twice.
+- Historical mail is never classified, and nothing is classified twice. Mail in Sent, Drafts,
+  Trash, Junk, Archive and any folder switched off is never classified.
 
 ## Orders and tickets
 

@@ -55,6 +55,7 @@ from mail_verdict.database.models import (
 )
 from mail_verdict.orders.announce import announce as announce_order
 from mail_verdict.orders.repository import delete_for_account as orders_delete_for_account
+from mail_verdict.pipeline.scope import folder_in_pipeline_scope
 from mail_verdict.postimap.actions import create_account as postimap_create_account
 from mail_verdict.postimap.actions import delete_account as postimap_delete_account
 from mail_verdict.postimap.actions import force_reconnect
@@ -453,6 +454,10 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
             created_at=f.created_at,
             unified_view_ids=views.get(f.id, []),
             is_visible=fp.is_visible if fp else True,
+            pipeline_enabled=folder_in_pipeline_scope(
+                (fp.special_use_override if fp else None) or f.special_use,
+                fp.pipeline_enabled if fp else None,
+            ),
             total_count=total,
             unread_count=unread,
         )
@@ -477,6 +482,7 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
                 created_at=None,
                 unified_view_ids=views.get(glacier_folder_id, []),
                 is_visible=glacier_fp.is_visible if glacier_fp else True,
+                pipeline_enabled=False,
                 total_count=total,
                 unread_count=unread,
                 kind="glacier",

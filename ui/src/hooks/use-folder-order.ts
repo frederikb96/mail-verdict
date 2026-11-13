@@ -49,6 +49,26 @@ export function useUpdateFolderOrder() {
   });
 }
 
+export function useSetFolderPipeline() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      folderId,
+      enabled,
+    }: {
+      accountId: string;
+      folderId: string;
+      enabled: boolean;
+    }) => api.folders.updatePrefs(folderId, { pipeline_enabled: enabled }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: folderOrderKeys.get(variables.accountId),
+      });
+      queryClient.invalidateQueries({ queryKey: ["folders"] });
+    },
+  });
+}
+
 export function useToggleFolderVisibility() {
   const queryClient = useQueryClient();
   return useMutation({

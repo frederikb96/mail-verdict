@@ -33,13 +33,13 @@ _MESSAGE_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 # the columns the migrations actually read are enough, and keep this test
 # independent of PostIMAP's schema version.
 _POSTIMAP_STUBS = """
-CREATE TABLE accounts (id uuid PRIMARY KEY, name text);
+CREATE TABLE accounts (id uuid PRIMARY KEY, name text, imap_host text);
 CREATE TABLE messages (
     id uuid PRIMARY KEY, account_id uuid, from_addr text, subject text,
     received_at timestamptz, size_bytes integer
 );
 CREATE TABLE folders (
-    id uuid PRIMARY KEY, account_id uuid,
+    id uuid PRIMARY KEY, account_id uuid, special_use text,
     initial_sync_done boolean NOT NULL DEFAULT false, deleted_at timestamptz
 );
 """

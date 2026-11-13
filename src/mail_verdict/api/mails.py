@@ -1951,7 +1951,7 @@ async def _handle_spam_action(
 
 # Mail filed here by the user is marked read as it moves --
 # settings.mail.mark_read_on_file_to_archive_or_junk. Narrower than
-# pipeline/enqueue.py's own _SKIP_FOLDER_SPECIAL_USE on purpose: this is
+# pipeline/scope.py's SKIP_ROLES on purpose: this is
 # about where the user just filed something, not about pipeline scope.
 _MARK_READ_SPECIAL_USE = frozenset({"archive", "junk"})
 
