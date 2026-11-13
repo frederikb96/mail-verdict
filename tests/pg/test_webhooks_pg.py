@@ -511,13 +511,14 @@ async def test_retry_all_failed_requeues_every_failed_delivery_of_one_webhook(
 
     async with migrated_db.session() as session:
         count = await repository.requeue_all_failed(
-            session, name, effect=_effect(fixed.url, name=name))
+            session, name, account_ids=[account_id], effect=_effect(fixed.url, name=name))
     assert count == 2
     await _drain(migrated_db, secrets, _cfg())
 
     assert len(fixed.requests) == 2
     async with migrated_db.session() as session:
-        rows = await repository.list_deliveries(session, name=None, status=None, limit=500)
+        rows = await repository.list_deliveries(
+            session, account_ids=[account_id], name=None, status=None, limit=500)
     by_name = {
         (r.name, r.status) for r in rows if r.account_id == account_id
     }
@@ -595,7 +596,7 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
     async with migrated_db.session() as session:
         assert not [
             r for r in await repository.list_deliveries(
-                session, name="canteen", status=None, limit=500)
+                session, account_ids=[account_id], name="canteen", status=None, limit=500)
             if r.account_id == account_id
         ]
 
@@ -608,7 +609,7 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
     async with migrated_db.session() as session:
         rows = [
             r for r in await repository.list_deliveries(
-                session, name="canteen", status="pending", limit=50)
+                session, account_ids=[account_id], name="canteen", status="pending", limit=50)
             if r.account_id == account_id
         ]
     by_due = [r.message_id for r in sorted(rows, key=lambda r: r.next_attempt_at)]
@@ -668,7 +669,7 @@ async def test_a_truncated_backfill_continues_from_its_cursor(
     async with migrated_db.session() as session:
         rows = [
             r for r in await repository.list_deliveries(
-                session, name="canteen", status=None, limit=500)
+                session, account_ids=[account_id], name="canteen", status=None, limit=500)
             if r.account_id == account_id
         ]
     assert sorted(r.message_id for r in rows) == sorted(ids)
@@ -715,7 +716,7 @@ async def test_backfill_never_reaches_mail_beyond_the_given_accounts(
     async with migrated_db.session() as session:
         queued = [
             r for r in await repository.list_deliveries(
-                session, name="canteen", status=None, limit=500)
+                session, account_ids=[mine, other], name="canteen", status=None, limit=500)
             if r.account_id in (mine, other)
         ]
     assert [r.message_id for r in queued] == [own_mail]

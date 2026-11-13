@@ -90,9 +90,11 @@ nothing of anyone's (a resync, a bare "this settings category changed"). A strea
 of its caller's `Scope` (`Scope.ring_keys()`) and no others, live and on replay; the gap check
 before a replay counts only those keys' rings. `?account_id=` narrows the account keys to that one
 account if it is the caller's, leaving their user, admin and everyone keys. A stream resolves its
-keys again whenever an account changes owner — `auth/ownership.py` announces each committed
-change — so an account added, deleted or given away mid-stream starts or stops reaching it at
-once rather than at the next reconnect.
+keys again from the `users` table whenever an account changes owner or an admin changes a user's
+role or sign-in — `auth/ownership.py` announces each committed change — and at least every
+`auth.principal_cache_seconds` besides. So an account added, deleted or given away mid-stream
+starts or stops reaching it at once rather than at the next reconnect, a demoted admin stops
+receiving the admin key, and a disabled user's stream ends (its reconnect is then refused).
 
 Two deliberate details:
 
@@ -1126,7 +1128,9 @@ concurrent delivery by default) makes the request.
   `webhook_failed` alert and stays in the table, still blocking a re-enqueue until it is
   re-queued explicitly (`POST /api/webhooks/deliveries/{id}/retry`, or `POST
   /api/webhooks/{name}/retry-failed` for all of one webhook), which re-reads the rule's current URL,
-  method and headers. `webhooks.request_timeout_seconds` bounds the whole request. A timeout, or a
+  method and headers. The delivery routes are admin-only and cover the caller's own accounts: a
+  delivery carries its message, so another admin's are neither listed nor re-aimed at the caller's
+  URL by a retry. `webhooks.request_timeout_seconds` bounds the whole request. A timeout, or a
   crash after the receiver processed the request, is retried and can reach a receiver without its
   own de-duplication twice. A delivery whose worker died on its last attempt is failed, with the
   alert, by a periodic sweep.

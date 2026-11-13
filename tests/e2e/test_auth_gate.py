@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import uuid
 from typing import Any
 
@@ -153,6 +154,53 @@ class TestUsers:
         assert refused.status_code == 403
         assert refused.json() == {"detail": "user_disabled"}
         assert back.status_code == 200
+
+    def test_disabling_a_user_ends_their_open_event_stream(
+        self, app_client: TestClient, auth_issuer: TestIssuer,
+    ) -> None:
+        token = auth_issuer.mint(f"streaming-{uuid.uuid4()}")
+        user_id = app_client.get("/api/me", headers=bearer(token)).json()["user_id"]
+        opened = threading.Event()
+
+        async def hold_stream() -> str:
+            """GET /api/events as the user, through the whole app, until the
+            app itself ends the response (or 20 s pass)."""
+            received: list[str] = []
+            scope = {
+                "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+                "method": "GET", "scheme": "http", "path": "/api/events",
+                "raw_path": b"/api/events", "query_string": b"", "root_path": "",
+                "headers": [
+                    (b"host", b"testserver"), (b"authorization", f"Bearer {token}".encode()),
+                ],
+                "client": ("127.0.0.1", 50000), "server": ("testserver", 80),
+            }
+            never: asyncio.Event = asyncio.Event()
+
+            async def receive() -> dict[str, Any]:
+                await never.wait()
+                return {"type": "http.disconnect"}
+
+            async def send(message: dict[str, Any]) -> None:
+                if message["type"] == "http.response.body":
+                    received.append(message.get("body", b"").decode())
+                    if "event: connected" in "".join(received):
+                        opened.set()
+
+            async with asyncio.timeout(20):
+                await app_client.app(scope, receive, send)
+            return "".join(received)
+
+        stream = app_client.portal.start_task_soon(hold_stream)
+        try:
+            assert opened.wait(15), "the stream never opened"
+            disabled = app_client.patch(f"/api/admin/users/{user_id}", json={"disabled": True})
+            carried = stream.result(timeout=30)
+        finally:
+            app_client.patch(f"/api/admin/users/{user_id}", json={"disabled": False})
+
+        assert disabled.status_code == 200
+        assert "event: connected" in carried
 
     def test_the_owner_cannot_be_disabled_or_demoted(self, app_client: TestClient) -> None:
         for change in ({"disabled": True}, {"role": "user"}):

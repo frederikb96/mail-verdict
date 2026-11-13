@@ -289,8 +289,8 @@ async def _file_row(session: AsyncSession, order_id: uuid.UUID, created_at: date
         await session.execute(
             text(
                 "INSERT INTO order_files (order_id, filename, size_bytes, sha256, data, status, "
-                "created_at) VALUES (:order_id, 'scan.pdf', 3, 'abc', '\\x010203', 'attached', "
-                ":created_at) RETURNING id"
+                "created_at, user_id) SELECT :order_id, 'scan.pdf', 3, 'abc', '\\x010203', "
+                "'attached', :created_at, user_id FROM orders WHERE id = :order_id RETURNING id"
             ),
             {"order_id": order_id, "created_at": created_at},
         )

@@ -15,7 +15,9 @@ that prefix (an account that predates users) is shown as it is.
 Every change of ownership written here bumps ownership_generation() once its
 transaction commits, and calls each on_ownership_change() listener: an open
 live-update stream holds the accounts its user owned when it connected, and
-this is what tells it to look again (api/events.py).
+this is what tells it to look again (api/events.py). A change to a user's
+role or sign-in (user_changed_on_commit) bumps it too, since it changes what
+that user's stream may read, or whether it may stay open at all.
 """
 
 from __future__ import annotations
@@ -36,7 +38,8 @@ _HOOKED = "ownership_changed_on_commit"
 
 
 def ownership_generation() -> int:
-    """A number that changes whenever any account's owner has changed."""
+    """A number that changes whenever any account's owner, or any user's role
+    or sign-in, has changed."""
     return _generation
 
 
@@ -60,6 +63,12 @@ def _changed_on_commit(session: AsyncSession) -> None:
             listener()
 
     event.listen(session.sync_session, "after_commit", _bump, once=True)
+
+
+def user_changed_on_commit(session: AsyncSession) -> None:
+    """Bump the generation once this session's change to a user's role or
+    sign-in commits, so every open stream reads its user again."""
+    _changed_on_commit(session)
 
 
 def owned_account_name(user_id: uuid.UUID, display_name: str) -> str:

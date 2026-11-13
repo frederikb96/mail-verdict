@@ -35,6 +35,7 @@ from mail_verdict.auth.ownership import (
     owner_of_account,
     set_account_owner,
     set_dav_account_owner,
+    user_changed_on_commit,
 )
 from mail_verdict.auth.principal import OWNER_USER_ID, get_principal_resolver
 from mail_verdict.database.connection import get_db_connection
@@ -198,6 +199,7 @@ async def update_user(user_id: uuid.UUID, request: AdminUserUpdateRequest) -> Ad
             raise HTTPException(status_code=404, detail="User not found")
         for name, value in values.items():
             setattr(user, name, value)
+        user_changed_on_commit(session)
     resolver = get_principal_resolver()
     if resolver is not None:
         resolver.forget(user_id)
