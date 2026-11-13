@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import OrderJob, OrderMail
 from mail_verdict.orders import repository
@@ -89,7 +90,8 @@ async def test_dry_run_counts_without_creating_anything(migrated_db: DatabaseCon
         )
 
     result = await run_catch_up(
-        migrated_db, settings_service, account_id=account_id, days=7, dry_run=True,
+        migrated_db, settings_service, user_id=OWNER_USER_ID, account_id=account_id, days=7,
+        dry_run=True,
     )
 
     assert result.considered == 1
@@ -129,7 +131,8 @@ async def test_a_real_run_creates_jobs_oldest_first(migrated_db: DatabaseConnect
         )
 
     result = await run_catch_up(
-        migrated_db, settings_service, account_id=account_id, days=7, dry_run=False,
+        migrated_db, settings_service, user_id=OWNER_USER_ID, account_id=account_id, days=7,
+        dry_run=False,
     )
     assert result.considered == 3
     assert result.passed == 3
@@ -162,7 +165,7 @@ async def test_a_mail_removed_from_an_order_stays_out_even_once_the_window_widen
         # this mail once, attached it, and it then being removed by hand
         # (api/orders.py's detach_mail: the job row is left as-is on
         # purpose so a catch-up never reconsiders it).
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.enqueue_mail_job(
             session, account_id=account_id, msg_key=msg_key, message_id=mail_id,
             origin="live", priority=0, filter_reason="subject", next_attempt_at=old_enough,
@@ -183,7 +186,8 @@ async def test_a_mail_removed_from_an_order_stays_out_even_once_the_window_widen
 
     # A window wide enough to reach the mail, run for real this time.
     result = await run_catch_up(
-        migrated_db, settings_service, account_id=account_id, days=30, dry_run=False,
+        migrated_db, settings_service, user_id=OWNER_USER_ID, account_id=account_id, days=30,
+        dry_run=False,
     )
 
     assert result.considered == 1

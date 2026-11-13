@@ -43,6 +43,7 @@ import pytest
 from playwright.sync_api import Page, expect
 from sqlalchemy import select
 
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.config.loader import DatabaseConfig
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import OrderMail
@@ -84,7 +85,7 @@ async def _seed_order_async(
     await connection.init()
     try:
         async with connection.session() as session:
-            order_id = await orders_repo.create_order(session)
+            order_id = await orders_repo.create_order(session, user_id=OWNER_USER_ID)
             for mail in mails:
                 await orders_repo.attach_mail(
                     session, order_id=order_id, account_id=account_id, msg_key=mail["msg_key"],

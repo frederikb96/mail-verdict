@@ -194,7 +194,16 @@ class PipelineRunner:
                 "usage": None,
             }
 
-        settings_snapshot = self._settings.get_all()
+        async with self._db.session() as session:
+            owner = await owner_of_account(session, account_id)
+        if owner is None:
+            return {
+                "stage_id": stage_def.stage_id, "type": stage_def.type, "matched": False,
+                "detail": "skipped: account has no owner", "halt": False, "effects": [],
+                "applied": [], "usage": None,
+            }
+
+        settings_snapshot = self._settings_for(owner)
         retry_config = RetryConfig.from_settings(settings_snapshot.get("retry", {}))
         account_prefs = await self._account_prefs_repo.get_by_account(account_id)
 
@@ -211,7 +220,7 @@ class PipelineRunner:
             log=BoundLog(logger, run_id="dry-run-stage"),
             account_spam_enabled=bool(account_prefs and account_prefs.spam_enabled),
             account_orders_enabled=bool(account_prefs and account_prefs.orders_enabled),
-            orders=OrderLookup(self._db),
+            orders=OrderLookup(self._db, owner),
         )
 
         stage = build_stage(stage_def)
@@ -233,6 +242,13 @@ class PipelineRunner:
         # here alone should report the same halt value a real run would.
         outcome = replace(outcome, halt=(stage_def.halt and outcome.matched) or outcome.halt)
         return _trace_entry(stage_def, outcome, applied=applied)
+
+    def _settings_for(self, user_id: uuid.UUID) -> dict[str, dict[str, Any]]:
+        """Every category as the instance holds it, with the orders category
+        as `user_id` sees it: their own filter patterns and language."""
+        snapshot = self._settings.get_all()
+        snapshot["orders"] = self._settings.get_for_user("orders", user_id)
+        return snapshot
 
     def _pipeline_settings(self) -> dict[str, Any]:
         return self._settings.get("pipeline") if self._settings.has_category("pipeline") else {}
@@ -314,7 +330,7 @@ class PipelineRunner:
                 trace=(), model_calls=0,
             )
 
-        settings_snapshot = self._settings.get_all()
+        settings_snapshot = self._settings_for(owner)
         retry_config = RetryConfig.from_settings(settings_snapshot.get("retry", {}))
         account_prefs = await self._account_prefs_repo.get_by_account(account_id)
 
@@ -331,7 +347,7 @@ class PipelineRunner:
             log=BoundLog(logger, run_id=str(run_id)),
             account_spam_enabled=bool(account_prefs and account_prefs.spam_enabled),
             account_orders_enabled=bool(account_prefs and account_prefs.orders_enabled),
-            orders=OrderLookup(self._db),
+            orders=OrderLookup(self._db, owner),
         )
 
         trace: list[dict[str, Any]] = []

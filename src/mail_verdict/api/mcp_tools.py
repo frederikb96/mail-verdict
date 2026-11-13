@@ -2036,7 +2036,7 @@ async def list_orders(
     try:
         result = await _list_orders(
             state=state, before=None, limit=min(max(limit, 1), 500), favorites=False, q=None,
-            kind=kind, sort="activity",
+            kind=kind, sort="activity", scope=await current_scope(),
         )
     except HTTPException as exc:
         return [_endpoint_error(exc)]
@@ -2067,7 +2067,7 @@ async def get_order(order_id: str) -> dict[str, Any]:
         facts, mails and documents -- or {"error": ...}
     """
     try:
-        detail = await _get_order(order_id=uuid.UUID(order_id))
+        detail = await _get_order(order_id=uuid.UUID(order_id), scope=await current_scope())
     except HTTPException as exc:
         return _endpoint_error(exc)
     return detail.model_dump(mode="json")

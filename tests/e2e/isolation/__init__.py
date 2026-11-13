@@ -28,8 +28,9 @@ Route kinds and what is checked:
   and the body carries none of B's mail content (World.b_content).
 
 A case may need more than path parameters: `params` fills the path from the
-World, `query` and `body` build the rest. A write case must send a body that
-validates, or the request fails with 422 before the access check ever runs.
+World, `query`, `body` and `files` (a multipart upload) build the rest. A write
+case must send a body that validates, or the request fails with 422 before the
+access check ever runs.
 
 Tool kinds: `own` (A's call succeeds and shows nothing of B's) and
 `resource_id` (A's call naming B's data comes back an error, or without it).
@@ -106,6 +107,8 @@ class RouteCase:
     params: Callable[[World], dict[str, str]] | None = None
     query: Callable[[World], dict[str, str]] | None = None
     body: Callable[[World], Any] | None = None
+    # A multipart upload: field name -> (filename, bytes, content type).
+    files: Callable[[World], dict[str, tuple[str, bytes, str]]] | None = None
     # Admin routes only: statuses the owner may get instead of 2xx, for a
     # route whose success needs state the World lacks (a delivery to retry,
     # an encryption key). Anything but a refusal proves the gate let the

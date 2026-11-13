@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Order, OrderDocument, OrderFact, OrderFile, OrderMail
 from mail_verdict.orders import repository
@@ -37,7 +38,7 @@ async def _order_row(db: DatabaseConnection, order_id: uuid.UUID) -> Order:
 async def test_attach_recomputes_count_and_dates(migrated_db: DatabaseConnection) -> None:
     account_id = uuid.uuid4()
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.attach_mail(
             session, order_id=order_id, account_id=account_id, msg_key="<one@example.com>",
             message_id=None, thread_id=None, subject="s1", from_addr="a@b.com",
@@ -61,8 +62,8 @@ async def test_a_second_attach_of_the_same_account_and_msg_key_is_refused(
 ) -> None:
     account_id = uuid.uuid4()
     async with migrated_db.session() as session:
-        order_a = await repository.create_order(session)
-        order_b = await repository.create_order(session)
+        order_a = await repository.create_order(session, user_id=OWNER_USER_ID)
+        order_b = await repository.create_order(session, user_id=OWNER_USER_ID)
         first = await repository.attach_mail(
             session, order_id=order_a, account_id=account_id, msg_key="<dup@example.com>",
             message_id=None, thread_id=None, subject="s", from_addr="a@b.com",
@@ -90,7 +91,7 @@ async def test_detach_removes_the_row_and_leaves_the_order_findable(
 ) -> None:
     account_id = uuid.uuid4()
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.attach_mail(
             session, order_id=order_id, account_id=account_id, msg_key="<x@example.com>",
             message_id=None, thread_id=None, subject="s", from_addr="a@b.com",
@@ -111,7 +112,7 @@ async def test_detach_removes_the_row_and_leaves_the_order_findable(
 async def test_an_order_left_with_no_mail_is_deleted(migrated_db: DatabaseConnection) -> None:
     account_id = uuid.uuid4()
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.attach_mail(
             session, order_id=order_id, account_id=account_id, msg_key="<only@example.com>",
             message_id=None, thread_id=None, subject="s", from_addr="a@b.com",
@@ -137,8 +138,8 @@ async def test_merge_moves_every_mail_and_identifier_and_deletes_the_source(
 ) -> None:
     account_id = uuid.uuid4()
     async with migrated_db.session() as session:
-        source = await repository.create_order(session)
-        target = await repository.create_order(session)
+        source = await repository.create_order(session, user_id=OWNER_USER_ID)
+        target = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.attach_mail(
             session, order_id=source, account_id=account_id, msg_key="<m1@example.com>",
             message_id=None, thread_id=None, subject="s", from_addr="a@b.com",
@@ -172,7 +173,7 @@ async def test_delete_order_removes_it_but_never_touches_the_mail_row(
 ) -> None:
     account_id = uuid.uuid4()
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.attach_mail(
             session, order_id=order_id, account_id=account_id, msg_key="<d@example.com>",
             message_id=None, thread_id=None, subject="s", from_addr="a@b.com",
@@ -196,8 +197,8 @@ async def test_an_identifier_another_recently_active_order_holds_is_not_stored(
 ) -> None:
     account_id = uuid.uuid4()
     async with migrated_db.session() as session:
-        order_a = await repository.create_order(session)
-        order_b = await repository.create_order(session)
+        order_a = await repository.create_order(session, user_id=OWNER_USER_ID)
+        order_b = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.attach_mail(
             session, order_id=order_a, account_id=account_id, msg_key="<a@example.com>",
             message_id=None, thread_id=None, subject="s", from_addr="a@b.com",
@@ -234,7 +235,7 @@ async def test_enqueue_write_job_is_a_no_op_when_one_is_already_pending(
     from mail_verdict.database.models import OrderJob
 
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.enqueue_write_job(session, order_id, priority=50)
         await repository.enqueue_write_job(session, order_id, priority=10)
 
@@ -301,7 +302,7 @@ async def test_activity_covers_files_and_an_order_with_only_a_file_is_not_empty(
     migrated_db: DatabaseConnection,
 ) -> None:
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await _file_row(session, order_id, _NOW - timedelta(days=3))
         assert await repository.recompute_aggregates(session, order_id) == 1
         assert await repository.delete_order_if_empty(session, order_id) is False
@@ -325,7 +326,7 @@ async def test_detaching_a_mail_deletes_its_documents_and_code_facts(
 ) -> None:
     account_id = uuid.uuid4()
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         kept = await _attach_mail_with_pdf(session, order_id, account_id, "<keep@x.com>", _NOW)
         await _attach_mail_with_pdf(session, order_id, account_id, "<drop@x.com>", _NOW)
         drop_key = (
@@ -354,8 +355,8 @@ async def test_moving_a_mail_moves_its_documents_and_code_facts_with_it(
 ) -> None:
     account_id = uuid.uuid4()
     async with migrated_db.session() as session:
-        source = await repository.create_order(session)
-        target = await repository.create_order(session)
+        source = await repository.create_order(session, user_id=OWNER_USER_ID)
+        target = await repository.create_order(session, user_id=OWNER_USER_ID)
         document_id = await _attach_mail_with_pdf(session, source, account_id, "<mv@x.com>", _NOW)
         mail_key = (
             await session.execute(select(OrderMail.id).where(OrderMail.msg_key == "<mv@x.com>"))
@@ -382,8 +383,8 @@ async def test_merge_moves_documents_files_and_code_facts_and_drops_display_fact
 ) -> None:
     account_id = uuid.uuid4()
     async with migrated_db.session() as session:
-        source = await repository.create_order(session)
-        target = await repository.create_order(session)
+        source = await repository.create_order(session, user_id=OWNER_USER_ID)
+        target = await repository.create_order(session, user_id=OWNER_USER_ID)
         document_id = await _attach_mail_with_pdf(session, source, account_id, "<mg@x.com>", _NOW)
         file_id = await _file_row(session, source, _NOW)
         await session.execute(
@@ -417,7 +418,7 @@ async def test_deleting_an_order_removes_its_facts_documents_and_files(
     migrated_db: DatabaseConnection,
 ) -> None:
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         document_id = await _attach_mail_with_pdf(
             session, order_id, uuid.uuid4(), "<del@x.com>", _NOW,
         )
@@ -442,8 +443,8 @@ async def test_deleting_an_account_removes_its_mail_documents_and_keeps_a_file_o
 ) -> None:
     gone_account = uuid.uuid4()
     async with migrated_db.session() as session:
-        mixed = await repository.create_order(session)
-        only_mail = await repository.create_order(session)
+        mixed = await repository.create_order(session, user_id=OWNER_USER_ID)
+        only_mail = await repository.create_order(session, user_id=OWNER_USER_ID)
         await _attach_mail_with_pdf(session, mixed, gone_account, "<acct1@x.com>", _NOW)
         await _file_row(session, mixed, _NOW)
         await repository.recompute_aggregates(session, mixed)
@@ -467,7 +468,7 @@ async def test_a_user_set_kind_survives_and_a_model_kind_lands(
     migrated_db: DatabaseConnection,
 ) -> None:
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.write_order_text(
             session, order_id, merchant="m", subject="s", status="x", is_open=True,
             icon="train", summary="s", model="fake", kind="ticket",

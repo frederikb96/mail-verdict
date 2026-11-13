@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.orders import _load_detail
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.orders import repository
 
@@ -72,7 +73,7 @@ async def test_a_permanently_deleted_mail_stays_listed_marked_gone_others_stay_o
 ) -> None:
     async with migrated_db.session() as session:
         account_id, folder_id = await _seed_account_and_folder(session)
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
 
         gone_id, gone_key = await _seed_message(
             session, account_id=account_id, folder_id=folder_id,
@@ -98,7 +99,7 @@ async def test_a_permanently_deleted_mail_stays_listed_marked_gone_others_stay_o
         )
 
     async with migrated_db.session() as session:
-        detail = await _load_detail(session, order_id)
+        detail = await _load_detail(session, OWNER_USER_ID, order_id)
 
     assert detail is not None
     by_key = {m.message_id: m for m in detail.mails if m.message_id is not None}
@@ -117,7 +118,7 @@ async def test_documents_come_from_order_documents_and_link_to_the_attachment_wh
 ) -> None:
     async with migrated_db.session() as session:
         account_id, folder_id = await _seed_account_and_folder(session)
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         mail_id, msg_key = await _seed_message(
             session, account_id=account_id, folder_id=folder_id, subject="Ticket with attachments",
         )
@@ -163,7 +164,7 @@ async def test_documents_come_from_order_documents_and_link_to_the_attachment_wh
         )
 
     async with migrated_db.session() as session:
-        detail = await _load_detail(session, order_id)
+        detail = await _load_detail(session, OWNER_USER_ID, order_id)
 
     assert detail is not None
     assert [d.filename for d in detail.documents] == ["ticket.pdf"]
@@ -180,7 +181,7 @@ async def test_a_file_document_links_to_the_file_download_route(
     migrated_db: DatabaseConnection,
 ) -> None:
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         file_id = (
             await session.execute(
                 text(
@@ -206,7 +207,7 @@ async def test_a_file_document_links_to_the_file_download_route(
         )
 
     async with migrated_db.session() as session:
-        detail = await _load_detail(session, order_id)
+        detail = await _load_detail(session, OWNER_USER_ID, order_id)
 
     assert detail is not None
     assert detail.file_count == 1 and detail.mail_count == 0
@@ -219,7 +220,7 @@ async def test_facts_come_out_in_order_with_tracking_links_and_codes(
     migrated_db: DatabaseConnection,
 ) -> None:
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.store_identifier_facts(
             session, order_id, [("order_number", "NK-48213")],
         )
@@ -266,7 +267,7 @@ async def test_facts_come_out_in_order_with_tracking_links_and_codes(
         )
 
     async with migrated_db.session() as session:
-        detail = await _load_detail(session, order_id)
+        detail = await _load_detail(session, OWNER_USER_ID, order_id)
 
     assert detail is not None
     assert [(f.kind, f.label) for f in detail.facts] == [
@@ -295,7 +296,7 @@ async def test_an_empty_inline_image_is_not_listed_but_a_readable_one_and_every_
     migrated_db: DatabaseConnection,
 ) -> None:
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         account_id = uuid.uuid4()
         for filename, content_type, source, extracted, barcodes in (
             ("logo.png", "image/png", "mail", 0, []),
@@ -327,7 +328,7 @@ async def test_an_empty_inline_image_is_not_listed_but_a_readable_one_and_every_
         )
 
     async with migrated_db.session() as session:
-        detail = await _load_detail(session, order_id)
+        detail = await _load_detail(session, OWNER_USER_ID, order_id)
 
     assert detail is not None
     assert sorted(d.filename for d in detail.documents) == [

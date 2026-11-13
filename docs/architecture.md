@@ -446,6 +446,21 @@ The orders register (`orders/`, tables `orders`/`order_mails`/`order_facts`/`ord
 with an AI-written title and summary, across every account that has the feature switched on
 (`account_prefs.orders_enabled`).
 
+**An order belongs to one user.** The worker stamps `orders.user_id` with the owner of the mail's
+account, and an uploaded file carries its uploader in `order_files.user_id`. Candidate retrieval
+(`orders/candidates.py`), the thread and number lookups (`orders/lookup.py`) and number ownership
+(`orders/repository.py`) read only that user's orders, so two people's mail about one purchase
+makes two orders, each holding the number. The routes act for the caller alone — another user's
+order, file or account answers `404` (`403` for the account `catch-up` names) — and `order.updated`
+goes on the owner's ring key. The first filter patterns and the language are the owner's
+(`SettingsService.get_for_user`, handed to stages by the pipeline runner), and the hourly close
+judges each user's open orders by their own `auto_close_*`. The advisory lock stays one global key.
+Giving an account to another user (`PUT /admin/accounts/{id}/owner`) calls
+`orders/ownership.py`'s `reassign_account`: an order made of nothing but that account's mail, with
+no file, moves to the new owner whole; in any other order only that account's mail and its
+documents are removed (an order left empty is deleted, the rest is rewritten), and the account's
+finished jobs go so the new owner's catch-up can read that mail again.
+
 **Kind, event date and activity.** `orders.kind` is `ticket` (somewhere to be on a date), `order`
 (goods or a one-off service handed over) or `other` (subscriptions, claims, service cases), written
 by the write call and overridable by a person (`kind_set_by`, the same pattern as `open_set_by`: a

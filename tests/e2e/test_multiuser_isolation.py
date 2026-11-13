@@ -393,6 +393,8 @@ def test_route(app_client: TestClient, world: World, case: RouteCase) -> None:
         kwargs["params"] = case.query(world)
     if case.body:
         kwargs["json"] = case.body(world)
+    if case.files:
+        kwargs["files"] = case.files(world)
 
     def call(headers: dict[str, str]) -> Any:
         return app_client.request(method, path, headers=headers, **kwargs)

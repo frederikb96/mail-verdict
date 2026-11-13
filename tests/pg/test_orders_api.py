@@ -19,9 +19,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from mail_verdict.api.orders import router
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import OrderMail
 from mail_verdict.orders import repository
+from tests.helpers.auth import act_as, owner_scope
 
 _NOW = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -35,6 +37,7 @@ def client() -> Iterator[TestClient]:
     different loop' the moment a second call touches the database."""
     app = FastAPI()
     app.include_router(router)
+    act_as(app, owner_scope())
     with TestClient(app) as c:
         yield c
 
@@ -65,7 +68,7 @@ async def _attach(
 
 async def _seed_order(migrated_db: DatabaseConnection) -> uuid.UUID:
     async with migrated_db.session() as session:
-        return await repository.create_order(session)
+        return await repository.create_order(session, user_id=OWNER_USER_ID)
 
 
 class TestDetachAnswersTheDocumentedStatus:
@@ -129,7 +132,7 @@ async def _seed_written(
 ) -> uuid.UUID:
     """A written order with one mail, as the write call would leave it."""
     async with migrated_db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.attach_mail(
             session, order_id=order_id, account_id=uuid.uuid4(),
             msg_key=f"<{uuid.uuid4()}@example.com>", message_id=None, thread_id=None,

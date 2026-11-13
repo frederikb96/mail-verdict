@@ -62,6 +62,10 @@ async def _seed_account_and_folder(session: AsyncSession) -> tuple[uuid.UUID, uu
         text("INSERT INTO account_prefs (account_id, orders_enabled) VALUES (:id, true)"),
         {"id": account_id},
     )
+    await session.execute(
+        text("INSERT INTO account_owners (account_id, user_id) VALUES (:id, :owner)"),
+        {"id": account_id, "owner": OWNER_USER_ID},
+    )
     return account_id, folder_id
 
 

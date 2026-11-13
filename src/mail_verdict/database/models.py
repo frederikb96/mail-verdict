@@ -2271,12 +2271,16 @@ class OrderFile(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
     )
+    # Who added the file. A file with no entry yet belongs to its uploader
+    # alone; once placed, it sits in an entry of the same user.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
             "status IN ('pending', 'attached', 'failed')", name="ck_order_files_status",
         ),
         Index("idx_order_files_order", "order_id"),
+        Index("ix_order_files_user_id", "user_id"),
     )
 
 

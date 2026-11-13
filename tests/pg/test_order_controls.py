@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text, update
 
 from mail_verdict.api.orders import router
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Order, OrderFact, OrderJob, OrderMail
 from mail_verdict.orders import repository
@@ -34,6 +35,7 @@ from mail_verdict.orders.lookup import OrderLookup
 from mail_verdict.orders.worker import _handle_mail_job
 from mail_verdict.postimap.listener import PostimapEvent
 from mail_verdict.settings.credentials import ProviderCredentialRepository
+from tests.helpers.auth import act_as, owner_scope
 from tests.pg.test_orders_worker import (
     _enqueue_mail_job,
     _seed_account,
@@ -54,7 +56,7 @@ async def _written_order(
 ) -> uuid.UUID:
     """An order with one mail and a written text, the shape the list shows."""
     async with db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.attach_mail(
             session, order_id=order_id, account_id=account_id or uuid.uuid4(),
             msg_key=f"<{uuid.uuid4()}@example.com>", message_id=None, thread_id=thread_id,
@@ -81,6 +83,7 @@ async def _order(db: DatabaseConnection, order_id: uuid.UUID) -> Order:
 def client() -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(router)
+    act_as(app, owner_scope())
     with TestClient(app) as c:
         yield c
 
@@ -252,7 +255,7 @@ class TestSealedOrdersAreInvisibleToTheAgent:
         async def candidates() -> list[uuid.UUID]:
             async with migrated_db.session() as session:
                 found = await find_candidates(
-                    session, account_id=account_id, thread_id=thread_id,
+                    session, user_id=OWNER_USER_ID, account_id=account_id, thread_id=thread_id,
                     subject=f"Order {number}", from_addr="shop@example.com",
                     haystack_raw=f"Order {number}",
                 )
@@ -274,7 +277,7 @@ class TestSealedOrdersAreInvisibleToTheAgent:
             migrated_db, account_id=account_id, thread_id=thread_id,
             identifiers=(("order_number", number),),
         )
-        lookup = OrderLookup(migrated_db)
+        lookup = OrderLookup(migrated_db, OWNER_USER_ID)
         assert await lookup.known(account_id=account_id, thread_id=thread_id, text="x") == "thread"
         assert (
             await lookup.known(account_id=account_id, thread_id=None, text=f"Order {number}")
@@ -441,7 +444,9 @@ class TestAutoClose:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         settings_service = await _settings_service(migrated_db)
-        await settings_service.update("orders", {"auto_close_grace_days": 0})
+        await settings_service.update_for_user(
+            "orders", OWNER_USER_ID, {"auto_close_grace_days": 0}, is_admin=True,
+        )
         try:
             today = datetime.now(timezone.utc).date()
             passed = await _written_order(
@@ -454,12 +459,16 @@ class TestAutoClose:
             assert (await _order(migrated_db, passed)).is_open is False
             assert (await _order(migrated_db, upcoming)).is_open is True
         finally:
-            await settings_service.update("orders", {"auto_close_grace_days": 7})
+            await settings_service.update_for_user(
+                "orders", OWNER_USER_ID, {"auto_close_grace_days": 7}, is_admin=True,
+            )
 
     @pytest.mark.asyncio
     async def test_zero_days_turns_the_close_off(self, migrated_db: DatabaseConnection) -> None:
         settings_service = await _settings_service(migrated_db)
-        await settings_service.update("orders", {"auto_close_days": 0})
+        await settings_service.update_for_user(
+            "orders", OWNER_USER_ID, {"auto_close_days": 0}, is_admin=True,
+        )
         try:
             undated = await _written_order(migrated_db, last_mail_age_days=400)
             dated = await _written_order(
@@ -470,7 +479,9 @@ class TestAutoClose:
             assert (await _order(migrated_db, undated)).is_open is True
             assert (await _order(migrated_db, dated)).is_open is True
         finally:
-            await settings_service.update("orders", {"auto_close_days": 30})
+            await settings_service.update_for_user(
+                "orders", OWNER_USER_ID, {"auto_close_days": 30}, is_admin=True,
+            )
 
     @pytest.mark.asyncio
     async def test_a_reopened_order_stays_open_until_the_next_mail(
@@ -493,7 +504,7 @@ async def _delete_fixture(db: DatabaseConnection) -> tuple[uuid.UUID, uuid.UUID,
     account_id = uuid.uuid4()
     msg_key = f"<{uuid.uuid4()}@example.com>"
     async with db.session() as session:
-        order_id = await repository.create_order(session)
+        order_id = await repository.create_order(session, user_id=OWNER_USER_ID)
         await repository.attach_mail(
             session, order_id=order_id, account_id=account_id, msg_key=msg_key, message_id=None,
             thread_id=None, subject="s", from_addr="a@b.com", received_at=_NOW, attached_by="ai",

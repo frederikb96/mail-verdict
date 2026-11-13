@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from mail_verdict.api.deps import require_admin
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.auth.ownership import (
     account_display_name,
     owned_account_name,
@@ -42,6 +43,8 @@ from mail_verdict.database.models import (
     User,
     UserIdentity,
 )
+from mail_verdict.orders.announce import announce_changes
+from mail_verdict.orders.ownership import reassign_account
 from mail_verdict.postimap.actions import update_account, update_dav_account
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -246,7 +249,7 @@ async def set_owner(
 ) -> AdminAccountResponse:
     """Give a mail account to another user. Its stored name moves into the
     new owner's namespace in the same transaction; 409 if they already have
-    an account by that name."""
+    an account by that name. Its orders follow (orders/ownership.py)."""
     new_owner = request.user_id
     try:
         async with get_db_connection().session() as session:
@@ -258,6 +261,7 @@ async def set_owner(
             name = owned_account_name(new_owner, account_display_name(account.name))
             await update_account(session, account_id, name=name)
             await set_account_owner(session, account_id, new_owner)
+            order_changes = await reassign_account(session, account_id, new_owner)
             response = AdminAccountResponse(
                 id=account_id, name=account_display_name(name), owner_user_id=new_owner,
                 is_active=account.is_active, state=account.state,
@@ -266,6 +270,7 @@ async def set_owner(
         raise HTTPException(
             status_code=409, detail="that user already has an account by this name",
         ) from exc
+    await announce_changes(get_event_ring(), order_changes)
     return response
 
 
