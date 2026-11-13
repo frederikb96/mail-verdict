@@ -20,8 +20,9 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.image_exceptions import is_sender_image_allowed
 from mail_verdict.api.schemas import (
     ContactAddressIO,
@@ -38,6 +39,7 @@ from mail_verdict.api.schemas import (
     ContactSearchHitOut,
     ContactUpdateRequest,
 )
+from mail_verdict.auth.scope import Scope
 from mail_verdict.calendar import vcard
 from mail_verdict.calendar.repository import CollectionRepository, DavObjectRepository
 from mail_verdict.database.connection import get_db_connection
@@ -147,6 +149,7 @@ async def list_contacts(
     group: str | None = None,
     limit: int = Query(default=_DEFAULT_PAGE_SIZE, ge=1, le=200),
     cursor: str | None = None,
+    scope: Scope = Depends(current_scope),
 ) -> ContactListResponse:
     """List contacts, paged -- never an unpaged fetch, an address book can
     hold thousands of rows.
@@ -179,7 +182,9 @@ async def list_contacts(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid group") from exc
         card = await repo.get_by_id(card_id)
-        if card is None or card.deleted_at is not None:
+        if card is None or card.deleted_at is not None or not scope.owns_dav_account(
+            card.account_id
+        ):
             return ContactListResponse(contacts=[], has_more=False, next_cursor=None)
         uid_in = vcard.detect_group_members(card.data)
         if not uid_in:
@@ -196,7 +201,8 @@ async def list_contacts(
     has_more = False
     while len(parsed_rows) < limit:
         rows, has_more = await repo.search_contacts(
-            addressbook_ids, q, limit=limit - len(parsed_rows), offset=scanned, uid_in=uid_in,
+            addressbook_ids, q, scope, limit=limit - len(parsed_rows), offset=scanned,
+            uid_in=uid_in,
         )
         if not rows:
             break
@@ -223,12 +229,14 @@ async def list_contacts(
 
 
 @router.get("/search", response_model=list[ContactSearchHitOut])
-async def search_contacts(q: str = Query(min_length=1)) -> list[ContactSearchHitOut]:
+async def search_contacts(
+    q: str = Query(min_length=1), scope: Scope = Depends(current_scope),
+) -> list[ContactSearchHitOut]:
     """One row per email address -- a contact with three addresses is
     three choices in the compose autocomplete."""
     await _require_support()
     repo = DavObjectRepository(get_db_connection())
-    hits = await repo.search_email_hits(q, limit=20)
+    hits = await repo.search_email_hits(q, scope, limit=20)
     results: list[ContactSearchHitOut] = []
     for obj in hits:
         parsed = vcard.parse_contact(obj.data, decode_photo=False)
@@ -242,13 +250,15 @@ async def search_contacts(q: str = Query(min_length=1)) -> list[ContactSearchHit
 
 
 @router.get("/resolve", response_model=ContactResponse | None)
-async def resolve_contact_by_email(email: str = Query(min_length=1)) -> ContactResponse | None:
+async def resolve_contact_by_email(
+    email: str = Query(min_length=1), scope: Scope = Depends(current_scope),
+) -> ContactResponse | None:
     """The one contact carrying this address, or none -- what a sender's
     avatar/name lookup resolves against. `None` (204-less null body) is
     the ordinary "no match" outcome, not an error."""
     await _require_support()
     repo = DavObjectRepository(get_db_connection())
-    obj = await repo.find_by_email(email)
+    obj = await repo.find_by_email(email, scope)
     if obj is None:
         return None
     return await _to_response(obj)
@@ -396,6 +406,7 @@ async def _scan_groups(
 @router.get("/groups", response_model=ContactGroupsResponse)
 async def get_contact_groups(
     addressbook_id: uuid.UUID | None = Query(default=None),
+    scope: Scope = Depends(current_scope),
 ) -> ContactGroupsResponse:
     """Every group an address book's own contacts are actually in, for
     the groups filter beside the address-book filter -- an address book
@@ -411,7 +422,7 @@ async def get_contact_groups(
     await _require_support()
     repo = DavObjectRepository(get_db_connection())
     addressbook_ids = [addressbook_id] if addressbook_id is not None else None
-    rows = await repo.list_group_scan_rows(addressbook_ids)
+    rows = await repo.list_group_scan_rows(addressbook_ids, scope)
     categories, group_cards, partial = await _scan_groups(rows)
     groups = [
         ContactGroupOut(id=f"category:{name}", name=name, kind="category", count=count)
@@ -454,6 +465,7 @@ async def _parse_page(
 @router.get("/photo-index", response_model=ContactPhotoIndexResponse)
 async def get_photo_index(
     account_id: uuid.UUID | None = Query(default=None),
+    scope: Scope = Depends(current_scope),
 ) -> ContactPhotoIndexResponse:
     """
     The whole address book's sender-avatar photos, by lower-cased email
@@ -483,8 +495,10 @@ async def get_photo_index(
     photos were never looked at.
     """
     await _require_support()
+    if account_id is not None:
+        scope.require_account(account_id)
     repo = DavObjectRepository(get_db_connection())
-    rows = await repo.list_photo_scan_rows()
+    rows = await repo.list_photo_scan_rows(scope)
     by_email, url_candidates, partial = await _scan_photos(rows)
     if account_id is not None:
         for contact_id, url, emails in url_candidates:
@@ -496,7 +510,9 @@ async def get_photo_index(
 
 
 @router.get("/{contact_id}/photo")
-async def get_contact_photo(contact_id: uuid.UUID) -> Response:
+async def get_contact_photo(
+    contact_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> Response:
     """Stream an embedded contact photo's decoded bytes -- what the
     photo index's `photo_url` points to for a `kind="embedded"` entry,
     and what every other contact response's own `photo.url` now points
@@ -511,6 +527,7 @@ async def get_contact_photo(contact_id: uuid.UUID) -> Response:
     obj = await repo.get_by_id(contact_id)
     if obj is None or obj.deleted_at is not None or obj.kind != "addressbook":
         raise HTTPException(status_code=404, detail="Contact not found")
+    scope.require_dav_account(obj.account_id)
     decoded = vcard.extract_photo_bytes(obj.data)
     if decoded is None:
         raise HTTPException(status_code=404, detail="Contact has no embedded photo")
@@ -523,18 +540,23 @@ async def get_contact_photo(contact_id: uuid.UUID) -> Response:
 
 
 @router.get("/{contact_id}", response_model=ContactResponse)
-async def get_contact(contact_id: uuid.UUID) -> ContactResponse:
+async def get_contact(
+    contact_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> ContactResponse:
     """Structured detail, parsed server-side from the vCard body."""
     await _require_support()
     repo = DavObjectRepository(get_db_connection())
     obj = await repo.get_by_id(contact_id)
     if obj is None or obj.deleted_at is not None or obj.kind != "addressbook":
         raise HTTPException(status_code=404, detail="Contact not found")
+    scope.require_dav_account(obj.account_id)
     return await _to_response(obj)
 
 
 @router.post("", response_model=ContactResponse, status_code=201)
-async def create_contact(request: ContactCreateRequest) -> ContactResponse:
+async def create_contact(
+    request: ContactCreateRequest, scope: Scope = Depends(current_scope),
+) -> ContactResponse:
     """Create a contact in an address book."""
     await _require_support()
     db = get_db_connection()
@@ -542,6 +564,7 @@ async def create_contact(request: ContactCreateRequest) -> ContactResponse:
     collection = await collection_repo.get_by_id(request.addressbook_id)
     if collection is None or collection.kind != "addressbook":
         raise HTTPException(status_code=404, detail="Address book not found")
+    scope.require_dav_account(collection.account_id)
 
     data = vcard.build_contact(
         summary=request.summary,
@@ -565,7 +588,9 @@ async def create_contact(request: ContactCreateRequest) -> ContactResponse:
 
 
 @router.patch("/{contact_id}", response_model=ContactResponse)
-async def update_contact(contact_id: uuid.UUID, request: ContactUpdateRequest) -> ContactResponse:
+async def update_contact(
+    contact_id: uuid.UUID, request: ContactUpdateRequest, scope: Scope = Depends(current_scope),
+) -> ContactResponse:
     """Edit a contact -- every field given is a full replacement of that
     property (e.g. the whole email list), matching what the UI sends."""
     await _require_support()
@@ -574,6 +599,7 @@ async def update_contact(contact_id: uuid.UUID, request: ContactUpdateRequest) -
     obj = await repo.get_by_id(contact_id)
     if obj is None or obj.deleted_at is not None or obj.kind != "addressbook":
         raise HTTPException(status_code=404, detail="Contact not found")
+    scope.require_dav_account(obj.account_id)
 
     values = request.model_dump(exclude_unset=True)
     emails = None
@@ -613,7 +639,7 @@ async def update_contact(contact_id: uuid.UUID, request: ContactUpdateRequest) -
 
 
 @router.delete("/{contact_id}", status_code=204)
-async def delete_contact(contact_id: uuid.UUID) -> None:
+async def delete_contact(contact_id: uuid.UUID, scope: Scope = Depends(current_scope)) -> None:
     """Delete a contact."""
     await _require_support()
     db = get_db_connection()
@@ -621,5 +647,6 @@ async def delete_contact(contact_id: uuid.UUID) -> None:
     obj = await repo.get_by_id(contact_id)
     if obj is None or obj.deleted_at is not None or obj.kind != "addressbook":
         raise HTTPException(status_code=404, detail="Contact not found")
+    scope.require_dav_account(obj.account_id)
     async with db.session() as session:
         await delete_object(session, contact_id)

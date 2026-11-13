@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import case, select
 
+from mail_verdict.auth.scope import Scope
 from mail_verdict.calendar import ical
 from mail_verdict.database.models import Attachment, Identity, Message
 from mail_verdict.database.msg_key import compute_msg_key
@@ -179,8 +180,16 @@ class CalendarIntakeHandler:
     async def decide(
         self, account_id: uuid.UUID, message: Message, invitation: ical.ParsedInvitation,
     ) -> IntakeDecision:
-        """What this invitation resolves to, right now -- no writes."""
-        existing = await self._object_repo.find_by_uid_reachable(invitation.master.uid, account_id)
+        """What this invitation resolves to, right now -- no writes.
+
+        Everything is resolved as the mail account's owner: only objects,
+        calendars and DAV accounts that user owns are ever found, so an
+        invitation can never reach into another user's calendar -- and an
+        account nobody owns finds nothing at all."""
+        scope = await Scope.for_account_owner(self._db, account_id)
+        existing = await self._object_repo.find_by_uid_reachable(
+            invitation.master.uid, account_id, scope,
+        )
 
         if invitation.method == "CANCEL":
             if existing is None:
@@ -240,7 +249,7 @@ class CalendarIntakeHandler:
         if identity is None:
             return IntakeDecision(status="unlinked", reason="no identity was among the attendees")
 
-        collection_id = await self._prefs_repo.get_intake_collection_id(identity.id)
+        collection_id = await self._prefs_repo.get_intake_collection_id(identity.id, scope)
         if collection_id is None:
             return IntakeDecision(
                 status="unlinked", identity=identity,

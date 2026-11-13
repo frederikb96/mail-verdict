@@ -198,6 +198,9 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
   RSVPs and per-occurrence editing, and address books with compose autocomplete.
 - An emailed invitation is parsed and offered for import on its own, and a reply goes back over
   the identity's own outbox rather than the server's scheduling engine.
+- Every user sees only the CalDAV and CardDAV accounts they added: their calendars, events,
+  address books and contacts, and an identity-to-calendar mapping of their own. An invitation
+  that arrives in someone's mailbox is imported only into that user's calendars.
 - An event can carry any number of reminders and say whether it makes you free or busy. A
   calendar's own default reminder can override or switch off the global one.
 - Dates and times are entered and shown day-first in a 24-hour clock, in an app-owned control

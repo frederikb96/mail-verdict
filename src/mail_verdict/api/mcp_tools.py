@@ -76,6 +76,7 @@ from mail_verdict.api.contacts import (
 from mail_verdict.api.contacts import (
     update_contact as _update_contact,
 )
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.identities import resolve_send_from_addr
 from mail_verdict.api.mails import _announce_glacier_change
 from mail_verdict.api.mails import get_message_quote as _get_message_quote
@@ -1389,7 +1390,7 @@ async def list_calendars() -> list[dict[str, Any]] | dict[str, Any]:
         total_count -- or {"error": ...} if calendars are unsupported
     """
     try:
-        calendars = await _list_calendars()
+        calendars = await _list_calendars(await current_scope())
     except HTTPException as exc:
         return _endpoint_error(exc)
     return [c.model_dump(mode="json") for c in calendars]
@@ -1422,7 +1423,9 @@ async def list_events(
         {"error": ...} on an invalid month or an unsupported server
     """
     try:
-        result = await _list_calendar_events(month, calendar_ids)
+        result = await _list_calendar_events(
+            month, calendar_ids, scope=await current_scope(),
+        )
     except HTTPException as exc:
         return _endpoint_error(exc)
     return [e.model_dump(mode="json") for e in result.events]
@@ -1453,7 +1456,9 @@ async def get_event(event_id: str, recurrence_id: str | None = None) -> dict[str
         is_recurring/is_exception, and read_only -- or {"error": ...}
     """
     try:
-        instance = await _get_calendar_event(uuid.UUID(event_id), recurrence_id)
+        instance = await _get_calendar_event(
+            uuid.UUID(event_id), recurrence_id, await current_scope(),
+        )
     except HTTPException as exc:
         return _endpoint_error(exc)
     return instance.model_dump(mode="json")
@@ -1540,7 +1545,7 @@ async def create_event(
         transparency=transparency,  # type: ignore[arg-type]
     )
     try:
-        instance = await _create_calendar_event(request)
+        instance = await _create_calendar_event(request, await current_scope())
     except HTTPException as exc:
         return _endpoint_error(exc)
     return instance.model_dump(mode="json")
@@ -1610,7 +1615,9 @@ async def update_event(
         transparency=transparency,  # type: ignore[arg-type]
     )
     try:
-        instance = await _update_calendar_event(uuid.UUID(event_id), request)
+        instance = await _update_calendar_event(
+            uuid.UUID(event_id), request, await current_scope(),
+        )
     except HTTPException as exc:
         return _endpoint_error(exc)
     return instance.model_dump(mode="json")
@@ -1650,7 +1657,7 @@ async def delete_event(
         else None
     )
     try:
-        await _delete_calendar_event(uuid.UUID(event_id), request)
+        await _delete_calendar_event(uuid.UUID(event_id), request, await current_scope())
     except HTTPException as exc:
         return {"success": False, **_endpoint_error(exc)}
     return {"success": True}
@@ -1694,7 +1701,9 @@ async def respond_to_event(
         comment=comment, recurrence_id=recurrence_id,
     )
     try:
-        instance = await _respond_to_calendar_event(uuid.UUID(event_id), request)
+        instance = await _respond_to_calendar_event(
+            uuid.UUID(event_id), request, await current_scope(),
+        )
     except HTTPException as exc:
         return _endpoint_error(exc)
     return instance.model_dump(mode="json")
@@ -1719,7 +1728,7 @@ async def list_addressbooks() -> list[dict[str, Any]] | dict[str, Any]:
         read_only, total_count -- or {"error": ...} if unsupported
     """
     try:
-        addressbooks = await _list_addressbooks()
+        addressbooks = await _list_addressbooks(await current_scope())
     except HTTPException as exc:
         return _endpoint_error(exc)
     return [a.model_dump(mode="json") for a in addressbooks]
@@ -1754,7 +1763,7 @@ async def list_contacts(
     try:
         result = await _list_contacts(
             addressbook_id=uuid.UUID(addressbook_id) if addressbook_id else None,
-            q=q, limit=min(limit, 200), cursor=None,
+            q=q, limit=min(limit, 200), cursor=None, scope=await current_scope(),
         )
     except HTTPException as exc:
         return _endpoint_error(exc)
@@ -1783,7 +1792,7 @@ async def search_contacts(q: str) -> list[dict[str, Any]] | dict[str, Any]:
         List of {contact_id, name, email, source}, or {"error": ...}
     """
     try:
-        hits = await _search_contacts(q)
+        hits = await _search_contacts(q, await current_scope())
     except HTTPException as exc:
         return _endpoint_error(exc)
     return [h.model_dump(mode="json") for h in hits]
@@ -1812,7 +1821,7 @@ async def get_contact(contact_id: str) -> dict[str, Any]:
         if not found
     """
     try:
-        contact = await _get_contact(uuid.UUID(contact_id))
+        contact = await _get_contact(uuid.UUID(contact_id), await current_scope())
     except HTTPException as exc:
         return _endpoint_error(exc)
     return contact.model_dump(mode="json")
@@ -1879,7 +1888,7 @@ async def create_contact(
         birthday=birthday, urls=urls or [], notes=notes, categories=categories or [],
     )
     try:
-        contact = await _create_contact(request)
+        contact = await _create_contact(request, await current_scope())
     except HTTPException as exc:
         return _endpoint_error(exc)
     return contact.model_dump(mode="json")
@@ -1956,7 +1965,9 @@ async def update_contact(
         fields["categories"] = categories
     request = ContactUpdateRequest(**fields)
     try:
-        contact = await _update_contact(uuid.UUID(contact_id), request)
+        contact = await _update_contact(
+            uuid.UUID(contact_id), request, await current_scope(),
+        )
     except HTTPException as exc:
         return _endpoint_error(exc)
     return contact.model_dump(mode="json")
@@ -1983,7 +1994,7 @@ async def delete_contact(contact_id: str) -> dict[str, Any]:
         {"success": bool, "error": str} on failure
     """
     try:
-        await _delete_contact(uuid.UUID(contact_id))
+        await _delete_contact(uuid.UUID(contact_id), await current_scope())
     except HTTPException as exc:
         return {"success": False, **_endpoint_error(exc)}
     return {"success": True}

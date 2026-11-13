@@ -19,16 +19,18 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
 from mail_verdict.api.calendar_events import resolve_own_reply
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.schemas import (
     EventAttendeeOut,
     EventOrganizerOut,
     ImportInvitationRequest,
     InvitationResponse,
 )
+from mail_verdict.auth.scope import Scope
 from mail_verdict.calendar import ical
 from mail_verdict.calendar.intake import CalendarIntakeHandler
 from mail_verdict.calendar.repository import (
@@ -72,13 +74,15 @@ def _handler() -> CalendarIntakeHandler:
     )
 
 
-async def _load_message(message_id: uuid.UUID) -> Message:
+async def _load_message(message_id: uuid.UUID, scope: Scope) -> Message:
+    """The message, once it is known to be in one of the caller's mail accounts."""
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(select(Message).where(Message.id == message_id))
         message = result.scalar_one_or_none()
     if message is None:
         raise HTTPException(status_code=404, detail="Message not found")
+    scope.require_account(message.account_id)
     return message
 
 
@@ -107,7 +111,7 @@ async def _calendar_name(collection_id: uuid.UUID | None) -> str | None:
 
 
 async def _build_response(
-    message: Message, invitation: ical.ParsedInvitation,
+    message: Message, invitation: ical.ParsedInvitation, scope: Scope,
 ) -> InvitationResponse:
     db = get_db_connection()
     handler = _handler()
@@ -150,7 +154,7 @@ async def _build_response(
             # invitation whose UID actually collides with an object POST
             # would go on to silently update instead of the one the
             # person just chose -- describe what POST will actually do.
-            unscoped_existing = await object_repo.find_by_uid_anywhere(invitation.master.uid)
+            unscoped_existing = await object_repo.find_by_uid_in_scope(invitation.master.uid, scope)
             if unscoped_existing is not None:
                 status = "pending_review"
                 collection_id = unscoped_existing.collection_id
@@ -217,18 +221,21 @@ async def _build_response(
 
 
 @router.get("/{message_id}", response_model=InvitationResponse)
-async def get_invitation(message_id: uuid.UUID) -> InvitationResponse:
+async def get_invitation(
+    message_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> InvitationResponse:
     """The parsed invitation, its intake status, and the calendar it
     ended up in (or would, or did before something went wrong)."""
     await _require_support()
-    message = await _load_message(message_id)
+    message = await _load_message(message_id, scope)
     _data, invitation = await _parsed_invitation(message)
-    return await _build_response(message, invitation)
+    return await _build_response(message, invitation, scope)
 
 
 @router.post("/{message_id}/import", response_model=InvitationResponse)
 async def import_invitation(
     message_id: uuid.UUID, request: ImportInvitationRequest,
+    scope: Scope = Depends(current_scope),
 ) -> InvitationResponse:
     """
     Import a genuinely new invitation the listener left unlinked, retry
@@ -249,7 +256,7 @@ async def import_invitation(
     cancel.
     """
     await _require_support()
-    message = await _load_message(message_id)
+    message = await _load_message(message_id, scope)
     data, invitation = await _parsed_invitation(message)
 
     # A CANCEL never introduces a recurrence rule -- mark_cancelled()
@@ -272,7 +279,7 @@ async def import_invitation(
     db = get_db_connection()
     collection_repo = CollectionRepository(db)
     object_repo = DavObjectRepository(db)
-    existing = await object_repo.find_by_uid_anywhere(invitation.master.uid)
+    existing = await object_repo.find_by_uid_in_scope(invitation.master.uid, scope)
 
     if existing is not None:
         target_collection = await collection_repo.get_by_id(existing.collection_id)
@@ -306,6 +313,7 @@ async def import_invitation(
         collection = await collection_repo.get_by_id(request.calendar_id)
         if collection is None or collection.deleted_at is not None or collection.kind != "calendar":
             raise HTTPException(status_code=404, detail="Calendar not found")
+        scope.require_dav_account(collection.account_id)
         if collection.read_only:
             raise HTTPException(status_code=400, detail="This calendar is read-only")
         fixed = ical.set_schedule_agent_client_on_organizer(ical.strip_method(data))
@@ -353,4 +361,4 @@ async def import_invitation(
             target_collection_id, identity_id=identity.id, intake=True,
         )
 
-    return await _build_response(message, invitation)
+    return await _build_response(message, invitation, scope)

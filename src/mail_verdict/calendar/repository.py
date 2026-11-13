@@ -33,7 +33,20 @@ from mail_verdict.database.models import (
 )
 
 if TYPE_CHECKING:
+    from mail_verdict.auth.scope import Scope
     from mail_verdict.database.connection import DatabaseConnection
+
+
+async def get_identity_in_scope(
+    db: DatabaseConnection, scope: Scope, identity_id: uuid.UUID,
+) -> Identity | None:
+    """An identity by id: None when it does not exist, ScopeDenied (403)
+    when it belongs to a mail account the caller does not own."""
+    async with db.session() as session:
+        identity = await session.scalar(select(Identity).where(Identity.id == identity_id))
+    if identity is not None:
+        scope.require_account(identity.account_id)
+    return identity
 
 
 class DavAccountRepository:
@@ -43,9 +56,14 @@ class DavAccountRepository:
     def __init__(self, db: DatabaseConnection) -> None:
         self._db = db
 
-    async def list_all(self) -> list[DavAccount]:
+    async def list_owned(self, scope: Scope) -> list[DavAccount]:
+        """The caller's own DAV accounts."""
         async with self._db.session() as session:
-            result = await session.execute(select(DavAccount).order_by(DavAccount.name))
+            result = await session.execute(
+                select(DavAccount)
+                .where(scope.dav_account_filter(DavAccount.id))
+                .order_by(DavAccount.name)
+            )
             return list(result.scalars().all())
 
     async def get_by_id(self, dav_account_id: uuid.UUID) -> DavAccount | None:
@@ -112,15 +130,20 @@ class CollectionRepository:
             return result.scalar_one_or_none()
 
     async def list_by_kind(
-        self, kind: str, session: AsyncSession | None = None,
+        self, kind: str, scope: Scope, session: AsyncSession | None = None,
     ) -> list[tuple[DavCollection, DavAccount]]:
-        """Every non-deleted collection of one kind, joined to its DAV
-        account for the *_name fields the API responses carry."""
+        """Every non-deleted collection of one kind in the caller's DAV
+        accounts, joined to its DAV account for the *_name fields the API
+        responses carry."""
         async with self._db.session_or(session) as session:
             result = await session.execute(
                 select(DavCollection, DavAccount)
                 .join(DavAccount, DavCollection.account_id == DavAccount.id)
-                .where(DavCollection.kind == kind, DavCollection.deleted_at.is_(None))
+                .where(
+                    DavCollection.kind == kind,
+                    DavCollection.deleted_at.is_(None),
+                    scope.dav_account_filter(DavCollection.account_id),
+                )
                 .order_by(DavAccount.name, DavCollection.display_name)
             )
             return [(c, a) for c, a in result.all()]
@@ -168,26 +191,33 @@ class DavObjectRepository:
             )
             return result.scalar_one_or_none()
 
-    async def find_by_uid_anywhere(self, uid: str) -> DavObject | None:
-        """A UID already held in any dav_objects row of any DAV account --
-        for a person choosing to import or retry a specific message
-        (api/invitations.py's POST .../import). A hand-imported event can
-        live under any DAV account regardless of how (or whether) it is
-        linked to a mail identity, and the design settles on "update in
-        place where it lives, whatever the mapping says" for that case.
-        This is safe here because a human, not an emailed .ics, is the
-        one deciding to write -- find_by_uid_reachable() below is what
-        the *automatic* listener path needs instead, since there nothing
-        but the UID itself is under this application's control."""
+    async def find_by_uid_in_scope(self, uid: str, scope: Scope) -> DavObject | None:
+        """A UID already held in a dav_objects row of any of the caller's
+        DAV accounts -- for a person choosing to import or retry a specific
+        message (api/invitations.py's POST .../import). A hand-imported
+        event can live under any of their DAV accounts regardless of how
+        (or whether) it is linked to a mail identity, and the design
+        settles on "update in place where it lives, whatever the mapping
+        says" for that case. This is safe here because a human, not an
+        emailed .ics, is the one deciding to write -- find_by_uid_reachable()
+        below is what the *automatic* listener path needs instead, since
+        there nothing but the UID itself is under this application's
+        control. Another user's DAV account never matches."""
         async with self._db.session() as session:
             result = await session.execute(
                 select(DavObject)
-                .where(DavObject.uid == uid, DavObject.deleted_at.is_(None))
+                .where(
+                    DavObject.uid == uid,
+                    DavObject.deleted_at.is_(None),
+                    scope.dav_account_filter(DavObject.account_id),
+                )
                 .order_by(DavObject.created_at)
             )
             return result.scalars().first()
 
-    async def find_by_uid_reachable(self, uid: str, account_id: uuid.UUID) -> DavObject | None:
+    async def find_by_uid_reachable(
+        self, uid: str, account_id: uuid.UUID, scope: Scope,
+    ) -> DavObject | None:
         """The UID lookup calendar/intake.py's automatic listener needs: a
         UID already held in a dav_objects row of a DAV account reachable
         from this mail account -- the hand-imported case the design
@@ -205,7 +235,9 @@ class DavObjectRepository:
         an unrelated mail account's calendar. find_by_uid_anywhere() above
         is what a person explicitly choosing to import one message still
         uses -- that scoping only matters where nothing but the UID is
-        under this application's control."""
+        under this application's control. `scope` is the mail account's
+        owner: an object in a DAV account that owner does not own never
+        matches, whatever the identity links say."""
         async with self._db.session() as session:
             reachable_dav_accounts = (
                 select(DavCollection.account_id)
@@ -219,13 +251,14 @@ class DavObjectRepository:
                     DavObject.uid == uid,
                     DavObject.deleted_at.is_(None),
                     DavObject.account_id.in_(reachable_dav_accounts),
+                    scope.dav_account_filter(DavObject.account_id),
                 )
                 .order_by(DavObject.created_at)
             )
             return result.scalars().first()
 
     async def list_in_collections(
-        self, collection_ids: list[uuid.UUID],
+        self, collection_ids: list[uuid.UUID], scope: Scope,
         window_start: datetime | None = None, window_end: datetime | None = None,
         session: AsyncSession | None = None,
     ) -> list[DavObject]:
@@ -266,6 +299,7 @@ class DavObjectRepository:
             stmt = select(DavObject).where(
                 DavObject.collection_id.in_(collection_ids),
                 DavObject.deleted_at.is_(None),
+                scope.dav_account_filter(DavObject.account_id),
             )
             if window_start is not None and window_end is not None:
                 effective_dtend = func.coalesce(DavObject.dtend, DavObject.dtstart)
@@ -282,7 +316,7 @@ class DavObjectRepository:
             return list(result.scalars().all())
 
     async def search_contacts(
-        self, addressbook_ids: list[uuid.UUID] | None, query: str | None, *,
+        self, addressbook_ids: list[uuid.UUID] | None, query: str | None, scope: Scope, *,
         limit: int, offset: int, uid_in: list[str] | None = None,
     ) -> tuple[list[DavObject], bool]:
         """Contacts, ILIKE on summary/emails when a query is given.
@@ -293,6 +327,7 @@ class DavObjectRepository:
         async with self._db.session() as session:
             stmt = select(DavObject).where(
                 DavObject.kind == "addressbook", DavObject.deleted_at.is_(None),
+                scope.dav_account_filter(DavObject.account_id),
             )
             if addressbook_ids is not None:
                 stmt = stmt.where(DavObject.collection_id.in_(addressbook_ids))
@@ -313,7 +348,7 @@ class DavObjectRepository:
             return rows[:limit], has_more
 
     async def search_email_hits(
-        self, query: str, *, limit: int,
+        self, query: str, scope: Scope, *, limit: int,
     ) -> list[DavObject]:
         """Contacts whose summary or any email matches -- the raw rows the
         compose autocomplete flattens to one row per address."""
@@ -324,6 +359,7 @@ class DavObjectRepository:
                 .where(
                     DavObject.kind == "addressbook",
                     DavObject.deleted_at.is_(None),
+                    scope.dav_account_filter(DavObject.account_id),
                     or_(
                         DavObject.summary.ilike(pattern),
                         func.array_to_string(DavObject.emails, ",").ilike(pattern),
@@ -334,7 +370,7 @@ class DavObjectRepository:
             )
             return list(result.scalars().all())
 
-    async def find_by_email(self, email: str) -> DavObject | None:
+    async def find_by_email(self, email: str, scope: Scope) -> DavObject | None:
         """The first contact carrying this address, case-insensitively --
         what a sender's avatar/name lookup resolves against. Several
         contacts sharing one address is possible; the caller only needs
@@ -355,6 +391,7 @@ class DavObjectRepository:
                 .where(
                     DavObject.kind == "addressbook",
                     DavObject.deleted_at.is_(None),
+                    scope.dav_account_filter(DavObject.account_id),
                     func.array_to_string(DavObject.emails, ",").ilike(f"%{needle}%"),
                 )
                 .order_by(DavObject.summary)
@@ -364,8 +401,10 @@ class DavObjectRepository:
                     return obj
         return None
 
-    async def list_photo_scan_rows(self) -> list[tuple[uuid.UUID, str, list[str] | None]]:
-        """Every non-deleted contact's id, raw vCard body and addresses --
+    async def list_photo_scan_rows(
+        self, scope: Scope,
+    ) -> list[tuple[uuid.UUID, str, list[str] | None]]:
+        """Every non-deleted contact of the caller's own -- id, raw vCard body and addresses --
         not paged, unlike `search_contacts`. The one caller (the
         sender-avatar photo index) has to match against the whole address
         book regardless of where alphabetically a contact sits. The
@@ -377,14 +416,15 @@ class DavObjectRepository:
             result = await session.execute(
                 select(DavObject.id, DavObject.data, DavObject.emails).where(
                     DavObject.kind == "addressbook", DavObject.deleted_at.is_(None),
+                    scope.dav_account_filter(DavObject.account_id),
                 )
             )
             return [(row.id, row.data, row.emails) for row in result.all()]
 
     async def list_group_scan_rows(
-        self, addressbook_ids: list[uuid.UUID] | None,
+        self, addressbook_ids: list[uuid.UUID] | None, scope: Scope,
     ) -> list[tuple[uuid.UUID, uuid.UUID, str, str]]:
-        """Every non-deleted contact's id, address book, already-parsed
+        """Every non-deleted contact of the caller's own -- id, address book, already-parsed
         summary and raw vCard body -- what the groups index scans to find
         every CATEGORIES value and every group card, the same "read the
         whole book, scan off the loop with a budget" shape
@@ -396,7 +436,10 @@ class DavObjectRepository:
         async with self._db.session() as session:
             stmt = select(
                 DavObject.id, DavObject.collection_id, DavObject.summary, DavObject.data,
-            ).where(DavObject.kind == "addressbook", DavObject.deleted_at.is_(None))
+            ).where(
+                DavObject.kind == "addressbook", DavObject.deleted_at.is_(None),
+                scope.dav_account_filter(DavObject.account_id),
+            )
             if addressbook_ids is not None:
                 stmt = stmt.where(DavObject.collection_id.in_(addressbook_ids))
             result = await session.execute(stmt)
@@ -485,18 +528,31 @@ class CalendarPrefsRepository:
             )
             return result.scalar_one_or_none()
 
-    async def list_all(
-        self, session: AsyncSession | None = None,
+    async def list_owned(
+        self, scope: Scope, session: AsyncSession | None = None,
     ) -> dict[uuid.UUID, CalendarPrefs]:
+        """Prefs of the calendars and address books in the caller's DAV accounts."""
         async with self._db.session_or(session) as session:
-            result = await session.execute(select(CalendarPrefs))
+            result = await session.execute(
+                select(CalendarPrefs)
+                .join(DavCollection, DavCollection.id == CalendarPrefs.collection_id)
+                .where(scope.dav_account_filter(DavCollection.account_id))
+            )
             return {p.collection_id: p for p in result.scalars().all()}
 
-    async def get_intake_collection_id(self, identity_id: uuid.UUID) -> uuid.UUID | None:
+    async def get_intake_collection_id(
+        self, identity_id: uuid.UUID, scope: Scope,
+    ) -> uuid.UUID | None:
+        """The calendar receiving this identity's invitations, if it lives
+        in one of the caller's DAV accounts."""
         async with self._db.session() as session:
             collection_id: uuid.UUID | None = await session.scalar(
-                select(CalendarPrefs.collection_id).where(
-                    CalendarPrefs.identity_id == identity_id, CalendarPrefs.intake.is_(True),
+                select(CalendarPrefs.collection_id)
+                .join(DavCollection, DavCollection.id == CalendarPrefs.collection_id)
+                .where(
+                    CalendarPrefs.identity_id == identity_id,
+                    CalendarPrefs.intake.is_(True),
+                    scope.dav_account_filter(DavCollection.account_id),
                 )
             )
             return collection_id

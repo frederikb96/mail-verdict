@@ -74,8 +74,9 @@ class World:
         a_account_id / b_account_id: One mail account each.
         a_dav_account_id / b_dav_account_id: One DAV account each.
         b: Ids of B's data by name -- message_id, folder_id, calendar_id,
-            order_id, alert_id, view_id, subscription_id, identity_id,
-            pipeline_revision, ... -- for filling a path.
+            addressbook_id, event_id, contact_id, order_id, alert_id,
+            view_id, subscription_id, identity_id, pipeline_revision, ...
+            -- for filling a path.
         b_markers: Strings that appear only in B's data (ids among them);
             none may show up in anything A receives.
         b_content: B's mail content (subject, sender), which no admin

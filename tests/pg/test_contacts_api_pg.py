@@ -22,6 +22,7 @@ from mail_verdict.api.image_exceptions import router as image_exceptions_router
 from mail_verdict.calendar import vcard
 from mail_verdict.calendar.repository import CollectionRepository
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import act_as, act_as_owner_of_everything, user_scope
 
 _TARGET = "mail_verdict.api.contacts.get_db_connection"
 
@@ -32,10 +33,11 @@ _MAX_BURSTS = 20
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(contacts_router)
     app.include_router(image_exceptions_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 
@@ -426,14 +428,23 @@ class TestPhotoIndex:
         client.portal.call(
             self._seed_url_photo_contact, migrated_db, addressbook_id, "url-blocked@example.com",
         )
+        account_id = client.portal.call(self._seed_account, migrated_db)
         with patch(_TARGET, return_value=migrated_db), patch(
             _IMAGE_EXCEPTIONS_TARGET, return_value=migrated_db,
         ):
-            index = client.get(
-                "/contacts/photo-index", params={"account_id": str(uuid.uuid4())},
-            )
+            index = client.get("/contacts/photo-index", params={"account_id": str(account_id)})
         assert index.status_code == 200
         assert "url-blocked@example.com" not in index.json()["by_email"]
+
+    def test_the_photo_index_refuses_an_account_the_caller_does_not_own(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        app = FastAPI()
+        app.include_router(contacts_router)
+        act_as(app, user_scope(uuid.uuid4()))
+        with TestClient(app) as stranger, patch(_TARGET, return_value=migrated_db):
+            index = stranger.get("/contacts/photo-index", params={"account_id": str(uuid.uuid4())})
+        assert index.status_code == 403
 
     async def _seed_account(self, db: DatabaseConnection) -> uuid.UUID:
         account_id = uuid.uuid4()
@@ -524,6 +535,7 @@ class TestPhotoIndexDoesNotStarveTheServer:
 
         app = FastAPI()
         app.include_router(contacts_router)
+        act_as_owner_of_everything(app, migrated_db)
 
         @app.get("/live")
         async def live() -> dict[str, str]:
@@ -930,6 +942,7 @@ class TestListingContactsDoesNotStarveTheServer:
 
         app = FastAPI()
         app.include_router(contacts_router)
+        act_as_owner_of_everything(app, migrated_db)
 
         @app.get("/live")
         async def live() -> dict[str, str]:

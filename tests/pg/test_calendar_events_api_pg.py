@@ -23,6 +23,7 @@ from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
 from mail_verdict.postimap.actions import create_object
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
+from tests.helpers.auth import act_as_owner_of_everything
 
 _TARGET = "mail_verdict.api.calendar_events.get_db_connection"
 _CALENDARS_TARGET = "mail_verdict.api.calendars.get_db_connection"
@@ -96,6 +97,7 @@ def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(events_router)
     app.include_router(calendars_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         # api/calendars.py resolves a calendar's default reminder against
         # the global settings.calendar category -- the same global
@@ -1901,6 +1903,7 @@ class TestEventLoopNotBlocked:
 
         app = FastAPI()
         app.include_router(events_router)
+        act_as_owner_of_everything(app, migrated_db)
 
         @app.get("/live")
         async def live() -> dict[str, str]:

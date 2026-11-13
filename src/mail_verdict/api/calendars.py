@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import re
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 
 from mail_verdict.api.deps import current_scope
-from mail_verdict.api.events import broadcast_event, get_event_ring
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import (
     AddressbookCreateRequest,
     AddressbookSummaryResponse,
@@ -35,6 +36,7 @@ from mail_verdict.api.schemas import (
     CalendarResponse,
     CalendarUpdateRequest,
 )
+from mail_verdict.auth.ownership import account_display_name
 from mail_verdict.auth.scope import Scope
 from mail_verdict.calendar.prefs import calendar_is_enabled, resolve_default_reminder
 from mail_verdict.calendar.repository import (
@@ -42,6 +44,7 @@ from mail_verdict.calendar.repository import (
     CalendarPrefsRepository,
     CollectionRepository,
     DavAccountRepository,
+    get_identity_in_scope,
 )
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import CalendarPrefs, DavAccount, DavCollection, Identity
@@ -87,14 +90,20 @@ def _intake_state(prefs: CalendarPrefs | None) -> CalendarIntakeState:
     return "none"
 
 
+def _calendar_settings(scope: Scope) -> dict[str, Any]:
+    """The calendar defaults a calendar's own reminder prefs fall back to.
+    The instance view for now; the per-user view once it exists."""
+    return get_settings_service().get("calendar")
+
+
 def _to_response(
     collection: DavCollection, account: DavAccount, prefs: CalendarPrefs | None,
+    calendar_settings: dict[str, Any],
 ) -> CalendarResponse:
-    calendar_settings = get_settings_service().get("calendar")
     return CalendarResponse(
         id=collection.id,
         dav_account_id=account.id,
-        dav_account_name=account.name,
+        dav_account_name=account_display_name(account.name),
         display_name=collection.display_name or collection.slug,
         color=collection.color or "",
         color_override=prefs.color_override if prefs else None,
@@ -115,19 +124,22 @@ def _to_response(
 
 
 @router.get("", response_model=list[CalendarResponse])
-async def list_calendars() -> list[CalendarResponse]:
+async def list_calendars(scope: Scope = Depends(current_scope)) -> list[CalendarResponse]:
     """Every non-deleted calendar, prefs merged in."""
     await _require_support()
     db = get_db_connection()
     collection_repo = CollectionRepository(db)
     prefs_repo = CalendarPrefsRepository(db)
-    pairs = await collection_repo.list_by_kind("calendar")
-    all_prefs = await prefs_repo.list_all()
-    return [_to_response(c, a, all_prefs.get(c.id)) for c, a in pairs]
+    pairs = await collection_repo.list_by_kind("calendar", scope)
+    all_prefs = await prefs_repo.list_owned(scope)
+    settings = _calendar_settings(scope)
+    return [_to_response(c, a, all_prefs.get(c.id), settings) for c, a in pairs]
 
 
 @router.post("", response_model=CalendarResponse, status_code=201)
-async def create_calendar(request: CalendarCreateRequest) -> CalendarResponse:
+async def create_calendar(
+    request: CalendarCreateRequest, scope: Scope = Depends(current_scope),
+) -> CalendarResponse:
     """Create a calendar on the server. PostIMAP issues MKCALENDAR and
     writes href back once it lands."""
     await _require_support()
@@ -136,6 +148,7 @@ async def create_calendar(request: CalendarCreateRequest) -> CalendarResponse:
     account = await account_repo.get_by_id(request.dav_account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="DAV account not found")
+    scope.require_dav_account(account.id)
 
     async with db.session() as session:
         collection = await create_collection(
@@ -143,12 +156,13 @@ async def create_calendar(request: CalendarCreateRequest) -> CalendarResponse:
             slug=_slugify(request.display_name), display_name=request.display_name,
             color=request.color,
         )
-    return _to_response(collection, account, None)
+    return _to_response(collection, account, None, _calendar_settings(scope))
 
 
 @router.patch("/{collection_id}", response_model=CalendarResponse)
 async def update_calendar(
     collection_id: uuid.UUID, request: CalendarUpdateRequest,
+    scope: Scope = Depends(current_scope),
 ) -> CalendarResponse:
     """Rename/recolour on the server, or change the local prefs (colour
     override, visibility, identity link, intake)."""
@@ -158,8 +172,13 @@ async def update_calendar(
     collection = await collection_repo.get_by_id(collection_id)
     if collection is None or collection.deleted_at is not None or collection.kind != "calendar":
         raise HTTPException(status_code=404, detail="Calendar not found")
+    scope.require_dav_account(collection.account_id)
 
     values = request.model_dump(exclude_unset=True)
+    if values.get("identity_id") is not None:
+        # A calendar is only ever linked to an identity of the caller's own.
+        if await get_identity_in_scope(db, scope, values["identity_id"]) is None:
+            raise HTTPException(status_code=404, detail="Identity not found")
 
     if "display_name" in values:
         async with db.session() as session:
@@ -211,7 +230,7 @@ async def update_calendar(
     assert account is not None
     collection = await collection_repo.get_by_id(collection_id)
     assert collection is not None
-    return _to_response(collection, account, prefs)
+    return _to_response(collection, account, prefs, _calendar_settings(scope))
 
 
 @router.delete("/{collection_id}", status_code=204)
@@ -225,6 +244,7 @@ async def delete_calendar(
             "count; repeat the call with that number to confirm."
         ),
     ),
+    scope: Scope = Depends(current_scope),
 ) -> None:
     """Delete a calendar -- destroys every event in it on the server,
     irreversibly. There is no undo."""
@@ -234,6 +254,7 @@ async def delete_calendar(
     collection = await collection_repo.get_by_id(collection_id)
     if collection is None or collection.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Calendar not found")
+    scope.require_dav_account(collection.account_id)
 
     if confirm_event_count != collection.total_count:
         raise HTTPException(
@@ -250,14 +271,16 @@ async def delete_calendar(
 
 
 @addressbooks_router.get("", response_model=list[AddressbookSummaryResponse])
-async def list_addressbooks() -> list[AddressbookSummaryResponse]:
+async def list_addressbooks(
+    scope: Scope = Depends(current_scope),
+) -> list[AddressbookSummaryResponse]:
     """Every non-deleted address book."""
     await _require_support()
     collection_repo = CollectionRepository(get_db_connection())
-    pairs = await collection_repo.list_by_kind("addressbook")
+    pairs = await collection_repo.list_by_kind("addressbook", scope)
     return [
         AddressbookSummaryResponse(
-            id=c.id, dav_account_id=a.id, dav_account_name=a.name,
+            id=c.id, dav_account_id=a.id, dav_account_name=account_display_name(a.name),
             display_name=c.display_name or c.slug, read_only=c.read_only,
             total_count=c.total_count,
         )
@@ -266,7 +289,9 @@ async def list_addressbooks() -> list[AddressbookSummaryResponse]:
 
 
 @addressbooks_router.post("", response_model=AddressbookSummaryResponse, status_code=201)
-async def create_addressbook(request: AddressbookCreateRequest) -> AddressbookSummaryResponse:
+async def create_addressbook(
+    request: AddressbookCreateRequest, scope: Scope = Depends(current_scope),
+) -> AddressbookSummaryResponse:
     """Create an address book on the server. PostIMAP issues MKCOL and
     writes href back once it lands."""
     await _require_support()
@@ -275,6 +300,7 @@ async def create_addressbook(request: AddressbookCreateRequest) -> AddressbookSu
     account = await account_repo.get_by_id(request.dav_account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="DAV account not found")
+    scope.require_dav_account(account.id)
 
     async with db.session() as session:
         collection = await create_collection(
@@ -282,7 +308,8 @@ async def create_addressbook(request: AddressbookCreateRequest) -> AddressbookSu
             slug=_slugify(request.display_name), display_name=request.display_name,
         )
     return AddressbookSummaryResponse(
-        id=collection.id, dav_account_id=account.id, dav_account_name=account.name,
+        id=collection.id, dav_account_id=account.id,
+        dav_account_name=account_display_name(account.name),
         display_name=collection.display_name or collection.slug,
         read_only=collection.read_only, total_count=collection.total_count,
     )
@@ -298,9 +325,17 @@ async def get_calendar_links(scope: Scope = Depends(current_scope)) -> CalendarL
     await _require_support()
     db = get_db_connection()
     async with db.session() as session:
-        identity_result = await session.execute(select(Identity).order_by(Identity.created_at))
+        identity_result = await session.execute(
+            select(Identity)
+            .where(scope.account_filter(Identity.account_id))
+            .order_by(Identity.created_at)
+        )
         identities = identity_result.scalars().all()
-        prefs_result = await session.execute(select(CalendarPrefs))
+        prefs_result = await session.execute(
+            select(CalendarPrefs)
+            .join(DavCollection, DavCollection.id == CalendarPrefs.collection_id)
+            .where(scope.dav_account_filter(DavCollection.account_id))
+        )
         prefs_rows = prefs_result.scalars().all()
 
     by_identity: dict[uuid.UUID, list[CalendarPrefs]] = {}
@@ -322,6 +357,46 @@ async def get_calendar_links(scope: Scope = Depends(current_scope)) -> CalendarL
         for identity in identities
     ]
     return CalendarLinksOut(base_revision=revision, rows=rows)
+
+
+async def _require_own_link_targets(
+    scope: Scope, request: CalendarLinksUpdateRequest,
+) -> None:
+    """Every identity and calendar a mapping document names must exist and
+    be the caller's own: an identity of one of their mail accounts, a
+    calendar in one of their DAV accounts. A missing one is a 404, someone
+    else's a 403."""
+    identity_ids = {row.identity_id for row in request.rows}
+    calendar_ids = {calendar_id for row in request.rows for calendar_id in row.calendar_ids}
+    async with get_db_connection().session() as session:
+        identity_accounts = {
+            identity_id: account_id
+            for identity_id, account_id in (
+                await session.execute(
+                    select(Identity.id, Identity.account_id).where(Identity.id.in_(identity_ids))
+                )
+            ).all()
+        }
+        calendars = {
+            collection_id: (account_id, kind, deleted_at)
+            for collection_id, account_id, kind, deleted_at in (
+                await session.execute(
+                    select(
+                        DavCollection.id, DavCollection.account_id, DavCollection.kind,
+                        DavCollection.deleted_at,
+                    ).where(DavCollection.id.in_(calendar_ids))
+                )
+            ).all()
+        }
+    for identity_id in identity_ids:
+        if identity_id not in identity_accounts:
+            raise HTTPException(status_code=404, detail="Identity not found")
+        scope.require_account(identity_accounts[identity_id])
+    for calendar_id in calendar_ids:
+        found = calendars.get(calendar_id)
+        if found is None or found[1] != "calendar" or found[2] is not None:
+            raise HTTPException(status_code=404, detail="Calendar not found")
+        scope.require_dav_account(found[0])
 
 
 @links_router.put("", response_model=CalendarLinksOut)
@@ -367,9 +442,18 @@ async def update_calendar_links(
                 )
             seen_calendars[calendar_id] = row.identity_id
 
+    await _require_own_link_targets(scope, request)
+
     async with db.session() as session:
+        # Only the caller's own links are replaced: calendars of other
+        # users' DAV accounts keep theirs.
         existing_result = await session.execute(
-            select(CalendarPrefs).where(CalendarPrefs.identity_id.isnot(None))
+            select(CalendarPrefs)
+            .join(DavCollection, DavCollection.id == CalendarPrefs.collection_id)
+            .where(
+                CalendarPrefs.identity_id.isnot(None),
+                scope.dav_account_filter(DavCollection.account_id),
+            )
         )
         existing = existing_result.scalars().all()
         new_links = {
@@ -402,11 +486,10 @@ async def update_calendar_links(
     # calendar_prefs and the revision counter are both MailVerdict's own, so
     # nothing upstream tells a second open browser the mapping changed --
     # and it holds a base_revision that is now stale, so its next save would
-    # be refused with a 409 rather than merged. The document is one row for
-    # the whole instance rather than per account, which is what broadcasting
-    # rather than pushing to one account's ring is for.
+    # be refused with a 409 rather than merged. The document belongs to one
+    # user, so it goes to that user's own ring key.
     event_ring = get_event_ring()
     if event_ring is not None:
-        await broadcast_event(db, event_ring, "calendar.links_changed", {})
+        await event_ring.add(scope.require_user(), "calendar.links_changed", {})
 
     return await get_calendar_links(scope)

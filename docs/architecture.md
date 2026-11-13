@@ -1033,10 +1033,13 @@ a forged one can do is a wrong attendance mark, not a moved or cancelled meeting
 a UID nothing holds is a genuinely new invitation and keeps importing on its own, since the worst it
 can do is calendar spam. The existing-object lookup is scoped to DAV accounts reachable from the
 receiving mail account's own identities (`calendar_prefs.identity_id`) for the automatic listener;
-`POST .../import` resolves a UID anywhere, since a person confirming one named message is not the
-unauthenticated surface the scoping exists for, and `GET` on the same message matches that
-unscoped resolution whenever the listener's own narrower one finds nothing, so the card never
-describes an outcome the confirmation button would not actually produce. Past authorization, a
+`POST .../import` resolves a UID in any of the caller's own DAV accounts, since a person confirming
+one named message is not the unauthenticated surface the scoping exists for, and `GET` on the same
+message matches that resolution whenever the listener's own narrower one finds nothing, so the card
+never describes an outcome the confirmation button would not actually produce. Both stop at the
+owner: the listener decides as the receiving mail account's owner (`Scope.for_account_owner`), so
+only DAV accounts that user owns are ever searched, linked or written to; a mail account nobody
+owns imports nothing. Past authorization, a
 lower `SEQUENCE` than the held object's own is stale and ignored -- the one case still resolved
 automatically, since an old `SEQUENCE` is far more likely a resend than something worth a person's
 attention, and it never writes anything either.

@@ -25,7 +25,7 @@ from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
 from mail_verdict.postimap.actions import force_reconnect_dav_account
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
-from tests.helpers.auth import act_as, owner_scope
+from tests.helpers.auth import act_as_owner_of_everything
 
 
 @pytest.fixture()
@@ -36,7 +36,7 @@ def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app.include_router(links_router)
     app.include_router(addressbooks_router)
     app.include_router(identities_router)
-    act_as(app, owner_scope())
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         # api/calendars.py resolves a calendar's default reminder against
         # the global settings.calendar category -- the global settings
