@@ -19,8 +19,8 @@ caller, B owns the data A must not reach.
 Route kinds and what is checked:
 
 - public: answers without a token (not 401).
-- own: A calling it gets 2xx, and nothing of B's (World.b_markers) appears
-  in the body.
+- own: A calling it gets 2xx (or one of `also`), and nothing of B's
+  (World.b_markers) appears in the body.
 - account_path: a path naming one of B's accounts, called by A: 403 or 404.
 - resource_id: a path naming one of B's rows (a message, an order, ...),
   called by A: 403 or 404.

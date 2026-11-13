@@ -11,39 +11,6 @@ defining the endpoint.
 
 from __future__ import annotations
 
-PENDING_ROUTES: frozenset[str] = frozenset({
-    # api/embeddings.py
-    "GET /api/embeddings/search",
-    # api/search.py
-    "GET /api/search",
-    # api/unified.py
-    "PUT /api/accounts/{account_id}/emoji",
-    "GET /api/unified/folder-order",
-    "PUT /api/unified/folder-order",
-    "GET /api/unified/folders",
-    "GET /api/unified/mails",
-    "POST /api/unified/views",
-    "DELETE /api/unified/views/{view_id}",
-    "PATCH /api/unified/views/{view_id}",
-})
+PENDING_ROUTES: frozenset[str] = frozenset()
 
-PENDING_TOOLS: frozenset[str] = frozenset({
-    # api/mcp_tools.py
-    "draft_mail",
-    "get_mail",
-    "get_semantic_status",
-    "get_stats",
-    "get_thread",
-    "get_verdict",
-    "list_accounts",
-    "list_folders",
-    "list_mails",
-    "mark_mail",
-    "move_mail",
-    "reply_mail",
-    "search_mail",
-    "semantic_search_mail",
-    "send_mail",
-    "submit_spam_feedback",
-    "tag_mail",
-})
+PENDING_TOOLS: frozenset[str] = frozenset()

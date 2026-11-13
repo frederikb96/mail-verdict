@@ -13,8 +13,8 @@ from mail_verdict.embeddings.search import _exact_statement, _Scope
 
 def _sql(glacier_folders: dict[uuid.UUID, uuid.UUID] | None) -> str:
     scope = _Scope(
-        model="m", query_vector=[0.0] * EMBEDDING_DIMENSIONS, account_id=None, folder_ids=None,
-        received_after=None, received_before=None,
+        model="m", query_vector=[0.0] * EMBEDDING_DIMENSIONS, account_ids=frozenset(),
+        folder_ids=None, received_after=None, received_before=None,
     )
     return str(_exact_statement(scope, glacier_folders, 400).compile(dialect=postgresql.dialect()))
 

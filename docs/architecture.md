@@ -417,7 +417,7 @@ Search (`GET /api/embeddings/search`, MCP `semantic_search_mail`, one function b
 `embeddings/service.py`) embeds the query text and takes the 400 nearest messages by cosine
 distance. The vectors are `halfvec(1536)`, and each embedding row carries a copy of its message's
 `received_at` (read from the Date header, so it never changes). The pool is found by counting the
-messages in the search's scope — account, folders, time window — first. A scope of at most
+messages in the search's scope — the caller's accounts, folders, time window — first. A scope of at most
 `search.exact_scan_max_rows` messages is ranked exactly, the scope's messages joined to their
 vectors before any distance is computed. A wider one asks the HNSW index for the nearest vectors
 with the account and window inside the index scan, then checks what can change (expunged, folder,
@@ -922,7 +922,7 @@ remove anything in the first place.
 
 Listing, conversation threading, text search, semantic search and unified views all reach the
 glacier the same way: scoped to exactly the glacier folder, they query `glacier_messages` alone;
-scoped wider (an account-wide list, a unified view, an unscoped search), they union it with
+scoped wider (an account-wide list, a unified view, a search over all of a user's accounts), they union it with
 `messages` via `glacier/rows.py`'s column-compatible helpers, aliased back onto `Message` so every
 predicate, cursor and `DISTINCT ON` thread grouping downstream reads one entity regardless of
 which table a row actually came from — the same trick `database/repository.py`'s own text-search
@@ -1249,6 +1249,13 @@ acts for, whether they are admin, and the accounts they own. A request gets it f
   folder. The endpoint functions keep their plain signatures, so the MCP tools and tests that call
   them directly are unaffected; an endpoint that needs the caller itself (`user_id` for a
   stored key, a list filtered by owned accounts) takes the `Scope`.
+- Text search, semantic search and every MCP tool take the caller's account ids -- never "all
+  accounts" -- so a hit, a glacier folder or a cursor of anyone else's is out of reach whatever
+  folder or message id the request names. A tool that names a message or account resolves it to
+  its account and answers `forbidden` for someone else's, in the tool's own error shape.
+- A unified view carries its owner's `user_id` and is only ever read, changed or deleted by them. It
+  shows folders of the caller's accounts only, and a folder is put into a view only if the owner of
+  the folder's account owns the view (`set_folder_views`). Its change events go on the owner's ring key.
 - A conversation is read within the account of the message it was opened from: the same mail
   delivered to two accounts carries one `thread_id` in both.
 - An idempotency key is stored under a value derived from the user and the key

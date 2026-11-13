@@ -25,12 +25,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from mail_verdict.api.deps import require_admin
+from mail_verdict.api.deps import current_scope, require_admin
 from mail_verdict.api.schemas import (
     EmbeddingStatusResponse,
     SemanticSearchHit,
     SemanticSearchResponse,
 )
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.repository import list_row_marks
 from mail_verdict.embeddings.provider import resolve_active_embedding_model
@@ -167,6 +168,7 @@ async def search(
     received_before: Annotated[
         datetime | None, Query(description="Only messages received at or before this instant"),
     ] = None,
+    scope: Scope = Depends(current_scope),
 ) -> SemanticSearchResponse:
     """
     Semantic search: the messages closest in meaning to the query text,
@@ -178,10 +180,13 @@ async def search(
     Complements full-text search (GET /api/search) rather than replacing
     it -- literal search wins for a known sender or an exact phrase,
     this wins for a half-remembered topic with no exact words in common.
+
+    Only the caller's own accounts are searched; `account_id` narrows to one
+    of them, and one that is not theirs matches nothing.
     """
     try:
         model, hits = await search_by_meaning(
-            get_db_connection(), q, account_id=account_id, folder_ids=folder_ids,
+            get_db_connection(), q, account_ids=scope.narrow(account_id), folder_ids=folder_ids,
             received_after=received_after, received_before=received_before,
         )
     except SemanticUnavailableError:

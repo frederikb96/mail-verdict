@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.api.search import search_messages
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.repository import FALLBACK_MATCH_TIER
+from tests.helpers.auth import owner_scope
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
 from tests.setup.large_mailbox import seed_large_mailbox_account
 
@@ -85,7 +86,7 @@ class TestFieldScoping:
 
         page = await search_messages(
             q="quarterly", account_id=account_id, folder_ids=None,
-            fields=["body"], before=None, limit=50,
+            fields=["body"], before=None, limit=50, scope=owner_scope([account_id])
         )
         ids = {r.id for r in page.results}
         assert ids == {body_hit}
@@ -112,12 +113,13 @@ class TestFieldScoping:
 
         by_name_page = await search_messages(
             q="Alice", account_id=account_id, folder_ids=None, fields=["to"], before=None, limit=50,
+            scope=owner_scope([account_id]),
         )
         assert {r.id for r in by_name_page.results} == {by_name}
 
         by_addr_page = await search_messages(
             q="bob@example.com", account_id=account_id, folder_ids=None,
-            fields=["to"], before=None, limit=50,
+            fields=["to"], before=None, limit=50, scope=owner_scope([account_id])
         )
         assert {r.id for r in by_addr_page.results} == {by_addr}
         assert unrelated not in {r.id for r in by_addr_page.results}
@@ -139,7 +141,7 @@ class TestFuzzyMatching:
         page = await search_messages(
             # "reimbursment" -- one letter dropped
             q="reimbursment", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=50,
+            fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
         )
         assert {r.id for r in page.results} == {hit}
 
@@ -154,7 +156,7 @@ class TestFuzzyMatching:
 
         page = await search_messages(
             q="zzqqxxvv", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=50,
+            fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
         )
         assert page.results == []
 
@@ -174,13 +176,13 @@ class TestFolderScoping:
 
         inbox_only = await search_messages(
             q="invoice", account_id=account_id, folder_ids=[inbox_id],
-            fields=["subject"], before=None, limit=50,
+            fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
         )
         assert {r.id for r in inbox_only.results} == {inbox_hit}
 
         both = await search_messages(
             q="invoice", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=50,
+            fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
         )
         assert {r.id for r in both.results} == {inbox_hit, junk_hit}
 
@@ -199,7 +201,7 @@ class TestOrderingAndPagination:
 
         page = await search_messages(
             q="invoice", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=50,
+            fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
         )
         assert [r.id for r in page.results] == [newer, older]
 
@@ -220,7 +222,7 @@ class TestOrderingAndPagination:
         for _ in range(20):
             page = await search_messages(
                 q="invoice", account_id=account_id, folder_ids=None,
-                fields=["subject"], before=cursor, limit=3,
+                fields=["subject"], before=cursor, limit=3, scope=owner_scope([account_id])
             )
             seen.extend(r.id for r in page.results)
             if not page.has_more:
@@ -263,7 +265,7 @@ class TestOrderingAndPagination:
 
         page = await search_messages(
             q="invoice", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=1,
+            fields=["subject"], before=None, limit=1, scope=owner_scope([account_id])
         )
         assert [r.id for r in page.results] == [dated]
         assert page.has_more and page.next_cursor is not None
@@ -271,6 +273,7 @@ class TestOrderingAndPagination:
         next_page = await search_messages(
             q="invoice", account_id=account_id, folder_ids=None,
             fields=["subject"], before=uuid.UUID(page.next_cursor), limit=1,
+            scope=owner_scope([account_id]),
         )
         assert [r.id for r in next_page.results] == [undated]
         assert not next_page.has_more
@@ -291,6 +294,7 @@ class TestAccountScoping:
         page = await search_messages(
             q="invoice", account_id=account_a, folder_ids=None,
             fields=["subject"], before=None, limit=50,
+            scope=owner_scope([account_a, account_b]),
         )
         assert {r.id for r in page.results} == {own}
 
@@ -350,7 +354,7 @@ class TestScale:
         started = time.monotonic()
         page = await search_messages(
             q="zzxqvantage", account_id=account_id, folder_ids=None,
-            fields=["body"], before=None, limit=50,
+            fields=["body"], before=None, limit=50, scope=owner_scope([account_id])
         )
         elapsed = time.monotonic() - started
 
@@ -431,7 +435,7 @@ class TestDateRangeAtScale:
         page = await search_messages(
             q=marker, account_id=None, folder_ids=None,
             fields=["subject", "body"], before=None, limit=50,
-            received_after=window_start, received_before=window_end,
+            received_after=window_start, received_before=window_end, scope=owner_scope([account_id])
         )
         elapsed = time.monotonic() - started
 
@@ -471,6 +475,7 @@ class TestTierRanking:
         page = await search_messages(
             q="zzqtierword", account_id=account_id, folder_ids=None,
             fields=["subject", "from", "to", "body"], before=None, limit=50,
+            scope=owner_scope([account_id]),
         )
         assert [r.id for r in page.results] == [subject_hit, from_hit, body_hit]
         assert [r.match_tier for r in page.results] == [0, 1, 3]
@@ -499,7 +504,7 @@ class TestFallbackTier:
 
         page = await search_messages(
             q="invoice", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=50,
+            fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
         )
         ids = {r.id for r in page.results}
         assert exact_hit in ids
@@ -519,7 +524,7 @@ class TestFallbackTier:
 
         page = await search_messages(
             q="reimbursment", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=50,
+            fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
         )
         assert {r.id for r in page.results} == {hit}
         assert page.results[0].match_tier == FALLBACK_MATCH_TIER
@@ -573,6 +578,7 @@ class TestADecoyDoesNotSurfaceBesideTheRealMatch:
         page = await search_messages(
             q="climbing", account_id=account_id, folder_ids=None,
             fields=["subject", "from", "to", "body"], before=None, limit=50,
+            scope=owner_scope([account_id]),
         )
         assert [r.id for r in page.results] == [real_match], [
             (r.subject, r.match_tier) for r in page.results
@@ -613,6 +619,7 @@ class TestWholeWordOutranksPrefix:
         page = await search_messages(
             q="zzqterm", account_id=account_id, folder_ids=None,
             fields=["subject", "from", "to", "body"], before=None, limit=50,
+            scope=owner_scope([account_id]),
         )
         # Still found -- the prefix recall is what makes a partial word
         # work at all and is not what changes here.
@@ -638,7 +645,7 @@ class TestTsqueryInjection:
 
         page = await search_messages(
             q="!!!", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=50,
+            fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
         )
         assert page.results == []
         assert page.total == 0
@@ -658,7 +665,7 @@ class TestTsqueryInjection:
         # reaching tsquery syntax directly.
         page = await search_messages(
             q="a&b | c ! d:e ' f", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=50,
+            fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
         )
         assert page.results == []
 
@@ -680,7 +687,7 @@ class TestTotalCount:
 
         page = await search_messages(
             q="invoice", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=2,
+            fields=["subject"], before=None, limit=2, scope=owner_scope([account_id])
         )
         assert len(page.results) == 2
         assert page.total == 5
@@ -714,7 +721,7 @@ class TestDateRangeFilter:
             q="zzqrange", account_id=account_id, folder_ids=None,
             fields=["subject"], before=None, limit=50,
             received_after=datetime(2026, 2, 1, tzinfo=UTC),
-            received_before=datetime(2026, 4, 1, tzinfo=UTC),
+            received_before=datetime(2026, 4, 1, tzinfo=UTC), scope=owner_scope([account_id])
         )
         assert {r.id for r in page.results} == {in_range}
         assert too_old not in {r.id for r in page.results}
@@ -749,14 +756,14 @@ class TestDateRangeFilter:
 
         unranged = await search_messages(
             q="zzqdateless", account_id=account_id, folder_ids=None,
-            fields=["subject"], before=None, limit=50,
+            fields=["subject"], before=None, limit=50, scope=owner_scope([account_id])
         )
         assert {r.id for r in unranged.results} == {dated, undated}
 
         ranged = await search_messages(
             q="zzqdateless", account_id=account_id, folder_ids=None,
             fields=["subject"], before=None, limit=50,
-            received_after=datetime(2026, 1, 1, tzinfo=UTC),
+            received_after=datetime(2026, 1, 1, tzinfo=UTC), scope=owner_scope([account_id])
         )
         assert {r.id for r in ranged.results} == {dated}
 
@@ -800,6 +807,7 @@ class TestKeysetAcrossTiers:
             page = await search_messages(
                 q="zzqcross", account_id=account_id, folder_ids=None,
                 fields=["subject", "from", "body"], before=cursor, limit=2,
+                scope=owner_scope([account_id]),
             )
             seen.extend(r.id for r in page.results)
             if not page.has_more:
@@ -835,13 +843,13 @@ class TestReadStateFilter:
 
         unread_only = await search_messages(
             q="budget", account_id=account_id, folder_ids=None,
-            fields=None, before=None, limit=50, is_seen=False,
+            fields=None, before=None, limit=50, is_seen=False, scope=owner_scope([account_id])
         )
         assert {r.id for r in unread_only.results} == {unread}
         assert unread_only.total == 1
 
         everything = await search_messages(
             q="budget", account_id=account_id, folder_ids=None,
-            fields=None, before=None, limit=50,
+            fields=None, before=None, limit=50, scope=owner_scope([account_id])
         )
         assert {r.id for r in everything.results} == {unread, read}

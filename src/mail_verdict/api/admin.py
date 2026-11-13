@@ -28,9 +28,11 @@ from sqlalchemy.exc import IntegrityError
 from mail_verdict.alerts.audience import reassign_account_alerts
 from mail_verdict.api.deps import require_admin
 from mail_verdict.api.events import get_event_ring
+from mail_verdict.api.unified import drop_account_memberships
 from mail_verdict.auth.ownership import (
     account_display_name,
     owned_account_name,
+    owner_of_account,
     set_account_owner,
     set_dav_account_owner,
 )
@@ -251,7 +253,8 @@ async def set_owner(
     """Give a mail account to another user. Its stored name moves into the
     new owner's namespace in the same transaction; 409 if they already have
     an account by that name. Its orders (orders/ownership.py) and its alerts
-    (alerts/audience.py) follow."""
+    (alerts/audience.py) follow, and its folders leave the previous owner's unified
+    views."""
     new_owner = request.user_id
     try:
         async with get_db_connection().session() as session:
@@ -262,9 +265,12 @@ async def set_owner(
                 raise HTTPException(status_code=404, detail="Account not found")
             name = owned_account_name(new_owner, account_display_name(account.name))
             await update_account(session, account_id, name=name)
+            previous_owner = await owner_of_account(session, account_id)
             await set_account_owner(session, account_id, new_owner)
             order_changes = await reassign_account(session, account_id, new_owner)
             await reassign_account_alerts(session, account_id, new_owner)
+            if previous_owner != new_owner:
+                await drop_account_memberships(session, account_id)
             response = AdminAccountResponse(
                 id=account_id, name=account_display_name(name), owner_user_id=new_owner,
                 is_active=account.is_active, state=account.state,

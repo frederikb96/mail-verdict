@@ -8,6 +8,7 @@ same way under the same limits.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -23,13 +24,15 @@ async def search_by_meaning(
     db: DatabaseConnection,
     text: str,
     *,
-    account_id: uuid.UUID | None = None,
+    account_ids: Collection[uuid.UUID],
     folder_ids: list[uuid.UUID] | None = None,
     received_after: datetime | None = None,
     received_before: datetime | None = None,
 ) -> tuple[str, list[SemanticSearchResult]]:
     """
-    Search the mailbox by the meaning of `text`.
+    Search the given accounts' mail by the meaning of `text`. `account_ids`
+    is the caller's own accounts (narrowed to the one it named), never
+    "every account".
 
     Returns:
         (the embedding model that served the search, tiered hits)
@@ -41,7 +44,7 @@ async def search_by_meaning(
     hits = await semantic_search(
         db, query_vector=query_vector, model=model,
         exact_scan_max_rows=get_config().search.exact_scan_max_rows,
-        account_id=account_id, folder_ids=folder_ids,
+        account_ids=account_ids, folder_ids=folder_ids,
         received_after=received_after, received_before=received_before,
     )
     return model, hits

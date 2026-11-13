@@ -23,6 +23,7 @@ from sqlalchemy import text
 
 from mail_verdict.api.mails import account_router as messages_router
 from mail_verdict.api.unified import unified_router
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from tests.helpers.auth import act_as_owner_of_everything
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders, _seed_messages
@@ -76,8 +77,11 @@ async def _seed(db: DatabaseConnection) -> dict[str, Any]:
                        age=timedelta(minutes=1))
         view_id, view_name = uuid.uuid4(), f"marks-{uuid.uuid4().hex[:8]}"
         await session.execute(
-            text("INSERT INTO unified_views (id, name, position) VALUES (:id, :name, 0)"),
-            {"id": view_id, "name": view_name},
+            text(
+                "INSERT INTO unified_views (id, name, position, user_id) "
+                "VALUES (:id, :name, 0, :owner)"
+            ),
+            {"id": view_id, "name": view_name, "owner": OWNER_USER_ID},
         )
         await session.execute(
             text("INSERT INTO unified_view_folders (view_id, folder_id) VALUES (:v, :f)"),

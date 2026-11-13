@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.mails import list_messages
 from mail_verdict.api.unified import list_unified_messages
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import owner_owns_everything as _owner_scope
 
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -157,8 +159,8 @@ async def test_unified_pagination_stable_with_a_null_received_at(
         view_name = f"Inbox {uuid.uuid4().hex[:8]}"
         view_id = uuid.uuid4()
         await session.execute(
-            text("INSERT INTO unified_views (id, name) VALUES (:id, :name)"),
-            {"id": view_id, "name": view_name},
+            text("INSERT INTO unified_views (id, name, user_id) VALUES (:id, :name, :owner)"),
+            {"id": view_id, "name": view_name, "owner": OWNER_USER_ID},
         )
         await session.execute(
             text(
@@ -187,6 +189,7 @@ async def test_unified_pagination_stable_with_a_null_received_at(
         page = await list_unified_messages(
             folder_name=view_name, before=cursor, limit=1,
             threaded=False, is_seen=None, after=None, around=None, since=None,
+            scope=await _owner_scope(),
         )
         seen.extend(m.id for m in page.messages)
         if not page.has_more:

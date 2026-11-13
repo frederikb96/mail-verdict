@@ -17,6 +17,7 @@ from fastmcp import Client
 
 from mail_verdict.api.mcp_tools import mcp
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import owner_owns_everything
 from tests.pg.test_message_embeddings import (
     _QUERY_VECTOR,
     _SPREAD,
@@ -32,6 +33,7 @@ async def mcp_client(migrated_db: DatabaseConnection) -> AsyncIterator[Client]:
     patchers = [
         patch("mail_verdict.api.mcp_tools.get_db_connection", return_value=migrated_db),
         patch("mail_verdict.embeddings.service.get_config", return_value=config),
+        patch("mail_verdict.api.mcp_tools.current_scope", owner_owns_everything),
     ]
     for p in patchers:
         p.start()

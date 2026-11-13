@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   only the author's own accounts, and only an admin may write a webhook. `GET
   /api/admin/pipeline/overview` shows an admin each user's rules as counts.
 
+- Search, semantic search, unified views and the assistant (MCP) tools are per user. Text and
+  meaning search read only the caller's accounts (a named account, folder or cursor of someone
+  else's finds nothing); every MCP tool acts for the caller of its request and answers a mail,
+  folder or account of someone else's with `forbidden`; a unified view belongs to the user who
+  made it, two users may each have one of the same name, and a folder only joins views of the
+  user who owns its account. Giving an account to another user takes its folders out of the
+  previous owner's views.
+
 - Rules page (`/rules`, `Ctrl+Alt+0`) for every user: their rules grouped by purpose with a
   sentence each, per-account spam and orders switches, a filter, reordering by drag or menu,
   test with a recent mail, history, pause all, and a form editor for conditions and actions with

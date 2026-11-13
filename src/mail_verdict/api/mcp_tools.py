@@ -18,22 +18,28 @@ never a second copy of that logic. Each is called directly as a plain
 async function (the @router decorator does not wrap it), with its
 HTTPException translated into the {"error": ...} shape these tools use
 instead of raising.
+
+Every tool acts for the caller its request carries (current_scope()): it
+reads and writes only that user's accounts, and a tool naming an account or
+message of anyone else's answers with an error and nothing of theirs.
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+import functools
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime as _datetime
 from datetime import timezone as _timezone
-from typing import Any
+from typing import Any, Literal, TypeVar, cast
 
 from fastapi import HTTPException
 from fastmcp import FastMCP
 from sqlalchemy import select, text
 
+from mail_verdict.api.access import ensure_message_access
 from mail_verdict.api.calendar_events import (
     create_event as _create_calendar_event,
 )
@@ -108,6 +114,8 @@ from mail_verdict.api.schemas import (
     OutboxResponse,
     RespondRequest,
 )
+from mail_verdict.auth.ownership import account_display_name
+from mail_verdict.auth.scope import ScopeDenied
 from mail_verdict.config import get_config
 from mail_verdict.core.image_sanitizer import restore_remote_images
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
@@ -177,6 +185,32 @@ def _message_summary(
     }
 
 
+_Tool = TypeVar("_Tool", bound=Callable[..., Awaitable[Any]])
+
+
+def _refuses_foreign(
+    shape: Literal["error", "success", "list"] = "error",
+) -> Callable[[_Tool], _Tool]:
+    """Answer a call naming an account or message of someone else's with the
+    tool's own error shape -- {"error": ...}, {"success": False, "error":
+    ...}, or a one-element list of the first -- instead of raising."""
+
+    def decorate(tool: _Tool) -> _Tool:
+        @functools.wraps(tool)
+        async def refusing(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await tool(*args, **kwargs)
+            except ScopeDenied as exc:
+                error: dict[str, Any] = {"error": exc.detail}
+                if shape == "success":
+                    return {"success": False, **error}
+                return [error] if shape == "list" else error
+
+        return cast(_Tool, refusing)
+
+    return decorate
+
+
 def _endpoint_error(exc: HTTPException | ValueError) -> dict[str, Any]:
     """An api/ router's HTTPException, or a bad uuid.UUID(...)
     (ValueError), in the {"error": ...} shape these tools return instead
@@ -213,8 +247,8 @@ async def search_mail(
     """
     db = get_db_connection()
     msg_repo = MessageRepository(db)
-    aid = uuid.UUID(account_id) if account_id else None
-    rows = await msg_repo.search_fulltext_with_snippet(aid, query, limit=limit)
+    account_ids = (await current_scope()).narrow(uuid.UUID(account_id) if account_id else None)
+    rows = await msg_repo.search_fulltext_with_snippet(account_ids, query, limit=limit)
     async with db.session() as session:
         glacier_ids = await glacier_ids_among(session, [msg.id for msg, _snippet in rows])
     return [
@@ -233,6 +267,7 @@ async def search_mail(
         "openWorldHint": False,
     },
 )
+@_refuses_foreign("list")
 async def list_mails(
     account_id: str,
     folder_id: str | None = None,
@@ -249,10 +284,12 @@ async def list_mails(
     Returns:
         List of message summaries, newest received_at first
     """
+    account_uuid = uuid.UUID(account_id)
+    (await current_scope()).require_account(account_uuid)
     db = get_db_connection()
     async with db.session() as session:
         page = await _list_message_page(
-            session, account_id=uuid.UUID(account_id),
+            session, account_id=account_uuid,
             folder_id=uuid.UUID(folder_id) if folder_id else None,
             folder_scope=None, threaded=False, is_seen=None, since=None,
             before=None, after=None, around=None, limit=min(limit, 100),
@@ -279,6 +316,7 @@ async def list_mails(
         "openWorldHint": False,
     },
 )
+@_refuses_foreign()
 async def get_mail(mail_id: str) -> dict[str, Any]:
     """
     Get full email details by ID: subject, sender, recipients, body, flags,
@@ -294,6 +332,7 @@ async def get_mail(mail_id: str) -> dict[str, Any]:
 
     db = get_db_connection()
     mail_uuid = uuid.UUID(mail_id)
+    scope = await current_scope()
     is_glacier = False
     async with db.session() as session:
         result = await session.execute(
@@ -323,6 +362,7 @@ async def get_mail(mail_id: str) -> dict[str, Any]:
             msg = stale_result.scalar_one_or_none()
         if msg is None:
             return {"error": "Message not found"}
+        scope.require_account(msg.account_id)
 
         attachments = (await list_attachments_for_mails(session, [msg.id]))[msg.id]
 
@@ -355,6 +395,7 @@ async def get_mail(mail_id: str) -> dict[str, Any]:
         "openWorldHint": False,
     },
 )
+@_refuses_foreign("list")
 async def get_thread(mail_id: str) -> list[dict[str, Any]]:
     """
     Get every message in this message's conversation, across folders, ascending.
@@ -368,18 +409,25 @@ async def get_thread(mail_id: str) -> list[dict[str, Any]]:
     """
     db = get_db_connection()
     mail_uuid = uuid.UUID(mail_id)
+    scope = await current_scope()
     async with db.session() as session:
-        anchor = await session.execute(select(Message.thread_id).where(Message.id == mail_uuid))
-        thread_id = anchor.scalar_one_or_none()
-        if thread_id is None:
-            glacier_anchor = await session.execute(
-                select(GlacierMessage.thread_id).where(
-                    GlacierMessage.id == mail_uuid, GlacierMessage.visible_at.is_not(None),
-                )
+        anchor = (
+            await session.execute(
+                select(Message.thread_id, Message.account_id).where(Message.id == mail_uuid)
             )
-            thread_id = glacier_anchor.scalar_one_or_none()
-        if thread_id is None:
+        ).one_or_none()
+        if anchor is None:
+            anchor = (
+                await session.execute(
+                    select(GlacierMessage.thread_id, GlacierMessage.account_id).where(
+                        GlacierMessage.id == mail_uuid, GlacierMessage.visible_at.is_not(None),
+                    )
+                )
+            ).one_or_none()
+        if anchor is None:
             return [{"error": "Message not found"}]
+        thread_id, account_id = anchor
+        scope.require_account(account_id)
 
         # A conversation is never entirely one table once any of its
         # messages has been glaciered -- see api/mails.py's get_thread
@@ -387,12 +435,16 @@ async def get_thread(mail_id: str) -> list[dict[str, Any]]:
         # glaciering, design section 3.9).
         live_result = await session.execute(
             select(Message)
-            .where(Message.thread_id == thread_id, Message.expunged_at.is_(None))
+            .where(
+                Message.thread_id == thread_id, Message.account_id == account_id,
+                Message.expunged_at.is_(None),
+            )
         )
         live_messages: list[Message | GlacierMessage] = list(live_result.scalars().all())
         glacier_result = await session.execute(
             select(GlacierMessage).where(
-                GlacierMessage.thread_id == thread_id, GlacierMessage.visible_at.is_not(None),
+                GlacierMessage.thread_id == thread_id, GlacierMessage.account_id == account_id,
+                GlacierMessage.visible_at.is_not(None),
             )
         )
         glacier_messages = list(glacier_result.scalars().all())
@@ -416,6 +468,7 @@ async def get_thread(mail_id: str) -> list[dict[str, Any]]:
         "openWorldHint": False,
     },
 )
+@_refuses_foreign("list")
 async def list_folders(account_id: str) -> list[dict[str, Any]]:
     """
     List all folders for an account.
@@ -426,9 +479,11 @@ async def list_folders(account_id: str) -> list[dict[str, Any]]:
     Returns:
         List of folders with id, imap_name, special_use, last_synced_at
     """
+    account_uuid = uuid.UUID(account_id)
+    (await current_scope()).require_account(account_uuid)
     db = get_db_connection()
     folder_repo = FolderRepository(db)
-    folders = await folder_repo.get_by_account(uuid.UUID(account_id))
+    folders = await folder_repo.get_by_account(account_uuid)
     result = [
         {
             "id": str(f.id),
@@ -442,7 +497,7 @@ async def list_folders(account_id: str) -> list[dict[str, Any]]:
     async with db.session() as session:
         prefs = (
             await session.execute(
-                select(AccountPrefs).where(AccountPrefs.account_id == uuid.UUID(account_id))
+                select(AccountPrefs).where(AccountPrefs.account_id == account_uuid)
             )
         ).scalar_one_or_none()
     if prefs is not None and prefs.glacier_enabled and prefs.glacier_folder_id is not None:
@@ -467,20 +522,23 @@ async def list_folders(account_id: str) -> list[dict[str, Any]]:
 )
 async def list_accounts() -> list[dict[str, Any]]:
     """
-    List all configured mail accounts.
+    List the caller's own mail accounts.
 
     Returns:
         List of accounts with id, name, host, active status, sync state
     """
+    scope = await current_scope()
     db = get_db_connection()
     async with db.session() as session:
-        result = await session.execute(select(Account).order_by(Account.name))
+        result = await session.execute(
+            select(Account).where(scope.account_filter(Account.id)).order_by(Account.name)
+        )
         accounts = list(result.scalars().all())
 
     return [
         {
             "id": str(a.id),
-            "name": a.name,
+            "name": account_display_name(a.name),
             "imap_host": a.imap_host,
             "is_active": a.is_active,
             "state": a.state,
@@ -499,6 +557,7 @@ async def list_accounts() -> list[dict[str, Any]]:
         "openWorldHint": False,
     },
 )
+@_refuses_foreign("success")
 async def move_mail(mail_id: str, target_folder: str) -> dict[str, Any]:
     """
     Move a message to a different folder by that folder's IMAP name.
@@ -518,11 +577,14 @@ async def move_mail(mail_id: str, target_folder: str) -> dict[str, Any]:
         {"success": bool, "message"/"error": str}
     """
     db = get_db_connection()
+    scope = await current_scope()
     async with db.session() as session:
         msg_result = await session.execute(
             select(Message).where(Message.id == uuid.UUID(mail_id))
         )
         msg = msg_result.scalar_one_or_none()
+        if msg is not None:
+            scope.require_account(msg.account_id)
         if msg is None:
             glacier_row = (
                 await session.execute(
@@ -534,6 +596,7 @@ async def move_mail(mail_id: str, target_folder: str) -> dict[str, Any]:
             ).scalar_one_or_none()
             if glacier_row is None:
                 return {"success": False, "error": "Message not found"}
+            scope.require_account(glacier_row)
             folder = (
                 await session.execute(
                     select(Folder).where(
@@ -584,6 +647,7 @@ async def move_mail(mail_id: str, target_folder: str) -> dict[str, Any]:
         "openWorldHint": False,
     },
 )
+@_refuses_foreign("success")
 async def mark_mail(
     mail_id: str,
     is_seen: bool | None = None,
@@ -610,9 +674,13 @@ async def mark_mail(
 
     db = get_db_connection()
     mail_uuid = uuid.UUID(mail_id)
+    scope = await current_scope()
     async with db.session() as session:
-        result = await session.execute(select(Message.id).where(Message.id == mail_uuid))
-        if result.scalar_one_or_none() is not None:
+        live_account_id = await session.scalar(
+            select(Message.account_id).where(Message.id == mail_uuid)
+        )
+        if live_account_id is not None:
+            scope.require_account(live_account_id)
             await set_flags(session, mail_uuid, **flags)
             return {"success": True}
 
@@ -629,6 +697,7 @@ async def mark_mail(
         ).one_or_none()
         if glacier_row is None:
             return {"success": False, "error": "Message not found"}
+        scope.require_account(glacier_row.account_id)
 
         set_clause = ", ".join(f"{column} = :{column}" for column in flags)
         await session.execute(
@@ -650,6 +719,7 @@ async def mark_mail(
         "openWorldHint": False,
     },
 )
+@_refuses_foreign("success")
 async def tag_mail(mail_id: str, tag_name: str, source: str = "user") -> dict[str, Any]:
     """
     Add a tag to a message.
@@ -663,6 +733,9 @@ async def tag_mail(mail_id: str, tag_name: str, source: str = "user") -> dict[st
         {"success": bool, "tag_name": str, "source": str}
     """
     db = get_db_connection()
+    async with db.session() as session:
+        if await ensure_message_access(session, await current_scope(), uuid.UUID(mail_id)) is None:
+            return {"success": False, "error": "Message not found"}
     tag_repo = TagRepository(db)
 
     source_map = {
@@ -688,6 +761,7 @@ async def tag_mail(mail_id: str, tag_name: str, source: str = "user") -> dict[st
         "openWorldHint": False,
     },
 )
+@_refuses_foreign()
 async def get_verdict(mail_id: str) -> dict[str, Any] | None:
     """
     Get the latest spam verdict for a message.
@@ -700,6 +774,8 @@ async def get_verdict(mail_id: str) -> dict[str, Any] | None:
         or None if no verdict has been issued
     """
     db = get_db_connection()
+    async with db.session() as session:
+        await ensure_message_access(session, await current_scope(), uuid.UUID(mail_id))
     verdict_repo = VerdictRepository(db)
     verdict = await verdict_repo.get_latest_for_mail(uuid.UUID(mail_id))
     if verdict is None:
@@ -726,6 +802,7 @@ async def get_verdict(mail_id: str) -> dict[str, Any] | None:
         "openWorldHint": False,
     },
 )
+@_refuses_foreign("success")
 async def submit_spam_feedback(mail_id: str, account_id: str, is_spam: bool) -> dict[str, Any]:
     """
     Record a ruling on a message's spam classification, and move it to
@@ -744,13 +821,20 @@ async def submit_spam_feedback(mail_id: str, account_id: str, is_spam: bool) -> 
     from mail_verdict.server import get_spam_processor
     from mail_verdict.spam.feedback import FolderResolutionError
 
+    account_uuid = uuid.UUID(account_id)
+    (await current_scope()).require_account(account_uuid)
+    if await MessageRepository(get_db_connection()).get_by_id(
+        account_uuid, uuid.UUID(mail_id),
+    ) is None:
+        return {"success": False, "error": "Message not found"}
+
     processor = get_spam_processor()
     if processor is None:
         return {"success": False, "error": "Spam feedback handler not available"}
 
     try:
         ok = await processor.feedback.apply_human_ruling(
-            uuid.UUID(mail_id), uuid.UUID(account_id), is_spam=is_spam,
+            uuid.UUID(mail_id), account_uuid, is_spam=is_spam,
         )
     except FolderResolutionError as exc:
         return {"success": False, "error": f"No {exc.role} folder found for this account"}
@@ -793,9 +877,11 @@ async def _create_outbox_row(
             require_recipients(to, cc, bcc)
         db = get_db_connection()
         account_uuid = uuid.UUID(account_id)
+        scope = await current_scope()
+        scope.require_account(account_uuid)
         key = uuid.UUID(idempotency_key) if idempotency_key else None
         # Only a keyed send is stored per user, so only it needs to know who.
-        user_id = (await current_scope()).require_user() if key is not None else None
+        user_id = scope.require_user() if key is not None else None
         async with db.session() as session:
             if key is not None and user_id is not None:
                 repeat = await replay_submission(session, user_id, key, kind)
@@ -1037,6 +1123,7 @@ def _check_attachment_limits(
         "openWorldHint": True,
     },
 )
+@_refuses_foreign("success")
 async def reply_mail(
     mail_id: str,
     mode: str,
@@ -1126,6 +1213,7 @@ async def reply_mail(
             source = glacier_result.scalar_one_or_none()
         if source is None:
             return {"success": False, "error": "Message not found"}
+        (await current_scope()).require_account(source.account_id)
         if source.is_truncated:
             # Per the consumer contract: body_text/body_html and every
             # attachment were never fetched from IMAP at all for a
@@ -1228,9 +1316,10 @@ async def reply_mail(
         "openWorldHint": False,
     },
 )
+@_refuses_foreign()
 async def get_stats(account_id: str | None = None) -> dict[str, Any]:
     """
-    Get spam detection statistics.
+    Get spam detection statistics over the caller's own accounts.
 
     Args:
         account_id: Optional account UUID to scope stats to one account
@@ -1243,9 +1332,12 @@ async def get_stats(account_id: str | None = None) -> dict[str, Any]:
 
     db = get_db_connection()
     metrics = SpamMetrics(db)
+    scope = await current_scope()
 
     if account_id:
-        stats = await metrics.get_stats(uuid.UUID(account_id))
+        account_uuid = uuid.UUID(account_id)
+        scope.require_account(account_uuid)
+        stats = await metrics.get_stats(account_uuid)
         return {
             "total_verdicts": stats.total_verdicts,
             "spam_count": stats.spam_count,
@@ -1257,9 +1349,7 @@ async def get_stats(account_id: str | None = None) -> dict[str, Any]:
             "fn_rate": stats.fn_rate,
         }
 
-    async with db.session() as session:
-        accts = await session.execute(select(Account.id))
-        account_ids = [row[0] for row in accts.all()]
+    account_ids = sorted(scope.account_ids)
 
     totals: dict[str, int | float] = {
         "total_verdicts": 0,
@@ -1326,9 +1416,10 @@ async def semantic_search_mail(
     """
     from mail_verdict.embeddings.service import search_by_meaning
 
+    account_ids = (await current_scope()).narrow(uuid.UUID(account_id) if account_id else None)
     _model, hits = await search_by_meaning(
         get_db_connection(), query,
-        account_id=uuid.UUID(account_id) if account_id else None,
+        account_ids=account_ids,
         received_after=_parse_instant(received_after),
         received_before=_parse_instant(received_before),
     )
@@ -1350,8 +1441,8 @@ async def semantic_search_mail(
 )
 async def get_semantic_status(account_id: str | None = None) -> dict[str, Any]:
     """
-    Coverage of the semantic search index -- how much of the mailbox has a
-    vector under the currently configured model.
+    Coverage of the semantic search index -- how much of the caller's own
+    mail has a vector under the currently configured model.
 
     Args:
         account_id: Optional account UUID to scope to one account
@@ -1364,8 +1455,10 @@ async def get_semantic_status(account_id: str | None = None) -> dict[str, Any]:
 
     settings = get_settings_service().get("semantic")
     model = str(settings["model"])
-    aid = uuid.UUID(account_id) if account_id else None
-    status = await EmbeddingRepository(get_db_connection()).status(model=model, account_id=aid)
+    account_ids = (await current_scope()).narrow(uuid.UUID(account_id) if account_id else None)
+    status = await EmbeddingRepository(get_db_connection()).status_for_accounts(
+        model=model, account_ids=account_ids,
+    )
     return {
         "model": status.model, "in_scope": status.in_scope, "encoded": status.encoded,
         "pending": status.pending, "failed": status.failed, "coverage": status.coverage,

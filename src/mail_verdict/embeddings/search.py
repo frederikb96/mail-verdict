@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
@@ -136,7 +136,7 @@ class _Scope:
 
     model: str
     query_vector: list[float]
-    account_id: uuid.UUID | None
+    account_ids: Collection[uuid.UUID]
     folder_ids: list[uuid.UUID] | None
     received_after: datetime | None
     received_before: datetime | None
@@ -199,7 +199,7 @@ async def semantic_search(
     query_vector: list[float],
     model: str,
     exact_scan_max_rows: int,
-    account_id: uuid.UUID | None = None,
+    account_ids: Collection[uuid.UUID],
     folder_ids: list[uuid.UUID] | None = None,
     k: int = _CANDIDATE_POOL_SIZE,
     received_after: datetime | None = None,
@@ -227,7 +227,9 @@ async def semantic_search(
         model: Only rows encoded with this model are searched -- never mix
             vector spaces from two models in one ranking
         exact_scan_max_rows: See the module docstring
-        account_id: Scope to one account, or None to search every account
+        account_ids: The accounts to search -- the caller's own, narrowed to
+            the one it named (auth/scope.py's Scope.narrow); never "every
+            account". Empty finds nothing.
         folder_ids: Restrict to these folders, or None for no restriction
         k: Size of the nearest-neighbour pool the tiers are computed over
         received_after, received_before: Inclusive bounds on received_at;
@@ -237,8 +239,10 @@ async def semantic_search(
         Tier 1 hits then tier 2 hits, each newest first; a message without
         a date sorts last within its tier
     """
+    if not account_ids:
+        return []
     scope = _Scope(
-        model=model, query_vector=query_vector, account_id=account_id, folder_ids=folder_ids,
+        model=model, query_vector=query_vector, account_ids=account_ids, folder_ids=folder_ids,
         received_after=received_after, received_before=received_before,
     )
 
@@ -293,9 +297,7 @@ def _message_scope(scope: _Scope, table: Any, stmt: Any) -> Any:
 
 
 def _live_scope(scope: _Scope, stmt: Any) -> Any:
-    stmt = stmt.where(Message.expunged_at.is_(None))
-    if scope.account_id is not None:
-        stmt = stmt.where(Message.account_id == scope.account_id)
+    stmt = stmt.where(Message.expunged_at.is_(None), Message.account_id.in_(scope.account_ids))
     if scope.folder_ids is not None:
         stmt = stmt.where(Message.folder_id.in_(scope.folder_ids))
     return _message_scope(scope, Message, stmt)
@@ -312,7 +314,7 @@ async def _count_in_scope(session: AsyncSession, scope: _Scope, limit: int) -> i
     """How many messages (live and glaciered) the scope holds, counted only
     up to `limit` + 1 so an unrestricted search does not walk the mailbox."""
     glacier_folders = await touches_glacier(
-        session, account_id=scope.account_id, folder_ids=scope.folder_ids,
+        session, account_ids=scope.account_ids, folder_ids=scope.folder_ids,
     )
     live = _live_scope(scope, select(Message.id)).limit(limit + 1)
     total = (await session.execute(select(func.count()).select_from(live.subquery()))).scalar_one()
@@ -390,7 +392,7 @@ async def _pool_exact(session: AsyncSession, scope: _Scope, k: int) -> Pool:
     nearest first, from an exact scan (see _exact_statement).
     """
     glacier_folders = await touches_glacier(
-        session, account_id=scope.account_id, folder_ids=scope.folder_ids,
+        session, account_ids=scope.account_ids, folder_ids=scope.folder_ids,
     )
     stmt = _exact_statement(scope, glacier_folders, k)
     return [(row[0], float(row[1])) for row in (await session.execute(stmt)).all()]
@@ -424,12 +426,13 @@ def _index_candidates_stmt(scope: _Scope, n: int) -> Select[Any]:
             MessageEmbedding.account_id, MessageEmbedding.msg_key,
             MessageEmbedding.message_id, (1 - distance).label("similarity"),
         )
-        .where(MessageEmbedding.model == scope.model, MessageEmbedding.status == "done")
+        .where(
+            MessageEmbedding.model == scope.model, MessageEmbedding.status == "done",
+            MessageEmbedding.account_id.in_(scope.account_ids),
+        )
         .order_by(distance)
         .limit(n)
     )
-    if scope.account_id is not None:
-        stmt = stmt.where(MessageEmbedding.account_id == scope.account_id)
     if scope.received_after is not None:
         stmt = stmt.where(MessageEmbedding.received_at >= scope.received_after)
     if scope.received_before is not None:
@@ -476,7 +479,7 @@ async def _keep_eligible(
     unresolved = [c for c in candidates if live.get(c.message_id) != c.account_id]
     glacier: dict[tuple[uuid.UUID, str], uuid.UUID] = {}
     glacier_folders = await touches_glacier(
-        session, account_id=scope.account_id, folder_ids=scope.folder_ids,
+        session, account_ids=scope.account_ids, folder_ids=scope.folder_ids,
     )
     if glacier_folders and unresolved:
         glacier_stmt = _glacier_scope(

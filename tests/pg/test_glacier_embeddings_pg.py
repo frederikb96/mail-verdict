@@ -162,7 +162,7 @@ async def test_semantic_search_finds_a_glaciered_message(
 
     results = await semantic_search(
         migrated_db, exact_scan_max_rows=exact_scan_max_rows,
-        query_vector=query_vector, model=model, account_id=account_id, k=10,
+        query_vector=query_vector, model=model, account_ids=[account_id], k=10,
     )
     assert len(results) == 1
     assert results[0].message.id == glacier_id
@@ -201,12 +201,12 @@ async def test_the_index_path_finds_a_glaciered_message_inside_a_window(
     monkeypatch.setattr(search_module, "_pool_exact", refuse)
 
     inside = await semantic_search(
-        migrated_db, query_vector=query_vector, model=model, account_id=account_id,
+        migrated_db, query_vector=query_vector, model=model, account_ids=[account_id],
         exact_scan_max_rows=0, k=10,
         received_after=received - timedelta(days=1), received_before=received + timedelta(days=1),
     )
     outside = await semantic_search(
-        migrated_db, query_vector=query_vector, model=model, account_id=account_id,
+        migrated_db, query_vector=query_vector, model=model, account_ids=[account_id],
         exact_scan_max_rows=0, k=10, received_after=received + timedelta(days=1),
     )
 
@@ -216,7 +216,7 @@ async def test_the_index_path_finds_a_glaciered_message_inside_a_window(
 
 @_BOTH_PATHS
 @pytest.mark.asyncio
-async def test_semantic_search_scoped_to_nothing_still_finds_it(
+async def test_semantic_search_finds_it_scoped_to_the_whole_account(
     migrated_db: DatabaseConnection, exact_scan_max_rows: int,
 ) -> None:
     model = _unique_model()
@@ -240,7 +240,7 @@ async def test_semantic_search_scoped_to_nothing_still_finds_it(
 
     results = await semantic_search(
         migrated_db, exact_scan_max_rows=exact_scan_max_rows,
-        query_vector=query_vector, model=model, account_id=None, k=10,
+        query_vector=query_vector, model=model, account_ids=[account_id], k=10,
     )
     assert glacier_id in {r.message.id for r in results}
 

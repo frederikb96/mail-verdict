@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.api.mcp_tools import mcp
 from mail_verdict.auth.principal import OWNER_USER_ID, Principal
 from mail_verdict.database.connection import DatabaseConnection
-from tests.helpers.auth import as_principal
+from tests.helpers.auth import as_principal, owner_owns_everything
 
 _TARGETS = (
     "mail_verdict.api.mcp_tools.get_db_connection",
@@ -33,6 +33,7 @@ async def mcp_client(migrated_db: DatabaseConnection) -> AsyncIterator[Client]:
     a second module-level binding of get_db_connection distinct from
     mcp_tools.py's own -- both need patching."""
     patchers = [patch(target, return_value=migrated_db) for target in _TARGETS]
+    patchers.append(patch("mail_verdict.api.mcp_tools.current_scope", owner_owns_everything))
     for p in patchers:
         p.start()
     try:

@@ -25,6 +25,7 @@ from mail_verdict.api.folder_management import router as folder_order_router
 from mail_verdict.api.settings_api import router as settings_router
 from mail_verdict.api.unified import account_router as unified_account_router
 from mail_verdict.api.unified import unified_router
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.settings.credentials import (
     init_provider_credential_repo,
@@ -212,11 +213,10 @@ class TestFolderPrefsAnnouncesItself:
     def test_saving_the_unified_folder_order_announces_itself(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
-        # The unified order is not account-scoped: the event goes to every
-        # stream, the owner's included.
-        account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+        # Views belong to a user, not an account: the event goes on the
+        # user's own ring key.
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "connected", {})
+        client.portal.call(event_ring.add, OWNER_USER_ID, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -226,9 +226,7 @@ class TestFolderPrefsAnnouncesItself:
             resp = client.put("/unified/folder-order", json={"order": ["Inbox"]})
         assert resp.status_code == 200, resp.text
 
-        new_events = client.portal.call(
-            event_ring.replay_from, seq_before, owner_scope([account_id]).ring_keys(),
-        )
+        new_events = client.portal.call(event_ring.replay_from, seq_before, {str(OWNER_USER_ID)})
         matching = [e for e in new_events if e["event_type"] == "folder.changed"]
         assert len(matching) == 1, f"expected one folder.changed event, got {new_events!r}"
 

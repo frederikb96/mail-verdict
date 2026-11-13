@@ -9,6 +9,7 @@ than a database VIEW).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from typing import Any
 
 from sqlalchemy import Select, or_, select
@@ -76,7 +77,7 @@ def glacier_as_message_select() -> Select[Any]:
 async def touches_glacier(
     session: AsyncSession,
     *,
-    account_id: uuid.UUID | None,
+    account_ids: Collection[uuid.UUID],
     folder_ids: Any | None,
 ) -> dict[uuid.UUID, uuid.UUID]:
     """Which glacier folders (folder_id -> account_id) a request scoped
@@ -88,21 +89,21 @@ async def touches_glacier(
 
     Args:
         session: Active AsyncSession
-        account_id: The request's account scope, or None for every account
+        account_ids: The accounts the request may reach (the caller's own,
+            narrowed to the account it named); no glacier of any other
+            account is ever returned, whatever folder_ids names
         folder_ids: The request's folder scope (any sequence/selectable
             `in_()` accepts), or None for unscoped
 
     Returns:
         Empty when nothing in scope can reach a glacier
     """
-    known = await glacier_folder_ids(session)
-    if not known:
-        return {}
-    if folder_ids is not None:
-        return {fid: aid for fid, aid in known.items() if fid in folder_ids}
-    if account_id is not None:
-        return {fid: aid for fid, aid in known.items() if aid == account_id}
-    return known
+    known = {
+        fid: aid for fid, aid in (await glacier_folder_ids(session)).items() if aid in account_ids
+    }
+    if not known or folder_ids is None:
+        return known
+    return {fid: aid for fid, aid in known.items() if fid in folder_ids}
 
 
 async def glacier_ids_among(

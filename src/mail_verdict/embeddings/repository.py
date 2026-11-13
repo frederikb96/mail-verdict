@@ -751,6 +751,26 @@ class EmbeddingRepository:
                 reachable=reachable, unreachable=unreachable, shadowed=shadowed,
             )
 
+    async def status_for_accounts(
+        self, *, model: str, account_ids: Collection[uuid.UUID],
+    ) -> EmbeddingStatus:
+        """
+        status() summed over exactly these accounts -- a person's coverage
+        across their own mail, with nothing of anyone else's in it. No
+        accounts is an empty snapshot (coverage 1.0), not the whole instance.
+        """
+        parts = [await self.status(model=model, account_id=a) for a in sorted(account_ids)]
+        return EmbeddingStatus(
+            model=model,
+            in_scope=sum(p.in_scope for p in parts),
+            encoded=sum(p.encoded for p in parts),
+            pending=sum(p.pending for p in parts),
+            failed=sum(p.failed for p in parts),
+            reachable=sum(p.reachable for p in parts),
+            unreachable=sum(p.unreachable for p in parts),
+            shadowed=sum(p.shadowed for p in parts),
+        )
+
     async def fill_missing_received_at(self) -> int:
         """
         Copy received_at onto embedding rows that lack it although their

@@ -11330,7 +11330,7 @@
     },
     "/admin/accounts/{account_id}/owner": {
       "put": {
-        "description": "Give a mail account to another user. Its stored name moves into the\nnew owner's namespace in the same transaction; 409 if they already have\nan account by that name. Its orders (orders/ownership.py) and its alerts\n(alerts/audience.py) follow.",
+        "description": "Give a mail account to another user. Its stored name moves into the\nnew owner's namespace in the same transaction; 409 if they already have\nan account by that name. Its orders (orders/ownership.py) and its alerts\n(alerts/audience.py) follow, and its folders leave the previous owner's unified\nviews.",
         "operationId": "set_owner_admin_accounts__account_id__owner_put",
         "parameters": [
           {
@@ -13744,7 +13744,7 @@
     },
     "/embeddings/search": {
       "get": {
-        "description": "Semantic search: the messages closest in meaning to the query text,\nin two tiers -- likely hits first, then less likely ones, each newest\nfirst (see embeddings/search.py for how the tiers are drawn). The\nreceived_after/received_before window narrows the candidates before\ntiering. Single-page: the tiering bounds the result set naturally.\n\nComplements full-text search (GET /api/search) rather than replacing\nit -- literal search wins for a known sender or an exact phrase,\nthis wins for a half-remembered topic with no exact words in common.",
+        "description": "Semantic search: the messages closest in meaning to the query text,\nin two tiers -- likely hits first, then less likely ones, each newest\nfirst (see embeddings/search.py for how the tiers are drawn). The\nreceived_after/received_before window narrows the candidates before\ntiering. Single-page: the tiering bounds the result set naturally.\n\nComplements full-text search (GET /api/search) rather than replacing\nit -- literal search wins for a known sender or an exact phrase,\nthis wins for a half-remembered topic with no exact words in common.\n\nOnly the caller's own accounts are searched; `account_id` narrows to one\nof them, and one that is not theirs matches nothing.",
         "operationId": "search_embeddings_search_get",
         "parameters": [
           {
@@ -16589,7 +16589,7 @@
     },
     "/search": {
       "get": {
-        "description": "Search over the toggled fields, scoped to the given folders and, if\ngiven, a received_at range, ranked by field tier then newest first.\nSee MessageRepository.search_messages for the\nmatching and ranking rule itself; this endpoint resolves the cursor,\nfalls back to the trigram tier when the primary stage's first page is\nempty, and shapes the response.\n\nreceived_after/received_before are named distinctly from `before` (the\npagination cursor) deliberately -- both are dates, but one bounds the\nsearch and the other continues it, and the two must never be confused.",
+        "description": "Search over the toggled fields, scoped to the given folders and, if\ngiven, a received_at range, ranked by field tier then newest first.\nSee MessageRepository.search_messages for the\nmatching and ranking rule itself; this endpoint resolves the cursor,\nfalls back to the trigram tier when the primary stage's first page is\nempty, and shapes the response.\n\nreceived_after/received_before are named distinctly from `before` (the\npagination cursor) deliberately -- both are dates, but one bounds the\nsearch and the other continues it, and the two must never be confused.\n\nOnly the caller's own accounts are searched: `account_id` narrows to one\nof them, and one that is not theirs matches nothing -- as does a\n`folder_ids` or `before` naming another account's folder or message.",
         "operationId": "search_messages_search_get",
         "parameters": [
           {
@@ -17176,7 +17176,7 @@
     },
     "/unified/folder-order": {
       "get": {
-        "description": "The views' sidebar order, by name.",
+        "description": "The caller's views' sidebar order, by name.",
         "operationId": "get_unified_folder_order_unified_folder_order_get",
         "responses": {
           "200": {
@@ -17196,7 +17196,7 @@
         ]
       },
       "put": {
-        "description": "Save the views' sidebar order. Names that match no view are ignored;\na view the request leaves out keeps its relative place after the ones\nit names.",
+        "description": "Save the caller's views' sidebar order. Names that match no view are ignored;\na view the request leaves out keeps its relative place after the ones\nit names.",
         "operationId": "set_unified_folder_order_unified_folder_order_put",
         "requestBody": {
           "content": {
@@ -17238,7 +17238,7 @@
     },
     "/unified/folders": {
       "get": {
-        "description": "Every unified view, in sidebar order, with its member folders and their\nsummed counts. A folder belonging to two views counts in both.",
+        "description": "The caller's unified views, in sidebar order, with their member folders\n(of the caller's own accounts) and their summed counts. A folder\nbelonging to two views counts in both.",
         "operationId": "list_unified_folders_unified_folders_get",
         "responses": {
           "200": {
@@ -17264,7 +17264,7 @@
     },
     "/unified/mails": {
       "get": {
-        "description": "One view's messages, newest first, across every member folder and\naccount. Pages, threads (a conversation spanning two member folders is\none row) and filters exactly as GET /accounts/{id}/messages does --\nboth go through the same list code. 404 for a view name that does not\nexist.",
+        "description": "One of the caller's views' messages, newest first, across every member\nfolder and account of theirs. Pages, threads (a conversation spanning\ntwo member folders is one row) and filters exactly as GET\n/accounts/{id}/messages does -- both go through the same list code. 404\nfor a view name the caller does not have.",
         "operationId": "list_unified_messages_unified_mails_get",
         "parameters": [
           {
@@ -17427,7 +17427,7 @@
     },
     "/unified/views": {
       "post": {
-        "description": "Create an empty view, placed last in the sidebar. 409 if the name is\nalready taken -- a view is addressed by its name in the mail URL.",
+        "description": "Create an empty view of the caller's, placed last in their sidebar.\n409 if they already have one of that name -- a view is addressed by its\nname in the mail URL.",
         "operationId": "create_unified_view_unified_views_post",
         "requestBody": {
           "content": {

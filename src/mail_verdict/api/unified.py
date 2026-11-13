@@ -17,24 +17,30 @@ PUT /api/unified/folder-order — save view display order
 
 A folder's own memberships are set via PATCH /folders/{folder_id}/prefs
 (folder_management.py) -- one write surface for every folder preference.
+
+A view belongs to the user who created it (unified_views.user_id) and shows
+only folders of that user's own accounts: another user's view is a 403 by id
+and invisible by name or in a list, and a view never reaches a folder of an
+account its owner does not own.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import case, delete, insert, select, text
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import case, delete, insert, or_, select, text
 from sqlalchemy import func as sa_func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.api.deps import get_account_prefs_repo
-from mail_verdict.api.events import broadcast_event, get_event_ring
+from mail_verdict.api.access import owned_account
+from mail_verdict.api.deps import current_scope, get_account_prefs_repo
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.mails import list_message_page
 from mail_verdict.api.schemas import (
     EmojiUpdate,
@@ -47,9 +53,12 @@ from mail_verdict.api.schemas import (
     UnifiedViewResponse,
     UnifiedViewUpdate,
 )
+from mail_verdict.auth.ownership import account_display_name, owner_of_account
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
+    AccountOwner,
     AccountPrefs,
     Folder,
     FolderPrefs,
@@ -62,7 +71,9 @@ from mail_verdict.database.models import (
 logger = logging.getLogger(__name__)
 
 # Account-scoped endpoint for emoji
-account_router = APIRouter(prefix="/accounts/{account_id}", tags=["unified-view"])
+account_router = APIRouter(
+    prefix="/accounts/{account_id}", tags=["unified-view"], dependencies=[Depends(owned_account)],
+)
 
 # Top-level unified endpoints
 unified_router = APIRouter(prefix="/unified", tags=["unified-view"])
@@ -101,12 +112,16 @@ async def set_account_emoji(
 # --- Membership, shared with folder_management.py and accounts.py ---
 
 
-def member_folder_ids(view_id: uuid.UUID) -> Any:
+def member_folder_ids(view_id: uuid.UUID, account_ids: Collection[uuid.UUID]) -> Any:
     """The folders a view actually shows: its members on an active account
-    that have not been deleted, unioned with any member that names a
-    still-enabled glacier folder -- a glacier id never appears in Folder
-    at all (it is synthetic, D2), so the plain join above would silently
-    drop it (design section 4.5)."""
+    of `account_ids` that have not been deleted, unioned with any member
+    that names a still-enabled glacier folder -- a glacier id never appears
+    in Folder at all (it is synthetic, D2), so the plain join above would
+    silently drop it (design section 4.5).
+
+    `account_ids` is the viewer's own accounts: a membership naming a
+    folder of any other account (one reassigned to another owner) shows
+    nothing."""
     real = (
         select(UnifiedViewFolder.folder_id)
         .join(Folder, Folder.id == UnifiedViewFolder.folder_id)
@@ -115,6 +130,7 @@ def member_folder_ids(view_id: uuid.UUID) -> Any:
             UnifiedViewFolder.view_id == view_id,
             Folder.deleted_at.is_(None),
             Account.is_active.is_(True),
+            Account.id.in_(account_ids),
         )
     )
     glacier = (
@@ -125,6 +141,7 @@ def member_folder_ids(view_id: uuid.UUID) -> Any:
             UnifiedViewFolder.view_id == view_id,
             AccountPrefs.glacier_enabled.is_(True),
             Account.is_active.is_(True),
+            Account.id.in_(account_ids),
         )
     )
     return real.union(glacier)
@@ -133,13 +150,29 @@ def member_folder_ids(view_id: uuid.UUID) -> Any:
 async def view_ids_by_folder(
     session: AsyncSession, folder_ids: Sequence[uuid.UUID],
 ) -> dict[uuid.UUID, list[uuid.UUID]]:
-    """Every view each of these folders belongs to, in sidebar order."""
+    """Every view each of these folders belongs to, in sidebar order -- only
+    views of the user who owns the folder's account."""
     if not folder_ids:
         return {}
+    folder_account = (
+        select(Folder.id.label("folder_id"), Folder.account_id.label("account_id"))
+        .union(
+            select(
+                AccountPrefs.glacier_folder_id.label("folder_id"),
+                AccountPrefs.account_id.label("account_id"),
+            ).where(AccountPrefs.glacier_folder_id.is_not(None))
+        )
+        .subquery()
+    )
     result = await session.execute(
         select(UnifiedViewFolder.folder_id, UnifiedViewFolder.view_id)
         .join(UnifiedView, UnifiedView.id == UnifiedViewFolder.view_id)
-        .where(UnifiedViewFolder.folder_id.in_(folder_ids))
+        .join(folder_account, folder_account.c.folder_id == UnifiedViewFolder.folder_id)
+        .join(AccountOwner, AccountOwner.account_id == folder_account.c.account_id)
+        .where(
+            UnifiedViewFolder.folder_id.in_(folder_ids),
+            UnifiedView.user_id == AccountOwner.user_id,
+        )
         .order_by(UnifiedView.position, UnifiedView.name)
     )
     by_folder: dict[uuid.UUID, list[uuid.UUID]] = {}
@@ -154,8 +187,10 @@ async def set_folder_views(
     """Make view_ids the complete set of views this folder belongs to.
 
     404 for a folder that does not exist (or was deleted) or a view id
-    that names no view -- checked before anything is written, so a bad
-    request changes nothing."""
+    that names no view, 403 for a view that is not the folder's owner's --
+    checked before anything is written, so a bad request changes nothing.
+    A view holds only its own user's folders, so the user is the owner of
+    the folder's account; the route has already checked the caller is it."""
     # The multi-select saves on every tick, so two writes for one folder can
     # overlap. Held until this transaction commits, the lock has each one
     # replace the whole set in turn; otherwise the later insert collides
@@ -166,31 +201,33 @@ async def set_folder_views(
         ),
         {"folder": str(folder_id)},
     )
-    folder_exists = await session.scalar(
-        select(Folder.id).where(Folder.id == folder_id, Folder.deleted_at.is_(None))
+    folder_account_id = await session.scalar(
+        select(Folder.account_id).where(Folder.id == folder_id, Folder.deleted_at.is_(None))
     )
-    if folder_exists is None:
+    if folder_account_id is None:
         # A glacier folder id is synthetic -- never a Folder row (D2) --
         # so it is checked against account_prefs instead.
-        glacier_exists = await session.scalar(
+        folder_account_id = await session.scalar(
             select(AccountPrefs.account_id).where(
                 AccountPrefs.glacier_folder_id == folder_id,
                 AccountPrefs.glacier_enabled.is_(True),
             )
         )
-        if glacier_exists is None:
+        if folder_account_id is None:
             raise HTTPException(status_code=404, detail="Folder not found")
+    owner_id = await owner_of_account(session, folder_account_id)
 
     wanted = list(dict.fromkeys(view_ids))
     if wanted:
-        found = set(
-            (await session.execute(
-                select(UnifiedView.id).where(UnifiedView.id.in_(wanted))
-            )).scalars()
+        rows = await session.execute(
+            select(UnifiedView.id, UnifiedView.user_id).where(UnifiedView.id.in_(wanted))
         )
+        found = {view_id: user_id for view_id, user_id in rows.all()}
         missing = [v for v in wanted if v not in found]
         if missing:
             raise HTTPException(status_code=404, detail=f"Unified view {missing[0]} not found")
+        if owner_id is None or any(found[v] != owner_id for v in wanted):
+            raise HTTPException(status_code=403, detail="forbidden")
 
     await session.execute(
         delete(UnifiedViewFolder).where(UnifiedViewFolder.folder_id == folder_id)
@@ -202,30 +239,62 @@ async def set_folder_views(
         )
 
 
-async def announce_views_changed() -> None:
-    """Views are not account-scoped, so there is no single account to key
-    the event on -- broadcast to every account's ring (see
-    broadcast_event). folder.changed, since the client already refreshes
-    every folder-related cache, the unified ones included, on it."""
+async def drop_account_memberships(session: AsyncSession, account_id: uuid.UUID) -> None:
+    """Take every folder of an account out of every view -- for an account
+    that has just changed owner, whose folders belong in none of the previous
+    owner's views. The caller commits."""
+    folders = select(Folder.id).where(Folder.account_id == account_id)
+    glacier = select(AccountPrefs.glacier_folder_id).where(
+        AccountPrefs.account_id == account_id, AccountPrefs.glacier_folder_id.is_not(None),
+    )
+    await session.execute(
+        delete(UnifiedViewFolder).where(
+            or_(UnifiedViewFolder.folder_id.in_(folders), UnifiedViewFolder.folder_id.in_(glacier))
+        )
+    )
+
+
+async def announce_views_changed(user_id: uuid.UUID) -> None:
+    """Views belong to a user and no single account, so the event goes on
+    the user's own ring key and reaches only that user's open clients.
+    folder.changed, since the client already refreshes every folder-related
+    cache, the unified ones included, on it."""
     event_ring = get_event_ring()
     if event_ring is not None:
-        await broadcast_event(get_db_connection(), event_ring, "folder.changed", {})
+        await event_ring.add(user_id, "folder.changed", {})
+
+
+async def _owned_view(session: AsyncSession, scope: Scope, view_id: uuid.UUID) -> UnifiedView:
+    """The view, 404 if nothing has that id and 403 if it is not the
+    caller's -- a view with no owner is nobody's."""
+    view = await session.get(UnifiedView, view_id)
+    if view is None:
+        raise HTTPException(status_code=404, detail="Unified view not found")
+    if scope.user_id is None or view.user_id != scope.user_id:
+        raise HTTPException(status_code=403, detail="forbidden")
+    return view
 
 
 # --- Views ---
 
 
 @unified_router.get("/folders", response_model=list[UnifiedFolderResponse])
-async def list_unified_folders() -> list[UnifiedFolderResponse]:
+async def list_unified_folders(
+    scope: Scope = Depends(current_scope),
+) -> list[UnifiedFolderResponse]:
     """
-    Every unified view, in sidebar order, with its member folders and their
-    summed counts. A folder belonging to two views counts in both.
+    The caller's unified views, in sidebar order, with their member folders
+    (of the caller's own accounts) and their summed counts. A folder
+    belonging to two views counts in both.
     """
+    user_id = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
         views = list(
             (await session.execute(
-                select(UnifiedView).order_by(UnifiedView.position, UnifiedView.name)
+                select(UnifiedView)
+                .where(UnifiedView.user_id == user_id)
+                .order_by(UnifiedView.position, UnifiedView.name)
             )).scalars().all()
         )
         stmt = (
@@ -241,6 +310,7 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
                 ).label("unread_count"),
             )
             .select_from(UnifiedViewFolder)
+            .join(UnifiedView, UnifiedView.id == UnifiedViewFolder.view_id)
             .join(Folder, Folder.id == UnifiedViewFolder.folder_id)
             .join(Account, Folder.account_id == Account.id)
             .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
@@ -249,7 +319,10 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
                 Message,
                 (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
             )
-            .where(Account.is_active.is_(True), Folder.deleted_at.is_(None))
+            .where(
+                Account.is_active.is_(True), Folder.deleted_at.is_(None),
+                UnifiedView.user_id == user_id, scope.account_filter(Account.id),
+            )
             .group_by(
                 UnifiedViewFolder.view_id, Folder.id, FolderPrefs.special_use_override,
                 Account.name, AccountPrefs.emoji,
@@ -275,6 +348,7 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
                 ).label("unread_count"),
             )
             .select_from(UnifiedViewFolder)
+            .join(UnifiedView, UnifiedView.id == UnifiedViewFolder.view_id)
             .join(AccountPrefs, AccountPrefs.glacier_folder_id == UnifiedViewFolder.folder_id)
             .join(Account, Account.id == AccountPrefs.account_id)
             .outerjoin(
@@ -282,7 +356,10 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
                 (GlacierMessage.folder_id == UnifiedViewFolder.folder_id)
                 & GlacierMessage.visible_at.is_not(None),
             )
-            .where(AccountPrefs.glacier_enabled.is_(True), Account.is_active.is_(True))
+            .where(
+                AccountPrefs.glacier_enabled.is_(True), Account.is_active.is_(True),
+                UnifiedView.user_id == user_id, scope.account_filter(Account.id),
+            )
             .group_by(
                 UnifiedViewFolder.view_id, AccountPrefs.account_id,
                 AccountPrefs.glacier_folder_id, Account.name, AccountPrefs.emoji,
@@ -295,7 +372,7 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
         members.setdefault(view_id, []).append((
             UnifiedFolderSource(
                 account_id=folder.account_id,
-                account_name=account_name,
+                account_name=account_display_name(account_name),
                 account_emoji=account_emoji,
                 folder_id=folder.id,
                 imap_name=folder.imap_name,
@@ -311,7 +388,7 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
         members.setdefault(view_id, []).append((
             UnifiedFolderSource(
                 account_id=account_id,
-                account_name=account_name,
+                account_name=account_display_name(account_name),
                 account_emoji=account_emoji,
                 folder_id=glacier_folder_id,
                 imap_name="Glacier",
@@ -345,19 +422,25 @@ def _clean_emoji(emoji: str | None) -> str | None:
 
 
 @unified_router.post("/views", response_model=UnifiedViewResponse, status_code=201)
-async def create_unified_view(request: UnifiedViewCreate) -> UnifiedViewResponse:
-    """Create an empty view, placed last in the sidebar. 409 if the name is
-    already taken -- a view is addressed by its name in the mail URL."""
+async def create_unified_view(
+    request: UnifiedViewCreate, scope: Scope = Depends(current_scope),
+) -> UnifiedViewResponse:
+    """Create an empty view of the caller's, placed last in their sidebar.
+    409 if they already have one of that name -- a view is addressed by its
+    name in the mail URL."""
+    user_id = scope.require_user()
     name = request.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="A unified view needs a name")
 
     db = get_db_connection()
     async with db.session() as session:
-        last = await session.scalar(select(sa_func.max(UnifiedView.position)))
+        last = await session.scalar(
+            select(sa_func.max(UnifiedView.position)).where(UnifiedView.user_id == user_id)
+        )
         view = UnifiedView(
             id=uuid.uuid4(), name=name, emoji=_clean_emoji(request.emoji),
-            position=(last + 1) if last is not None else 0,
+            position=(last + 1) if last is not None else 0, user_id=user_id,
         )
         session.add(view)
         try:
@@ -368,13 +451,13 @@ async def create_unified_view(request: UnifiedViewCreate) -> UnifiedViewResponse
             ) from exc
         response = _view_response(view)
 
-    await announce_views_changed()
+    await announce_views_changed(scope.require_user())
     return response
 
 
 @unified_router.patch("/views/{view_id}", response_model=UnifiedViewResponse)
 async def update_unified_view(
-    view_id: uuid.UUID, request: UnifiedViewUpdate,
+    view_id: uuid.UUID, request: UnifiedViewUpdate, scope: Scope = Depends(current_scope),
 ) -> UnifiedViewResponse:
     """Rename a view, or set or clear its emoji (an explicit null)."""
     values = request.model_dump(exclude_unset=True)
@@ -390,9 +473,7 @@ async def update_unified_view(
 
     db = get_db_connection()
     async with db.session() as session:
-        view = await session.get(UnifiedView, view_id)
-        if view is None:
-            raise HTTPException(status_code=404, detail="Unified view not found")
+        view = await _owned_view(session, scope, view_id)
         for key, value in values.items():
             setattr(view, key, value)
         try:
@@ -404,21 +485,22 @@ async def update_unified_view(
             ) from exc
         response = _view_response(view)
 
-    await announce_views_changed()
+    await announce_views_changed(scope.require_user())
     return response
 
 
 @unified_router.delete("/views/{view_id}", status_code=204)
-async def delete_unified_view(view_id: uuid.UUID) -> None:
+async def delete_unified_view(
+    view_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> None:
     """Delete a view. Only the grouping goes: its folders and every message
     in them are untouched, as is their membership of any other view."""
     db = get_db_connection()
     async with db.session() as session:
-        result = await session.execute(delete(UnifiedView).where(UnifiedView.id == view_id))
-        if result.rowcount == 0:  # type: ignore[attr-defined]
-            raise HTTPException(status_code=404, detail="Unified view not found")
+        view = await _owned_view(session, scope, view_id)
+        await session.delete(view)
 
-    await announce_views_changed()
+    await announce_views_changed(scope.require_user())
 
 
 # --- Messages ---
@@ -452,24 +534,28 @@ async def list_unified_messages(
         Query(description="Centre a fresh page on this message -- see the account list"),
     ] = None,
     since: Annotated[datetime | None, Query()] = None,
+    scope: Scope = Depends(current_scope),
 ) -> MessageListResponse:
     """
-    One view's messages, newest first, across every member folder and
-    account. Pages, threads (a conversation spanning two member folders is
-    one row) and filters exactly as GET /accounts/{id}/messages does --
-    both go through the same list code. 404 for a view name that does not
-    exist.
+    One of the caller's views' messages, newest first, across every member
+    folder and account of theirs. Pages, threads (a conversation spanning
+    two member folders is one row) and filters exactly as GET
+    /accounts/{id}/messages does -- both go through the same list code. 404
+    for a view name the caller does not have.
     """
+    user_id = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
         view_id = await session.scalar(
-            select(UnifiedView.id).where(UnifiedView.name == folder_name)
+            select(UnifiedView.id).where(
+                UnifiedView.name == folder_name, UnifiedView.user_id == user_id,
+            )
         )
         if view_id is None:
             raise HTTPException(status_code=404, detail="Unified view not found")
         return await list_message_page(
             session, account_id=None, folder_id=None,
-            folder_scope=member_folder_ids(view_id),
+            folder_scope=member_folder_ids(view_id, scope.account_ids),
             threaded=threaded, is_seen=is_seen, since=since,
             before=before, after=after, around=around, limit=limit,
         )
@@ -478,34 +564,42 @@ async def list_unified_messages(
 # --- View order ---
 
 
-async def _names_in_order(session: AsyncSession) -> list[str]:
+async def _names_in_order(session: AsyncSession, user_id: uuid.UUID | None) -> list[str]:
     result = await session.execute(
-        select(UnifiedView.name).order_by(UnifiedView.position, UnifiedView.name)
+        select(UnifiedView.name)
+        .where(UnifiedView.user_id == user_id)
+        .order_by(UnifiedView.position, UnifiedView.name)
     )
     return list(result.scalars().all())
 
 
 @unified_router.get("/folder-order", response_model=UnifiedFolderOrderResponse)
-async def get_unified_folder_order() -> UnifiedFolderOrderResponse:
-    """The views' sidebar order, by name."""
+async def get_unified_folder_order(
+    scope: Scope = Depends(current_scope),
+) -> UnifiedFolderOrderResponse:
+    """The caller's views' sidebar order, by name."""
+    user_id = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
-        return UnifiedFolderOrderResponse(order=await _names_in_order(session))
+        return UnifiedFolderOrderResponse(order=await _names_in_order(session, user_id))
 
 
 @unified_router.put("/folder-order", response_model=UnifiedFolderOrderResponse)
 async def set_unified_folder_order(
-    request: UnifiedFolderOrderUpdate,
+    request: UnifiedFolderOrderUpdate, scope: Scope = Depends(current_scope),
 ) -> UnifiedFolderOrderResponse:
-    """Save the views' sidebar order. Names that match no view are ignored;
+    """Save the caller's views' sidebar order. Names that match no view are ignored;
     a view the request leaves out keeps its relative place after the ones
     it names."""
+    user_id = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
         views = {
             v.name: v
             for v in (await session.execute(
-                select(UnifiedView).order_by(UnifiedView.position, UnifiedView.name)
+                select(UnifiedView)
+                .where(UnifiedView.user_id == user_id)
+                .order_by(UnifiedView.position, UnifiedView.name)
             )).scalars().all()
         }
         named = [n for n in dict.fromkeys(request.order) if n in views]
@@ -514,7 +608,7 @@ async def set_unified_folder_order(
         for position, name in enumerate(ordered):
             views[name].position = position
         await session.flush()
-        order = await _names_in_order(session)
+        order = await _names_in_order(session, user_id)
 
-    await announce_views_changed()
+    await announce_views_changed(user_id)
     return UnifiedFolderOrderResponse(order=order)

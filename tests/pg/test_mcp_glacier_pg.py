@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.api.mcp_tools import mcp
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
+from tests.helpers.auth import owner_owns_everything
 
 _TARGETS = (
     "mail_verdict.api.mcp_tools.get_db_connection",
@@ -35,6 +36,7 @@ _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
 @pytest_asyncio.fixture()
 async def mcp_client(migrated_db: DatabaseConnection) -> AsyncIterator[Client]:
     patchers = [patch(target, return_value=migrated_db) for target in _TARGETS]
+    patchers.append(patch("mail_verdict.api.mcp_tools.current_scope", owner_owns_everything))
     for p in patchers:
         p.start()
     try:

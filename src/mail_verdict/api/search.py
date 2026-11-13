@@ -1,9 +1,9 @@
 """
 Search API endpoint.
 
-GET /api/search — field- and folder-scoped search, ranked by field tier
-then newest first, keyset-paginated the same way GET
-/api/accounts/:id/messages is.
+GET /api/search — field- and folder-scoped search over the caller's own
+accounts, ranked by field tier then newest first, keyset-paginated the
+same way GET /api/accounts/:id/messages is.
 
 Complements the MCP search_mail tool (search_fulltext_with_snippet,
 untouched here): that tool ranks by relevance over a stemmed tsquery,
@@ -19,14 +19,15 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from mail_verdict.api.deps import get_message_repo
+from mail_verdict.api.deps import current_scope, get_message_repo
 from mail_verdict.api.schemas import (
     SearchField,
     SearchResponse,
     SearchResult,
 )
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.projection import MessageDisplay
 from mail_verdict.database.repository import (
@@ -108,6 +109,7 @@ async def search_messages(
     is_seen: Annotated[
         bool | None, Query(description="Only read (true) or only unread (false) messages"),
     ] = None,
+    scope: Scope = Depends(current_scope),
 ) -> SearchResponse:
     """
     Search over the toggled fields, scoped to the given folders and, if
@@ -120,7 +122,12 @@ async def search_messages(
     received_after/received_before are named distinctly from `before` (the
     pagination cursor) deliberately -- both are dates, but one bounds the
     search and the other continues it, and the two must never be confused.
+
+    Only the caller's own accounts are searched: `account_id` narrows to one
+    of them, and one that is not theirs matches nothing -- as does a
+    `folder_ids` or `before` naming another account's folder or message.
     """
+    account_ids = scope.narrow(account_id)
     msg_repo: MessageRepository = get_message_repo()
     field_set = frozenset(fields) if fields else SEARCH_FIELDS
 
@@ -134,7 +141,7 @@ async def search_messages(
 
     cursor_received_at, cursor_id, cursor_tier = None, None, None
     if before is not None:
-        cursor_row = await msg_repo.resolve_search_cursor(before, tokens)
+        cursor_row = await msg_repo.resolve_search_cursor(account_ids, before, tokens)
         if cursor_row is None:
             raise HTTPException(
                 status_code=400, detail=f"Invalid cursor: message {before} not found"
@@ -142,7 +149,7 @@ async def search_messages(
         cursor_received_at, cursor_id, cursor_tier = cursor_row
 
     rows = await msg_repo.search_messages(
-        account_id,
+        account_ids,
         tokens,
         folder_ids=folder_ids,
         fields=field_set,
@@ -158,7 +165,7 @@ async def search_messages(
     has_more = len(rows) > limit
     rows = rows[:limit]
     total = await msg_repo.count_search_candidates(
-        account_id, tokens, folder_ids=folder_ids, fields=field_set,
+        account_ids, tokens, folder_ids=folder_ids, fields=field_set,
         received_after=received_after, received_before=received_before,
         is_seen=is_seen,
     )
@@ -169,7 +176,7 @@ async def search_messages(
         # typo-tolerant). Never on a later page: a cursor here always
         # means the primary stage, whose page this is a continuation of.
         fallback_rows = await msg_repo.search_messages_fallback(
-            account_id, tokens, folder_ids=folder_ids,
+            account_ids, tokens, folder_ids=folder_ids,
             received_after=received_after, received_before=received_before,
             is_seen=is_seen, limit=limit,
         )

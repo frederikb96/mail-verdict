@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +10,7 @@ from fastapi import HTTPException
 
 from mail_verdict.api.embeddings import search
 from mail_verdict.embeddings.query import SemanticUnavailableError
+from tests.helpers.auth import owner_scope
 
 
 @pytest.mark.asyncio
@@ -23,7 +25,7 @@ async def test_a_query_that_cannot_be_embedded_is_a_503_with_the_code() -> None:
     ):
         await search(
             q="garage", account_id=None, folder_ids=None, received_after=None,
-            received_before=None,
+            received_before=None, scope=owner_scope([uuid.uuid4()]),
         )
 
     assert caught.value.status_code == 503
