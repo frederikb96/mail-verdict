@@ -11,45 +11,52 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
 from mail_verdict.outbox.stalled import _describe, _Stalled
 
-_SYNCED = datetime.now(timezone.utc) - timedelta(days=1)
+# How long ago an account that has worked before last finished a sync.
+_SYNCED_AGO = timedelta(days=1)
 
 
-def _row(*, is_active: bool | None, state: str | None, last_full_sync: datetime | None) -> _Stalled:
+def _row(*, is_active: bool | None, state: str | None, synced: bool) -> _Stalled:
+    """A send held for 60 min as of now -- built when the test runs, never at
+    collection, so the age it reads is the age it was given."""
+    now = datetime.now(timezone.utc)
     return _Stalled(
         id=uuid.uuid4(), account_id=uuid.uuid4(), kind="send", subject="Held send",
-        waiting_since=datetime.now(timezone.utc) - timedelta(minutes=60, seconds=5),
-        is_active=is_active, state=state, last_full_sync=last_full_sync,
+        waiting_since=now - timedelta(minutes=60, seconds=5),
+        is_active=is_active, state=state, last_full_sync=now - _SYNCED_AGO if synced else None,
     )
 
 
 @pytest.mark.parametrize(
-    ("row", "expected"),
+    ("account", "expected"),
     [
         pytest.param(
-            _row(is_active=True, state="error", last_full_sync=_SYNCED),
+            {"is_active": True, "state": "error", "synced": True},
             ("disconnected", "retried"), id="disconnected-after-working",
         ),
         pytest.param(
-            _row(is_active=True, state="error", last_full_sync=None),
+            {"is_active": True, "state": "error", "synced": False},
             ("never connected", "settings"), id="never-connected",
         ),
         pytest.param(
-            _row(is_active=True, state="disabled", last_full_sync=_SYNCED),
+            {"is_active": True, "state": "disabled", "synced": True},
             ("disabled",), id="disabled",
         ),
         pytest.param(
-            _row(is_active=False, state="error", last_full_sync=_SYNCED),
+            {"is_active": False, "state": "error", "synced": True},
             ("paused",), id="paused-wins-over-its-state",
         ),
     ],
 )
-def test_an_account_that_cannot_send_is_named(row: _Stalled, expected: tuple[str, ...]) -> None:
-    title, body = _describe(row)
+def test_an_account_that_cannot_send_is_named(
+    account: dict[str, Any], expected: tuple[str, ...],
+) -> None:
+    title, body = _describe(_row(**account))
     assert title == "Message not sent yet"
     assert body.startswith("Held send -- still waiting after 60 min: the account"), body
     for phrase in expected:
@@ -57,12 +64,12 @@ def test_an_account_that_cannot_send_is_named(row: _Stalled, expected: tuple[str
 
 
 @pytest.mark.parametrize(
-    "row",
+    "account",
     [
-        pytest.param(_row(is_active=True, state="active", last_full_sync=_SYNCED), id="healthy"),
-        pytest.param(_row(is_active=True, state="syncing", last_full_sync=None), id="first-sync"),
-        pytest.param(_row(is_active=None, state=None, last_full_sync=None), id="account-gone"),
+        pytest.param({"is_active": True, "state": "active", "synced": True}, id="healthy"),
+        pytest.param({"is_active": True, "state": "syncing", "synced": False}, id="first-sync"),
+        pytest.param({"is_active": None, "state": None, "synced": False}, id="account-gone"),
     ],
 )
-def test_an_account_that_can_send_is_not_blamed(row: _Stalled) -> None:
-    assert _describe(row)[1] == "Held send -- still waiting after 60 min"
+def test_an_account_that_can_send_is_not_blamed(account: dict[str, Any]) -> None:
+    assert _describe(_row(**account))[1] == "Held send -- still waiting after 60 min"
