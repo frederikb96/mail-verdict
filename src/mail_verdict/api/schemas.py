@@ -637,6 +637,11 @@ class FolderResponse(BaseModel):
     is_visible: bool = True
     # Every unified view this folder belongs to (unified_view_folders).
     unified_view_ids: list[uuid.UUID] = Field(default_factory=list)
+    pipeline_enabled: bool = Field(
+        default=True,
+        description="Whether mail arriving in this folder is classified and embedded -- "
+        "the folder's role and its own switch combined (pipeline/scope.py).",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -657,6 +662,9 @@ class FolderPrefsUpdate(BaseModel):
     # whatever it belonged to before; an empty list removes it from all.
     unified_view_ids: list[uuid.UUID] | None = None
     special_use_override: str | None = None
+    # false takes the folder out of the pipeline and the semantic index;
+    # true or null returns the decision to the folder's role.
+    pipeline_enabled: bool | None = None
     real_time: bool | None = None
 
 
@@ -998,6 +1006,7 @@ class FolderOrderItem(BaseModel):
     display_name: str | None = None
     special_use: str | None = None
     is_visible: bool = True
+    pipeline_enabled: bool = True
     unread_count: int = 0
     total_count: int = 0
     kind: Literal["imap", "glacier"] = "imap"

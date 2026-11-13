@@ -72,6 +72,8 @@ class FolderView:
     id: uuid.UUID
     imap_name: str
     special_use: str | None
+    # folder_prefs.pipeline_enabled, None when unset.
+    pipeline_enabled: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -325,6 +327,7 @@ async def load_message_view(session: AsyncSession, message_id: uuid.UUID) -> Mes
             func.coalesce(FolderPrefs.special_use_override, Folder.special_use).label(
                 "special_use"
             ),
+            FolderPrefs.pipeline_enabled,
             Folder.deleted_at,
         )
         .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
@@ -377,6 +380,7 @@ async def load_message_view(session: AsyncSession, message_id: uuid.UUID) -> Mes
         account_id=row.account_id,
         folder=FolderView(
             id=folder_row.id, imap_name=folder_row.imap_name, special_use=folder_row.special_use,
+            pipeline_enabled=folder_row.pipeline_enabled,
         ),
         subject=row.subject or "",
         from_addr=row.from_addr or "",

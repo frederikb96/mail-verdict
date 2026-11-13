@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import text
 
 from mail_verdict.database.msg_key import compute_msg_key
+from mail_verdict.pipeline.scope import FOLDER_IN_PIPELINE_SCOPE_SQL
 from mail_verdict.queue.notify import ReconciliationTimer, WorkQueueNotifier
 from mail_verdict.settings.defaults import SETTING_DEFAULTS, SettingCategory
 
@@ -57,9 +58,6 @@ if TYPE_CHECKING:
     from mail_verdict.settings.service import SettingsService
 
 logger = logging.getLogger(__name__)
-
-# Kept in sync with pipeline/runner.py's re-check at execution time.
-_SKIP_FOLDER_SPECIAL_USE = frozenset({"sent", "drafts", "trash", "junk", "archive"})
 
 # Distinct from queue/manager.py's own reclaim-timer lock key (761_034_221)
 # and from any future sweep controller's -- every ReconciliationTimer in
@@ -78,10 +76,12 @@ async def enqueue_live_arrival(
     embeddable at all. Called directly from the `message`/`insert` branch
     of the postimap_events dispatcher -- never from an `update`.
 
-    Deliberately not the pipeline-scope gate (sent/drafts/trash/junk/
-    archive): embeddings serve semantic search across every folder, the
-    same breadth the backfill reconciler already gives them
-    (embeddings/worker.py). The narrower pipeline scope is enforced once,
+    Deliberately not the pipeline-scope gate (pipeline/scope.py's roles):
+    embeddings serve semantic search across every folder, the same
+    breadth the backfill reconciler already gives them
+    (embeddings/worker.py). The one exception is a folder switched off
+    with folder_prefs.pipeline_enabled, which EmbeddingRepository.
+    enqueue_one honours. The narrower pipeline scope is enforced once,
     at the second enqueue in enqueue_pipeline_run_if_live_eligible, so it
     cannot drift between the two gates.
 
@@ -132,27 +132,40 @@ async def _select_live_eligible_row(
     query would make it lie for that caller rather than merely being
     silent about a state it does not yet have an opinion on.
 
-    Returns the row needed to compute msg_key when eligible, None
-    otherwise -- None is also the answer for "this message is gone",
-    since an expunged message and one that will never be pipeline-live-
-    eligible mean exactly the same thing to every caller of this.
+    The message asked about is not always the copy that qualifies: a server
+    that files one message under several folders (Gmail's labels and All
+    Mail) gives it a row in each, and the embedding keeps a single row for
+    all of them. So the answer is the first qualifying copy sharing the
+    message's Message-ID header, the asked-about one first -- mail that
+    arrived in the inbox is classified even when its embedding was written
+    for its copy in All Mail.
+
+    Returns the row needed to compute msg_key when eligible (`id` names the
+    copy that qualified), None otherwise -- None is also the answer for
+    "this message is gone", since an expunged message and one that will
+    never be pipeline-live-eligible mean exactly the same thing to every
+    caller of this.
     """
     row = await session.execute(
         text(
-            """
-            SELECT m.message_id AS message_id_hdr, m.from_addr, m.subject,
+            f"""
+            SELECT m.id, m.message_id AS message_id_hdr, m.from_addr, m.subject,
                    m.received_at, m.size_bytes
-            FROM messages m
+            FROM messages src
+            JOIN messages m ON m.account_id = src.account_id
+                AND (m.id = src.id
+                     OR (src.message_id IS NOT NULL AND m.message_id = src.message_id))
             JOIN folders f ON f.id = m.folder_id
             JOIN pipeline_folder_state s ON s.folder_id = f.id
             LEFT JOIN folder_prefs fp ON fp.folder_id = f.id
-            WHERE m.id = :message_id AND m.account_id = :account_id
+            WHERE src.id = :message_id AND src.account_id = :account_id
               AND m.expunged_at IS NULL AND m.is_draft = false AND f.deleted_at IS NULL
-              AND coalesce(fp.special_use_override, f.special_use, '') NOT IN
-                  ('sent', 'drafts', 'trash', 'junk', 'archive')
+              AND {FOLDER_IN_PIPELINE_SCOPE_SQL}
               AND s.backfill_completed_at IS NOT NULL
               AND m.created_at > s.backfill_completed_at
               AND m.received_at > now() - make_interval(days => :max_age_days)
+            ORDER BY (m.id = src.id) DESC, m.received_at, m.id
+            LIMIT 1
             """
         ),
         {"message_id": message_id, "account_id": account_id, "max_age_days": max_age_days},
@@ -257,7 +270,7 @@ async def enqueue_pipeline_run_if_live_eligible(
             """
         ),
         {
-            "account_id": account_id, "msg_key": msg_key, "message_id": message_id,
+            "account_id": account_id, "msg_key": msg_key, "message_id": result.id,
             "from_addr": result.from_addr,
         },
     )
@@ -357,7 +370,7 @@ async def _reconcile_once(db: DatabaseConnection, settings_service: SettingsServ
     async with db.session() as session:
         rows = await session.execute(
             text(
-                """
+                f"""
                 SELECT m.id, m.account_id, m.message_id, m.from_addr, m.subject,
                        m.received_at, m.size_bytes
                 FROM messages m
@@ -370,8 +383,7 @@ async def _reconcile_once(db: DatabaseConnection, settings_service: SettingsServ
                 WHERE m.expunged_at IS NULL
                   AND m.is_draft = false
                   AND f.deleted_at IS NULL
-                  AND coalesce(fp.special_use_override, f.special_use, '') NOT IN
-                      ('sent', 'drafts', 'trash', 'junk', 'archive')
+                  AND {FOLDER_IN_PIPELINE_SCOPE_SQL}
                   AND s.backfill_completed_at IS NOT NULL
                   AND m.created_at > s.backfill_completed_at
                   AND m.received_at > now() - make_interval(days => :max_age_days)

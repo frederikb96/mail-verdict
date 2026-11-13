@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Gmail and iCloud presets in the add-account form: servers filled in, a link to each provider's
+  app-password instructions, the address and app password as the only fields. Google Workspace
+  accounts are stated as unsupported (OAuth only). Setup in the README.
+- A folder can be switched out of classification and the semantic index
+  (`folder_prefs.pipeline_enabled`, `PATCH /folders/{id}/prefs`, a sparkle beside each folder in
+  Folder Order & Visibility). A Gmail account's label folders, Starred and Important start
+  switched off, and a folder the server marks as holding all mail (Gmail's All Mail) becomes the
+  Archive; accounts already mirrored are set up by the migration. Mail present in several folders is
+  classified through the copy in a folder that runs the AI, even when its embedding was written for
+  another copy.
 - Orders and tickets belong to one user. Mail only joins an order of the account's owner, so two
   people's mail about the same purchase makes two entries; entries, files, the catch-up and the
   automatic close are each user's own, with the user's own filter patterns, language and closing

@@ -46,6 +46,7 @@ from mail_verdict.database.models import (
     Message,
     SyncNotification,
 )
+from mail_verdict.pipeline.scope import folder_in_pipeline_scope
 from mail_verdict.postimap.actions import create_folder as postimap_create_folder
 from mail_verdict.postimap.actions import delete_folder as postimap_delete_folder
 from mail_verdict.postimap.actions import set_folder_idle
@@ -156,7 +157,7 @@ async def _glacier_order_item(account_id: uuid.UUID) -> FolderOrderItem | None:
     return FolderOrderItem(
         folder_id=prefs.glacier_folder_id, imap_name="Glacier",
         display_name=fp.display_name if fp else None, special_use=None,
-        is_visible=fp.is_visible if fp else True,
+        is_visible=fp.is_visible if fp else True, pipeline_enabled=False,
         unread_count=counts["unread"], total_count=counts["total"], kind="glacier",
     )
 
@@ -195,13 +196,17 @@ async def get_folder_order(account_id: uuid.UUID) -> FolderOrderResponse:
     items = []
     for fid in ordered_ids:
         f, fp, total, unread = folder_map[fid]
+        effective_role = (fp.special_use_override if fp else None) or f.special_use
         items.append(
             FolderOrderItem(
                 folder_id=f.id,
                 imap_name=f.imap_name,
                 display_name=f.display_name or (fp.display_name if fp else None),
-                special_use=f.special_use,
+                special_use=effective_role,
                 is_visible=fp.is_visible if fp else True,
+                pipeline_enabled=folder_in_pipeline_scope(
+                    effective_role, fp.pipeline_enabled if fp else None,
+                ),
                 unread_count=unread,
                 total_count=total,
             )
@@ -270,6 +275,7 @@ async def _fetch_glacier_folder_response(
         initial_sync_done=True, backfill_total=None, idle_requested=False, idle_status=None,
         last_synced_at=None, sync_error=None, created_at=None,
         unified_view_ids=views.get(folder_id, []), is_visible=fp.is_visible if fp else True,
+        pipeline_enabled=False,
         total_count=counts["total"], unread_count=counts["unread"], kind="glacier",
     )
 
@@ -305,12 +311,13 @@ async def _fetch_folder_response(
 
     f, fp, total, unread = row
     views = await view_ids_by_folder(session, [f.id])
+    effective_role = (fp.special_use_override if fp else None) or f.special_use
     return FolderResponse(
         id=f.id,
         account_id=f.account_id,
         imap_name=f.imap_name,
         display_name=f.display_name or (fp.display_name if fp else None),
-        special_use=(fp.special_use_override if fp else None) or f.special_use,
+        special_use=effective_role,
         mailbox_id=f.mailbox_id,
         initial_sync_done=f.initial_sync_done,
         backfill_total=f.backfill_total,
@@ -321,6 +328,9 @@ async def _fetch_folder_response(
         created_at=f.created_at,
         unified_view_ids=views.get(f.id, []),
         is_visible=fp.is_visible if fp else True,
+        pipeline_enabled=folder_in_pipeline_scope(
+            effective_role, fp.pipeline_enabled if fp else None,
+        ),
         total_count=total,
         unread_count=unread,
     )
@@ -626,10 +636,10 @@ async def update_folder_prefs(
     """
     Partially update a folder's preferences.
 
-    Visibility, display name, unified view membership and special-use
-    override are MailVerdict's own. real_time is PostIMAP's: it asks for an IMAP
-    connection held open on this folder, so changes arrive in seconds
-    rather than on the sync interval.
+    Visibility, display name, unified view membership, special-use
+    override and the pipeline switch are MailVerdict's own. real_time is
+    PostIMAP's: it asks for an IMAP connection held open on this folder,
+    so changes arrive in seconds rather than on the sync interval.
 
     Each watched folder costs one connection, plus one for the account
     itself, and providers cap connections per account -- commonly around
@@ -649,10 +659,16 @@ async def update_folder_prefs(
 
     async with db.session() as session:
         is_glacier = await _glacier_account_id(session, folder_id) is not None
-    if is_glacier and (real_time is not None or special_use_override is not None):
+    if is_glacier and (
+        real_time is not None or special_use_override is not None
+        or values.get("pipeline_enabled") is not None
+    ):
         raise HTTPException(
             status_code=409,
-            detail="The glacier does not support real-time sync or a special-use override.",
+            detail=(
+                "The glacier does not support real-time sync, a special-use override "
+                "or a pipeline switch."
+            ),
         )
 
     # First, so an unknown folder or view is refused before anything

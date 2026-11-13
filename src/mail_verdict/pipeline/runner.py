@@ -58,6 +58,7 @@ from mail_verdict.pipeline.message_view import MessageView, load_message_view
 from mail_verdict.pipeline.neighbors import NeighborService
 from mail_verdict.pipeline.registry import build_stage
 from mail_verdict.pipeline.revisions import PipelineRevisionRepository
+from mail_verdict.pipeline.scope import folder_in_pipeline_scope
 from mail_verdict.pipeline.template import current_or_template
 from mail_verdict.queue.backoff import compute_backoff
 from mail_verdict.queue.manager import QueueManager
@@ -78,11 +79,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 QUEUE_NAME = "pipeline"
-
-# Folders where a message never enters the pipeline. Kept in sync with
-# pipeline/enqueue.py's enqueue-time gate; re-checked here because the
-# message may have moved into one of these between enqueue and execution.
-_SKIP_FOLDER_SPECIAL_USE = frozenset({"sent", "drafts", "trash", "junk", "archive"})
 
 _DEFAULT_UNAVAILABLE_DELAY_S = 60.0
 
@@ -324,7 +320,11 @@ class PipelineRunner:
         view = await self._load_view(row)
         if view is None:
             return _RunResult(status="skipped", skip_reason="message gone", trace=(), model_calls=0)
-        if view.is_draft or (view.folder.special_use or "") in _SKIP_FOLDER_SPECIAL_USE:
+        # The enqueue-time gate's own predicate, re-checked because the
+        # message may have moved out of scope between enqueue and execution.
+        if view.is_draft or not folder_in_pipeline_scope(
+            view.folder.special_use, view.folder.pipeline_enabled,
+        ):
             return _RunResult(
                 status="skipped", skip_reason="out of scope (folder or draft)",
                 trace=(), model_calls=0,

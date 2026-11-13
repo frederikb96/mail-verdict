@@ -274,6 +274,8 @@ export interface FolderResponse {
   /** Every unified view this folder belongs to, in sidebar order. */
   unified_view_ids: string[];
   is_visible: boolean;
+  /** Whether mail in this folder is classified and embedded: its role and its own switch combined. */
+  pipeline_enabled: boolean;
   initial_sync_done: boolean;
   last_synced_at: string | null;
   sync_error: string | null;
@@ -290,6 +292,8 @@ export interface FolderPrefsUpdate {
   /** The folder's complete set of unified views; [] removes it from all. */
   unified_view_ids?: string[];
   special_use_override?: string | null;
+  /** false takes the folder out of the pipeline and the semantic index; true or null returns the decision to its role. */
+  pipeline_enabled?: boolean | null;
 }
 
 /**
@@ -511,6 +515,8 @@ export interface FolderOrderItem {
   display_name: string | null;
   special_use: string | null;
   is_visible: boolean;
+  /** Whether mail in this folder is classified and embedded: its role and its own switch combined. */
+  pipeline_enabled: boolean;
   unread_count: number;
   total_count: number;
   /** "glacier" for the one synthetic per-account folder representing the glacier. */

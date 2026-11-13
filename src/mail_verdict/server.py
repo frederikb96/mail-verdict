@@ -242,6 +242,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         record_folder_watermark,
     )
     from mail_verdict.pipeline.runner import PipelineRunner
+    from mail_verdict.providers import apply_folder_defaults_for_event
     from mail_verdict.queue.manager import init_queue_manager
     from mail_verdict.queue.notify import WorkQueueNotifier
     from mail_verdict.spam.feedback import SpamFeedbackHandler
@@ -437,6 +438,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await event_ring.add(account_uuid, "mail.deleted", sse_data)
 
         elif event.type == "folder":
+            if event.op == "insert" or (event.op == "sync_complete" and event.backfill):
+                await apply_folder_defaults_for_event(db, event)
             if event.op == "sync_complete":
                 await event_ring.add(
                     account_uuid, "folder.synced",

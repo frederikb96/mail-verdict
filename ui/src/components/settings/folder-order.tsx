@@ -22,6 +22,7 @@ import {
   Loader2,
   Eye,
   EyeOff,
+  Sparkles,
   Inbox,
   Send,
   Trash2,
@@ -37,9 +38,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   useFolderOrder,
   useUpdateFolderOrder,
+  useSetFolderPipeline,
   useToggleFolderVisibility,
 } from "@/hooks/use-folder-order";
-import { folderDisplayName } from "@/lib/folders";
+import { folderDisplayName, hasPipelineSwitch } from "@/lib/folders";
 import type { FolderOrderItem } from "@/types/api";
 
 const SPECIAL_USE_ICONS: Record<string, typeof Inbox> = {
@@ -61,9 +63,11 @@ function getFolderIcon(specialUse: string | null) {
 function SortableFolder({
   folder,
   onToggleVisibility,
+  onTogglePipeline,
 }: {
   folder: FolderOrderItem;
   onToggleVisibility: (folderId: string, currentVisible: boolean) => void;
+  onTogglePipeline: (folderId: string, currentEnabled: boolean) => void;
 }) {
   const Icon = getFolderIcon(folder.special_use);
   const {
@@ -106,6 +110,26 @@ function SortableFolder({
           {folder.unread_count} unread
         </span>
       )}
+      {hasPipelineSwitch(folder) && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          aria-pressed={folder.pipeline_enabled}
+          onClick={() =>
+            onTogglePipeline(folder.folder_id, folder.pipeline_enabled)
+          }
+          title={
+            folder.pipeline_enabled
+              ? "AI is on for this folder -- turn off"
+              : "AI is off for this folder -- turn on"
+          }
+        >
+          <Sparkles
+            className={`h-3.5 w-3.5 ${folder.pipeline_enabled ? "" : "text-muted-foreground/50"}`}
+          />
+        </Button>
+      )}
       <Button
         variant="ghost"
         size="icon"
@@ -136,6 +160,7 @@ export function FolderOrder({ accountId }: FolderOrderProps) {
   const { data: orderData } = useFolderOrder(accountId);
   const updateOrder = useUpdateFolderOrder();
   const toggleVisibility = useToggleFolderVisibility();
+  const setPipeline = useSetFolderPipeline();
 
   const [localFolders, setLocalFolders] = useState<FolderOrderItem[]>([]);
   const [dirty, setDirty] = useState(false);
@@ -212,6 +237,15 @@ export function FolderOrder({ accountId }: FolderOrderProps) {
     );
   };
 
+  const handleTogglePipeline = (folderId: string, currentEnabled: boolean) => {
+    setPipeline.mutate({ accountId, folderId, enabled: !currentEnabled });
+    setLocalFolders((prev) =>
+      prev.map((f) =>
+        f.folder_id === folderId ? { ...f, pipeline_enabled: !currentEnabled } : f,
+      ),
+    );
+  };
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -223,6 +257,9 @@ export function FolderOrder({ accountId }: FolderOrderProps) {
       <CardContent>
         <p className="mb-3 text-xs text-muted-foreground">
           Drag folders to reorder. Hidden folders are excluded from the sidebar.
+          The sparkle marks folders whose new mail is classified and added to
+          the semantic index; turn it off for folders that only hold copies of
+          mail filed elsewhere, such as Gmail&apos;s labels.
         </p>
 
         {localFolders.length === 0 && (
@@ -247,6 +284,7 @@ export function FolderOrder({ accountId }: FolderOrderProps) {
                     key={folder.folder_id}
                     folder={folder}
                     onToggleVisibility={handleToggleVisibility}
+                    onTogglePipeline={handleTogglePipeline}
                   />
                 ))}
               </div>

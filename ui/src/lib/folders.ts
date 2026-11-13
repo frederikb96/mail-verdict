@@ -23,6 +23,16 @@ const SPECIAL_USE_LABELS: Record<string, string> = {
   trash: "Trash",
 };
 
+/** Roles whose folders never run the pipeline or the semantic index, so the
+ * folder's own switch has nothing to decide there -- the server's
+ * `SKIP_ROLES` (pipeline/scope.py). */
+const PIPELINE_SKIPPED_ROLES = new Set(["sent", "drafts", "trash", "junk", "archive"]);
+
+/** Whether a folder carries its own pipeline switch. */
+export function hasPipelineSwitch(folder: Pick<FolderOrderItem, "special_use" | "kind">): boolean {
+  return folder.kind === "imap" && !PIPELINE_SKIPPED_ROLES.has(folder.special_use ?? "");
+}
+
 /** The name a folder renders with -- an explicit display name first, then
  * a role label for a recognised special-use folder, then the raw server
  * name. A custom folder (no special_use) always falls through to its own

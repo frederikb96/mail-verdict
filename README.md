@@ -94,6 +94,32 @@ and forwards its token ([Access](#access)). Add an account under *Settings → A
 syncing it right away and mail appears as it arrives. An administrator then sets a provider key
 and picks the models under *Admin → Providers & keys* and *Admin → Models*.
 
+### Gmail and iCloud
+
+Both are ordinary IMAP and SMTP accounts that sign in with an app password, and *Add account* has a
+preset for each: pick the provider, enter the address and the app password, and the servers are
+filled in.
+
+- **Gmail.** A personal Google Account needs 2-Step Verification on before it offers app passwords
+  ([how Google's work](https://support.google.com/accounts/answer/185833)); the 16-digit password
+  signs in to IMAP and SMTP. Google allows 500 sent messages a day per personal account across
+  all its clients and caps how much IMAP may download per day (its Workspace documentation names
+  2,500 MB), so a large mailbox can take several days to finish its first sync.
+- **iCloud Mail.** The Apple Account needs two-factor authentication, then an app-specific password
+  ([how Apple's work](https://support.apple.com/en-us/102654)). IMAP signs in with the part of the
+  address before the @, SMTP with the full address. Changing the Apple Account password revokes
+  every app-specific password, after which the account shows an error until a new one is entered.
+- **Google Workspace (work and school accounts) is not supported.** Google allows only OAuth for
+  them, and PostIMAP, which does the IMAP and SMTP, signs in with passwords only.
+
+Gmail shows one message in every label that carries it, in Starred and in All Mail, each as a
+folder. So that mail is not classified and embedded once per copy, a Gmail account's folders are set
+up on first sync: All Mail becomes the Archive, and label folders, Starred and Important have the
+AI switched off. The switch is the sparkle beside each folder under *Settings → Accounts → Folder
+Order & Visibility*; turn it on for a label whose mail should be classified. The inbox, Sent, Drafts,
+Trash and Spam work as on any other server. A message that sits in the inbox and in All Mail is
+processed through its inbox copy.
+
 On Kubernetes, a Helm chart is published with every release:
 
 ```bash
@@ -218,6 +244,8 @@ FastMCP for the tool interface.
   it by creating a new folder, moving the mail and deleting the old one would lose flags and
   dates. Deleting a folder destroys every message in it on the server with no undo, so it always
   asks for confirmation naming the message count.
+- **Accounts sign in with a password.** Providers that accept only OAuth, such as Google Workspace,
+  cannot be connected.
 - No multi-user isolation, no offline mode, no PGP.
 
 ## License

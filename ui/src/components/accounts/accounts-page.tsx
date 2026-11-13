@@ -62,6 +62,12 @@ import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
 import { OrderCatchUpDialog } from "@/components/accounts/order-catch-up-dialog";
 import { accountConnectionState, useSyncStatus, useTriggerSync } from "@/hooks/use-sync-status";
 import { useToast } from "@/hooks/use-toast";
+import {
+  ACCOUNT_PRESETS,
+  type AccountPresetId,
+  presetById,
+  presetConnection,
+} from "@/lib/account-presets";
 import { formatRelativeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
@@ -417,6 +423,8 @@ function AccountForm({
   const updateAccount = useUpdateAccount();
   const isEditing = !!account;
   const { push: pushToast } = useToast();
+  const [presetId, setPresetId] = useState<AccountPresetId | null>(null);
+  const preset = presetId ? presetById(presetId) : null;
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -467,16 +475,25 @@ function AccountForm({
         },
       );
     } else {
+      const connection = preset
+        ? presetConnection(
+            preset,
+            form.get("email") as string,
+            form.get("app_password") as string,
+          )
+        : {
+            imap_host: form.get("imap_host") as string,
+            imap_port: Number(form.get("imap_port")),
+            imap_user: form.get("imap_user") as string,
+            imap_password,
+            smtp_host,
+            smtp_port,
+            smtp_user,
+            smtp_password,
+          };
       const data: AccountCreateRequest = {
         name,
-        imap_host: form.get("imap_host") as string,
-        imap_port: Number(form.get("imap_port")),
-        imap_user: form.get("imap_user") as string,
-        imap_password,
-        smtp_host,
-        smtp_port,
-        smtp_user,
-        smtp_password,
+        ...connection,
         spam_enabled,
         orders_enabled,
         trash_retention_days,
@@ -505,6 +522,78 @@ function AccountForm({
             account — delete and re-add it to connect to a different server.
           </p>
         )}
+        {!isEditing && (
+          <div className="grid gap-1.5">
+            <Label id="provider-label">Provider</Label>
+            <div role="group" aria-labelledby="provider-label" className="flex flex-wrap gap-2">
+              {ACCOUNT_PRESETS.map((p) => (
+                <Button
+                  key={p.id}
+                  type="button"
+                  size="sm"
+                  variant={presetId === p.id ? "default" : "outline"}
+                  aria-pressed={presetId === p.id}
+                  onClick={() => setPresetId(p.id)}
+                >
+                  {p.label}
+                </Button>
+              ))}
+              <Button
+                type="button"
+                size="sm"
+                variant={presetId === null ? "default" : "outline"}
+                aria-pressed={presetId === null}
+                onClick={() => setPresetId(null)}
+              >
+                Other server
+              </Button>
+            </div>
+          </div>
+        )}
+        {preset && (
+          <>
+            <div className="flex flex-col gap-1.5 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground">
+                {preset.label} needs an app password. {preset.prerequisite}{" "}
+                <a
+                  href={preset.appPasswordLink.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  {preset.appPasswordLink.label}
+                </a>
+              </p>
+              <ul className="list-disc pl-4">
+                {preset.notes.map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+              <p>
+                Connects to {preset.imapHost}:{preset.imapPort} and{" "}
+                {preset.smtpHost}:{preset.smtpPort}.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="email">Email address</Label>
+                <Input id="email" name="email" type="email" required />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="app_password">App password</Label>
+                <Input
+                  id="app_password"
+                  name="app_password"
+                  type="password"
+                  required
+                  autoComplete="off"
+                />
+              </div>
+            </div>
+          </>
+        )}
+        {!preset && (
+          <>
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-1.5">
             <Label htmlFor="imap_host">IMAP Host</Label>
@@ -591,6 +680,8 @@ function AccountForm({
             />
           </div>
         </div>
+          </>
+        )}
         <div className="flex items-center gap-2">
           <input
             id="spam_enabled"

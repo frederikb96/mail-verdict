@@ -3840,6 +3840,11 @@
             "title": "Kind",
             "type": "string"
           },
+          "pipeline_enabled": {
+            "default": true,
+            "title": "Pipeline Enabled",
+            "type": "boolean"
+          },
           "special_use": {
             "anyOf": [
               {
@@ -3928,6 +3933,17 @@
               }
             ],
             "title": "Is Visible"
+          },
+          "pipeline_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pipeline Enabled"
           },
           "real_time": {
             "anyOf": [
@@ -4079,6 +4095,12 @@
               }
             ],
             "title": "Mailbox Id"
+          },
+          "pipeline_enabled": {
+            "default": true,
+            "description": "Whether mail arriving in this folder is classified and embedded -- the folder's role and its own switch combined (pipeline/scope.py).",
+            "title": "Pipeline Enabled",
+            "type": "boolean"
           },
           "special_use": {
             "anyOf": [
@@ -13990,7 +14012,7 @@
     },
     "/folders/{folder_id}/prefs": {
       "patch": {
-        "description": "Partially update a folder's preferences.\n\nVisibility, display name, unified view membership and special-use\noverride are MailVerdict's own. real_time is PostIMAP's: it asks for an IMAP\nconnection held open on this folder, so changes arrive in seconds\nrather than on the sync interval.\n\nEach watched folder costs one connection, plus one for the account\nitself, and providers cap connections per account -- commonly around\nten, though the figure is rarely published. Five or six watched folders\nis comfortable. Exhausting the cap is visible rather than silent: the\nfolder's idle_status becomes \"failed\" and a notification is written,\ninstead of it quietly reverting to interval sync.",
+        "description": "Partially update a folder's preferences.\n\nVisibility, display name, unified view membership, special-use\noverride and the pipeline switch are MailVerdict's own. real_time is\nPostIMAP's: it asks for an IMAP connection held open on this folder,\nso changes arrive in seconds rather than on the sync interval.\n\nEach watched folder costs one connection, plus one for the account\nitself, and providers cap connections per account -- commonly around\nten, though the figure is rarely published. Five or six watched folders\nis comfortable. Exhausting the cap is visible rather than silent: the\nfolder's idle_status becomes \"failed\" and a notification is written,\ninstead of it quietly reverting to interval sync.",
         "operationId": "update_folder_prefs_folders__folder_id__prefs_patch",
         "parameters": [
           {

@@ -1152,6 +1152,12 @@ class FolderPrefs(Base):
     is_visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     special_use_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # NULL leaves the folder's role to decide whether its mail is classified
+    # and embedded; false takes the folder out of both, whatever its role
+    # (Gmail's label folders hold copies of mail that also sits in the
+    # inbox). True records a choice to keep the role's default and never
+    # widens it -- a trash or archive folder stays out either way.
+    pipeline_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class UnifiedView(Base):
