@@ -12,6 +12,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
+import { AdminSection } from "@/components/common/admin-only";
+import { useIsAdmin } from "@/hooks/use-me";
 import { useAllSettings, useProvidersStatus, useUpdateSettings } from "@/hooks/use-settings";
 import type { ProviderKeyStatus, UsageExportStatus } from "@/types/api";
 import { formatRelativeAgo } from "@/lib/format";
@@ -530,9 +532,10 @@ const SECTIONS = [
  * entry. Keyboard shortcuts are their own page, linked at the end, and
  * hidden on a touch screen, where there is no keyboard to configure. */
 function SectionNav() {
+  const isAdmin = useIsAdmin();
   return (
     <nav className="flex flex-wrap gap-1.5 border-b pb-3 text-sm">
-      {SECTIONS.map(({ id, label }) => (
+      {SECTIONS.filter(({ id }) => isAdmin || id !== "ai").map(({ id, label }) => (
         <a
           key={id}
           href={`#${id}`}
@@ -636,55 +639,57 @@ export function SettingsPage() {
         </Card>
       </div>
 
-      <div id="ai" className="flex scroll-mt-16 flex-col gap-3">
-        <SectionHeading>AI &amp; automation</SectionHeading>
-        <div className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 text-sm">
-          <Workflow className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-          <div>
-            Whether spam detection runs, and what happens to a message it flags, are{" "}
-            <Link href="/pipeline" className="underline">
-              pipeline
-            </Link>{" "}
-            stages: a <span className="font-mono">classify</span> stage produces the verdict, a{" "}
-            <span className="font-mono">match</span> stage decides what happens to it. The
-            categories below are the model that stage calls (Spam verdicts), how it finds similar past
-            messages (Semantic search), the models behind orders and the rule assistant, how a
-            failed step is retried (Retry), and the worker mechanics behind the queue (Pipeline).
+      <AdminSection>
+        <div id="ai" className="flex scroll-mt-16 flex-col gap-3">
+          <SectionHeading>AI &amp; automation</SectionHeading>
+          <div className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 text-sm">
+            <Workflow className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+            <div>
+              Whether spam detection runs, and what happens to a message it flags, are{" "}
+              <Link href="/pipeline" className="underline">
+                pipeline
+              </Link>{" "}
+              stages: a <span className="font-mono">classify</span> stage produces the verdict, a{" "}
+              <span className="font-mono">match</span> stage decides what happens to it. The
+              categories below are the model that stage calls (Spam verdicts), how it finds similar past
+              messages (Semantic search), the models behind orders and the rule assistant, how a
+              failed step is retried (Retry), and the worker mechanics behind the queue (Pipeline).
+            </div>
           </div>
-        </div>
-        <ProvidersCard />
-        <Tabs defaultValue="ai">
-          <TabsList>
-            {CATEGORIES.map(({ key, label, icon: Icon }) => (
-              <TabsTrigger key={key} value={key} className="gap-1.5">
-                <Icon className="h-3.5 w-3.5" />
-                {label}
-              </TabsTrigger>
+          <ProvidersCard />
+          <Tabs defaultValue="ai">
+            <TabsList>
+              {CATEGORIES.map(({ key, label, icon: Icon }) => (
+                <TabsTrigger key={key} value={key} className="gap-1.5">
+                  <Icon className="h-3.5 w-3.5" />
+                  {label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            {CATEGORIES.map(({ key }) => (
+              <TabsContent key={key} value={key}>
+                <Card>
+                  <CardContent className="flex flex-col gap-4 pt-6">
+                    <p className="text-xs text-muted-foreground">{TASK_PRIVACY[key]}</p>
+                    {key === "semantic" && allSettings?.semantic && (
+                      <EmbeddingMigrationStatus settings={allSettings.semantic} />
+                    )}
+                    {allSettings?.[key] ? (
+                      <CategorySettings category={key} settings={allSettings[key]} />
+                    ) : (
+                      <div className="py-4 text-sm text-muted-foreground">
+                        The server didn&apos;t return settings for this category -- the interface
+                        and the server may be running different versions.
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
             ))}
-          </TabsList>
-          {CATEGORIES.map(({ key }) => (
-            <TabsContent key={key} value={key}>
-              <Card>
-                <CardContent className="flex flex-col gap-4 pt-6">
-                  <p className="text-xs text-muted-foreground">{TASK_PRIVACY[key]}</p>
-                  {key === "semantic" && allSettings?.semantic && (
-                    <EmbeddingMigrationStatus settings={allSettings.semantic} />
-                  )}
-                  {allSettings?.[key] ? (
-                    <CategorySettings category={key} settings={allSettings[key]} />
-                  ) : (
-                    <div className="py-4 text-sm text-muted-foreground">
-                      The server didn&apos;t return settings for this category -- the interface
-                      and the server may be running different versions.
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-          ))}
-        </Tabs>
-        <SecretsCard />
-      </div>
+          </Tabs>
+          <SecretsCard />
+        </div>
+      </AdminSection>
     </div>
   );
 }

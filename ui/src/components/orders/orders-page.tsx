@@ -1,5 +1,6 @@
 "use client";
 
+import { userLocalStorage } from "@/lib/user-storage";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Package, Search, Star } from "lucide-react";
@@ -46,7 +47,7 @@ const ORDER_ROW_HEIGHT = 124;
 
 function loadView(): OrdersView {
   try {
-    return readOrdersView(window.localStorage);
+    return readOrdersView(userLocalStorage());
   } catch {
     return DEFAULT_ORDERS_VIEW;
   }
@@ -255,7 +256,7 @@ export function OrdersPage() {
   const changeView = useCallback((patch: Partial<OrdersView>) => {
     setView((prev) => {
       const next = { ...prev, ...patch };
-      writeOrdersView(window.localStorage, next);
+      writeOrdersView(userLocalStorage(), next);
       return next;
     });
   }, []);

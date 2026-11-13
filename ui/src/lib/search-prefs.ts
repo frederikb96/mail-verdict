@@ -6,7 +6,7 @@
  * page is the only thing that reads or writes these.
  */
 
-import { atomWithStorage } from "jotai/utils";
+import { userAtomWithStorage } from "@/lib/user-storage";
 import type { CacheSnapshot } from "virtua";
 import type { SearchWindow } from "@/lib/search-window";
 import type { SearchField } from "@/types/api";
@@ -21,14 +21,14 @@ export const ALL_SEARCH_FIELDS: SearchField[] = ["subject", "from", "to", "body"
  * one, reachable only by first switching the sidebar into its separate
  * Unified View. This is what makes "search everywhere" the search
  * page's own choice instead. */
-export const searchAccountIdAtom = atomWithStorage<string | null>(
+export const searchAccountIdAtom = userAtomWithStorage<string | null>(
   "mailverdict:search-account",
   null,
 );
 
 /** Which fields a fulltext search scans. Semantic mode ignores this --
  * there is one embedding per message, nothing to scope by field. */
-export const searchFieldsAtom = atomWithStorage<SearchField[]>(
+export const searchFieldsAtom = userAtomWithStorage<SearchField[]>(
   "mailverdict:search-fields",
   ALL_SEARCH_FIELDS,
 );
@@ -38,13 +38,13 @@ export const searchFieldsAtom = atomWithStorage<SearchField[]>(
  * deselected something; hitting "select all" clears it back to null
  * rather than writing out every id, so a folder added later is still
  * included by default instead of silently excluded. */
-export const searchFolderIdsAtom = atomWithStorage<string[] | null>(
+export const searchFolderIdsAtom = userAtomWithStorage<string[] | null>(
   "mailverdict:search-folders",
   null,
 );
 
 /** Fulltext (fuzzy, field-scoped) vs semantic (meaning, no field scope). */
-export const searchSemanticModeAtom = atomWithStorage<boolean>(
+export const searchSemanticModeAtom = userAtomWithStorage<boolean>(
   "mailverdict:search-semantic",
   false,
 );
@@ -52,7 +52,7 @@ export const searchSemanticModeAtom = atomWithStorage<boolean>(
 /** The time window a search covers, null for all time. Presets stay
  * presets here and resolve against the clock when a query runs (see
  * lib/search-window.ts). */
-export const searchWindowAtom = atomWithStorage<SearchWindow | null>(
+export const searchWindowAtom = userAtomWithStorage<SearchWindow | null>(
   "mailverdict:search-window",
   null,
 );
@@ -60,7 +60,7 @@ export const searchWindowAtom = atomWithStorage<SearchWindow | null>(
 /** The typed query text -- persisted alongside scope and mode so opening a
  * result and pressing Back returns to the same search rather than an
  * empty box; the other two already survived a Back, this one did not. */
-export const searchQueryAtom = atomWithStorage<string>("mailverdict:search-query", "");
+export const searchQueryAtom = userAtomWithStorage<string>("mailverdict:search-query", "");
 
 /** The result row at the top of the viewport, captured on scroll and
  * restored on mount -- listIdentity ties it to the exact search it was
@@ -79,10 +79,9 @@ export interface SearchScrollAnchor {
 // later prop change -- so a value that only becomes available a render
 // after mount is silently dropped, not merely delayed. `getOnInit` makes
 // it available on the very first render instead.
-export const searchScrollAnchorAtom = atomWithStorage<SearchScrollAnchor | null>(
+export const searchScrollAnchorAtom = userAtomWithStorage<SearchScrollAnchor | null>(
   "mailverdict:search-scroll-anchor",
   null,
-  undefined,
   { getOnInit: true },
 );
 
@@ -102,9 +101,8 @@ export interface SearchScrollCache {
 // back to the flat itemSize estimate for every one of them, which is
 // exactly the shape of a restore landing short of the anchor's true,
 // previously-measured offset.
-export const searchScrollCacheAtom = atomWithStorage<SearchScrollCache | null>(
+export const searchScrollCacheAtom = userAtomWithStorage<SearchScrollCache | null>(
   "mailverdict:search-scroll-cache",
   null,
-  undefined,
   { getOnInit: true },
 );

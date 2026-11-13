@@ -61,6 +61,7 @@ import { useFolders } from "@/hooks/use-folders";
 import { useFolderOrder } from "@/hooks/use-folder-order";
 import { useUnifiedFolders } from "@/hooks/use-unified-view";
 import { useMarkAccountView } from "@/hooks/use-open-message";
+import { useIsAdmin } from "@/hooks/use-me";
 import {
   isUnifiedViewAtom,
   requestSelectMailAtom,
@@ -272,6 +273,7 @@ function getFolderBadgeCount(folder: FolderResponse | FolderOrderItem): number {
 }
 
 export function AppSidebar() {
+  const isAdmin = useIsAdmin();
   const pathname = usePathname();
   const router = useRouter();
   const isCalendarRoute = pathname.startsWith("/calendar");
@@ -672,15 +674,17 @@ export function AppSidebar() {
               <span>Accounts</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              render={<Link href="/pipeline" prefetch={false} />}
-              isActive={pathname === "/pipeline"}
-            >
-              <Workflow className="h-4 w-4" />
-              <span>Pipeline</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
+          {isAdmin && (
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                render={<Link href="/pipeline" prefetch={false} />}
+                isActive={pathname === "/pipeline"}
+              >
+                <Workflow className="h-4 w-4" />
+                <span>Pipeline</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
           <SidebarMenuItem>
             <SidebarMenuButton
               render={<Link href="/settings" prefetch={false} />}

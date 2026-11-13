@@ -1,7 +1,7 @@
 /** Jotai state atoms. */
 
 import { atom } from "jotai";
-import { atomWithStorage } from "jotai/utils";
+import { lazyAtom, userAtomWithStorage, userLocalStorage } from "@/lib/user-storage";
 import type { MailRowAction } from "@/types/api";
 
 const LAST_ACCOUNT_ID_KEY = "mailverdict:last-account-id";
@@ -17,7 +17,7 @@ const RECENT_UNIFIED_VIEWS_KEY = "mailverdict:recent-unified-views";
 function readLastVisited<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
   try {
-    const raw = window.localStorage.getItem(key);
+    const raw = userLocalStorage().getItem(key);
     return raw === null ? fallback : (JSON.parse(raw) as T);
   } catch {
     return fallback;
@@ -51,19 +51,26 @@ function initialMailboxSelection(): {
   };
 }
 
-const initialSelection = initialMailboxSelection();
+let initialSelectionCache: ReturnType<typeof initialMailboxSelection> | null = null;
+
+/** Computed on first use, after the signed-in user is known: the stored
+ * selection belongs to that user. */
+function initialSelection(): ReturnType<typeof initialMailboxSelection> {
+  initialSelectionCache ??= initialMailboxSelection();
+  return initialSelectionCache;
+}
 
 /**
  * Currently selected account ID.
  * Special value "unified" indicates the unified multi-account view.
  */
-export const selectedAccountIdAtom = atom<string | null>(initialSelection.accountId);
+export const selectedAccountIdAtom = lazyAtom<string | null>(() => initialSelection().accountId);
 
 /** Currently selected folder ID (single-account mode). */
-export const selectedFolderIdAtom = atom<string | null>(initialSelection.folderId);
+export const selectedFolderIdAtom = lazyAtom<string | null>(() => initialSelection().folderId);
 
 /** Currently selected unified folder name (unified view mode). */
-export const selectedUnifiedFolderAtom = atom<string | null>(initialSelection.unifiedFolder);
+export const selectedUnifiedFolderAtom = lazyAtom<string | null>(() => initialSelection().unifiedFolder);
 
 /** Whether the unified view is active. */
 export const isUnifiedViewAtom = atom<boolean>((get) => {
@@ -97,11 +104,11 @@ export const pendingAroundMailIdAtom = atom<{ id: string; threadId: string } | n
  * in the URL restores its view to. Persisted, so a notification opening a
  * fresh window still knows; read on init, so the first message opened
  * there does not see the empty defaults. */
-export const recentUnifiedViewsAtom = atomWithStorage<string[]>(
-  RECENT_UNIFIED_VIEWS_KEY, [], undefined, { getOnInit: true },
+export const recentUnifiedViewsAtom = userAtomWithStorage<string[]>(
+  RECENT_UNIFIED_VIEWS_KEY, [], { getOnInit: true },
 );
-export const lastMailViewWasUnifiedAtom = atomWithStorage<boolean>(
-  LAST_MAIL_VIEW_UNIFIED_KEY, false, undefined, { getOnInit: true },
+export const lastMailViewWasUnifiedAtom = userAtomWithStorage<boolean>(
+  LAST_MAIL_VIEW_UNIFIED_KEY, false, { getOnInit: true },
 );
 
 /** The last real account and folder visited (never "unified" -- that side
@@ -114,8 +121,8 @@ export const lastMailViewWasUnifiedAtom = atomWithStorage<boolean>(
  * mount the storage-event listener atomWithStorage sets up for
  * cross-tab sync, which is not wanted for the account actually on
  * screen. */
-export const lastAccountIdAtom = atomWithStorage<string | null>(LAST_ACCOUNT_ID_KEY, null);
-export const lastFolderIdAtom = atomWithStorage<string | null>(LAST_FOLDER_ID_KEY, null);
+export const lastAccountIdAtom = userAtomWithStorage<string | null>(LAST_ACCOUNT_ID_KEY, null);
+export const lastFolderIdAtom = userAtomWithStorage<string | null>(LAST_FOLDER_ID_KEY, null);
 
 /**
  * The most recent mail.new SSE arrival, by account/folder -- not a log,
@@ -180,7 +187,7 @@ export const requestSelectMailAtom = atom(null, (get, set, next: string | null) 
 });
 
 /** Whether the mail list groups messages into conversations. Defaults on. */
-export const threadedViewAtom = atomWithStorage<boolean>(
+export const threadedViewAtom = userAtomWithStorage<boolean>(
   "mailverdict:threaded",
   true,
 );
@@ -283,7 +290,7 @@ export function effectiveCalendarView(
 }
 
 /** Persisted like threadedViewAtom -- a view preference, not server state. */
-export const calendarViewAtom = atomWithStorage<CalendarViewMode>(
+export const calendarViewAtom = userAtomWithStorage<CalendarViewMode>(
   "mailverdict:calendar-view",
   "week",
 );
@@ -326,14 +333,14 @@ export const eventDeleteRequestAtom = atom<{
 /** The day/week time grid's vertical zoom -- a multiplier over its base
  * hour height. Persisted like the view mode: a display preference, not
  * server state. Ctrl+wheel is the only writer. */
-export const calendarZoomAtom = atomWithStorage<number>("mailverdict:calendar-zoom", 1);
+export const calendarZoomAtom = userAtomWithStorage<number>("mailverdict:calendar-zoom", 1);
 
 /** The hour-of-day (a decimal, e.g. 8.5 for 08:30) currently at the top
  * of the day/week grid's viewport -- an identity to restore by, per the
  * scrolling skill, rather than a remembered pixel offset that would be
  * meaningless at a different zoom. null until the grid has measured its
  * own first scroll position. */
-export const calendarScrollHourAtom = atomWithStorage<number | null>(
+export const calendarScrollHourAtom = userAtomWithStorage<number | null>(
   "mailverdict:calendar-scroll-hour", null,
 );
 
@@ -342,7 +349,7 @@ export const calendarScrollHourAtom = atomWithStorage<number | null>(
  * explicit choice on the Settings page and means something else. This is
  * a display preference the same as the view mode above, not server
  * state, so it lives here rather than round-tripping to the database. */
-export const lastCreatedCalendarIdAtom = atomWithStorage<string | null>(
+export const lastCreatedCalendarIdAtom = userAtomWithStorage<string | null>(
   "mailverdict:last-created-calendar", null,
 );
 

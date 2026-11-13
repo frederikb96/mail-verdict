@@ -9,6 +9,7 @@
  * folders most recently moved to in this account listed first.
  */
 
+import { userLocalStorage } from "@/lib/user-storage";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FolderInput } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -23,7 +24,7 @@ const MAX_RECENT = 5;
 function readRecent(accountId: string): string[] {
   if (typeof window === "undefined") return [];
   try {
-    const all = JSON.parse(window.localStorage.getItem(RECENT_FOLDERS_KEY) ?? "{}");
+    const all = JSON.parse(userLocalStorage().getItem(RECENT_FOLDERS_KEY) ?? "{}");
     return Array.isArray(all[accountId]) ? all[accountId] : [];
   } catch {
     return [];
@@ -33,10 +34,10 @@ function readRecent(accountId: string): string[] {
 function pushRecent(accountId: string, folderId: string): void {
   if (typeof window === "undefined") return;
   try {
-    const all = JSON.parse(window.localStorage.getItem(RECENT_FOLDERS_KEY) ?? "{}");
+    const all = JSON.parse(userLocalStorage().getItem(RECENT_FOLDERS_KEY) ?? "{}");
     const current: string[] = Array.isArray(all[accountId]) ? all[accountId] : [];
     const next = [folderId, ...current.filter((id) => id !== folderId)].slice(0, MAX_RECENT);
-    window.localStorage.setItem(
+    userLocalStorage().setItem(
       RECENT_FOLDERS_KEY,
       JSON.stringify({ ...all, [accountId]: next }),
     );

@@ -1,5 +1,6 @@
 "use client";
 
+import { userLocalStorage } from "@/lib/user-storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import DOMPurify from "dompurify";
@@ -177,7 +178,7 @@ const DARK_MODE_STORAGE_KEY = "mail-verdict:message-dark-mode";
  * purely cosmetic, and not worth a table that grows with the mailbox. */
 function readStoredCanvasChoice(messageId: string): Canvas | null {
   try {
-    const raw = window.localStorage.getItem(DARK_MODE_STORAGE_KEY);
+    const raw = userLocalStorage().getItem(DARK_MODE_STORAGE_KEY);
     if (!raw) return null;
     const stored = JSON.parse(raw) as Record<string, Canvas>;
     return stored[messageId] ?? null;
@@ -188,10 +189,10 @@ function readStoredCanvasChoice(messageId: string): Canvas | null {
 
 function writeStoredCanvasChoice(messageId: string, canvas: Canvas): void {
   try {
-    const raw = window.localStorage.getItem(DARK_MODE_STORAGE_KEY);
+    const raw = userLocalStorage().getItem(DARK_MODE_STORAGE_KEY);
     const stored = raw ? (JSON.parse(raw) as Record<string, Canvas>) : {};
     stored[messageId] = canvas;
-    window.localStorage.setItem(DARK_MODE_STORAGE_KEY, JSON.stringify(stored));
+    userLocalStorage().setItem(DARK_MODE_STORAGE_KEY, JSON.stringify(stored));
   } catch {
     // Private browsing or a full quota loses the memory, not the toggle.
   }

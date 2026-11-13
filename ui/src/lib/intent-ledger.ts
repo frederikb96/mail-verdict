@@ -30,8 +30,9 @@ import {
   type UndoRequest,
 } from "@/lib/mail-intents";
 import { newIdempotencyKey } from "@/lib/idempotency-key";
+import { scopedKey } from "@/lib/user-storage";
 
-const STORAGE_KEY = "mail-verdict-mail-intents";
+const STORAGE_KEY_BASE = "mail-verdict-mail-intents";
 const TAB_KEY = "mail-verdict-tab-id";
 const RETIRED_MEMORY_MS = FAILED_RETENTION_MS;
 
@@ -57,6 +58,12 @@ const listeners = new Set<() => void>();
 let loaded = false;
 let tabId: string | null = null;
 
+/** The signed-in user's own ledger: a second person in the same browser
+ * has a ledger of their own and never sends the first one's intents. */
+function storageKey(): string {
+  return scopedKey(STORAGE_KEY_BASE);
+}
+
 function hasStorage(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
 }
@@ -79,7 +86,7 @@ export function currentTabId(): string {
 function readStored(): StoredLedger | null {
   if (!hasStorage() || snapshot.persistenceFailed) return null;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey());
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StoredLedger> | null;
     if (!parsed || parsed.v !== 1) return null;
@@ -155,7 +162,7 @@ function write(): void {
     undoRequests: [...snapshot.undoRequests], retired: Object.fromEntries(retired),
   };
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
+    window.localStorage.setItem(storageKey(), JSON.stringify(doc));
     snapshot = { ...snapshot, persistenceFailed: false };
   } catch {
     // Over quota: the row snapshots kept for undo are the only bulky part.
@@ -166,7 +173,7 @@ function write(): void {
           ...i, messages: i.messages.map(({ row: _row, ...m }) => m),
         })),
       }));
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...doc, undo: slim }));
+      window.localStorage.setItem(storageKey(), JSON.stringify({ ...doc, undo: slim }));
       snapshot = { ...snapshot, persistenceFailed: false };
     } catch {
       snapshot = { ...snapshot, persistenceFailed: true };
@@ -189,7 +196,7 @@ function ensureLoaded(): void {
   loaded = true;
   snapshot = absorb(readStored());
   window.addEventListener("storage", (event) => {
-    if (event.key !== STORAGE_KEY) return;
+    if (event.key !== storageKey()) return;
     snapshot = absorb(readStored());
     emit();
   });

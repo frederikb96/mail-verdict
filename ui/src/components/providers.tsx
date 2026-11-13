@@ -5,8 +5,11 @@ import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client
 import { Provider as JotaiProvider } from "jotai";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useState, type ReactNode } from "react";
+import { UserGate } from "@/components/user-gate";
+import { meKey } from "@/hooks/use-me";
+import type { MeResponse } from "@/types/api";
 import {
-  queryPersister,
+  createQueryPersister,
   PERSIST_MAX_AGE,
   shouldPersistQuery,
 } from "@/lib/query-persister";
@@ -14,10 +17,20 @@ import {
 /** 30 seconds stale time for lists, queries refetch in background after. */
 const DEFAULT_STALE_TIME = 30 * 1000;
 
+/** Nothing below renders, and nothing persisted is read, until `/api/me`
+ * has said who is signed in: the stored query cache and every other piece of
+ * browser state is that person's own. */
 export function Providers({ children }: { children: ReactNode }) {
+  return (
+    <UserGate>{(me) => <SignedInProviders me={me}>{children}</SignedInProviders>}</UserGate>
+  );
+}
+
+function SignedInProviders({ me, children }: { me: MeResponse; children: ReactNode }) {
+  const [queryPersister] = useState(createQueryPersister);
   const [queryClient] = useState(
-    () =>
-      new QueryClient({
+    () => {
+      const client = new QueryClient({
         defaultOptions: {
           queries: {
             retry: 1,
@@ -27,7 +40,10 @@ export function Providers({ children }: { children: ReactNode }) {
             gcTime: PERSIST_MAX_AGE,
           },
         },
-      }),
+      });
+      client.setQueryData(meKey, me);
+      return client;
+    },
   );
 
   const content = (

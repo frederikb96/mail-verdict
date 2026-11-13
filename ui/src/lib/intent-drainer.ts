@@ -39,6 +39,7 @@ import {
   updateIntent,
 } from "@/lib/intent-ledger";
 import { newIdempotencyKey } from "@/lib/idempotency-key";
+import { scopedKey } from "@/lib/user-storage";
 import {
   MAX_RETRY_ATTEMPTS,
   classifyFailure,
@@ -56,7 +57,7 @@ import {
 const REQUEST_TIMEOUT_MS = 15_000;
 const SWEEP_INTERVAL_MS = 30_000;
 const LOCK_NAME = "mail-verdict-intent-drainer";
-const LEASE_KEY = "mail-verdict-intent-drainer-lease";
+const LEASE_KEY_BASE = "mail-verdict-intent-drainer-lease";
 const LEASE_MS = 6_000;
 const LEASE_RENEW_MS = 2_000;
 
@@ -116,7 +117,7 @@ export function startDrainer(): void {
   });
 
   if (typeof navigator !== "undefined" && navigator.locks?.request) {
-    void navigator.locks.request(LOCK_NAME, () => {
+    void navigator.locks.request(scopedKey(LOCK_NAME), () => {
       becomeLeader();
       return new Promise<void>(() => {});
     });
@@ -137,18 +138,22 @@ function becomeLeader(): void {
   kickDrainer();
 }
 
+function leaseKey(): string {
+  return scopedKey(LEASE_KEY_BASE);
+}
+
 /** Without Web Locks: take or renew the lease when it is free or ours. */
 function holdLease(): void {
   const me = currentTabId();
   const now = Date.now();
   try {
-    const lease = JSON.parse(window.localStorage.getItem(LEASE_KEY) ?? "null") as
+    const lease = JSON.parse(window.localStorage.getItem(leaseKey()) ?? "null") as
       | { tab: string; until: number }
       | null;
     if (!lease || lease.until < now || lease.tab === me) {
-      window.localStorage.setItem(LEASE_KEY, JSON.stringify({ tab: me, until: now + LEASE_MS }));
+      window.localStorage.setItem(leaseKey(), JSON.stringify({ tab: me, until: now + LEASE_MS }));
     }
-    const held = JSON.parse(window.localStorage.getItem(LEASE_KEY) ?? "null") as { tab: string } | null;
+    const held = JSON.parse(window.localStorage.getItem(leaseKey()) ?? "null") as { tab: string } | null;
     if (held?.tab === me) becomeLeader();
     else leader = false;
   } catch {

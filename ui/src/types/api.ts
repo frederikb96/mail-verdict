@@ -317,6 +317,15 @@ export interface AccountSyncStatus {
   message_count: number;
 }
 
+/** GET /api/me -- the signed-in user. */
+export interface MeResponse {
+  user_id: string;
+  email: string | null;
+  display_name: string;
+  role: "admin" | "user";
+  disabled: boolean;
+}
+
 export interface StatsResponse {
   total_messages: number;
   total_accounts: number;

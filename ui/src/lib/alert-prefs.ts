@@ -19,9 +19,9 @@
  * as the concrete list it is.
  */
 
-import { atomWithStorage } from "jotai/utils";
+import { userAtomWithStorage } from "@/lib/user-storage";
 
-export const alertEnabledFolderIdsAtom = atomWithStorage<string[] | null>(
+export const alertEnabledFolderIdsAtom = userAtomWithStorage<string[] | null>(
   "mailverdict:alerts.enabled-folders",
   null,
 );
