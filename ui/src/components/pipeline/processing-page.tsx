@@ -1,9 +1,11 @@
 "use client";
 
 /**
- * Admin > Processing: what an operator checks first. Queues, then failures
- * across the instance, then a count-only summary of every person's rule set
- * (never its content), then the live tail of recent runs.
+ * Admin > Processing: what an operator checks first. Queues, then the failed
+ * runs of the admin's own accounts, then a count-only summary of every
+ * person's rule set (never its content, failures counted), then the live tail
+ * of the admin's own recent runs. Another person's runs carry their mail, so
+ * they appear here only as counts.
  */
 
 import { Users } from "lucide-react";
@@ -56,7 +58,7 @@ export function ProcessingPage() {
     <div className="flex flex-col gap-4">
       <CategoryHeader
         title="Processing"
-        description="Every message is embedded, then run through its owner's rules. The queues and failures here cover the whole instance; each person edits their own rules."
+        description="Every message is embedded, then run through its owner's rules. The queues cover the whole instance; failures and recent runs are your own accounts', and everyone else's failures are counted under Rule sets."
       />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

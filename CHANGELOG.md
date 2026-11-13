@@ -94,9 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   relay at `https://push.frederikberg.net` requires; `push.apns_relay_urls` lists it beside the
   previous address, which reaches the same relay.
 - Admin → Processing shows the queues as compact tiles (pause, worker count and circuit reset in a
-  menu), failed runs, each user's rule set as counts, and the live tail; the shared stage list is
-  gone, since every user edits their own rules on the Rules page. Failures and the tail wrap on a
-  phone instead of cutting off stage names.
+  menu), the admin's own failed runs, each user's rule set as counts (failures included), and the
+  admin's own live tail; the shared stage list is gone, since every user edits their own rules on
+  the Rules page. Failures and the tail wrap on a phone instead of cutting off stage names.
 - An `idempotency_key` on a mail action or a send belongs to the user who sent it: two users
   sending the same key act separately, and neither is answered with the other's response. Whether
   mail is marked read when it is filed into Archive or Junk follows the owner of the account,
