@@ -246,6 +246,68 @@ async def _seed_owned_rows(postgres_url: str, rows: dict[str, Any]) -> None:
                 ),
                 {"id": rows["identity_id"], "account": rows["account_id"], "email": rows["email"]},
             )
+            await conn.execute(
+                text(
+                    "INSERT INTO verdicts (id, mail_id, account_id, msg_key, from_addr, "
+                    "is_spam, model_used, reasoning, source) VALUES (:id, :message, :account, "
+                    ":key, :sender, true, 'isolation-model', :reasoning, 'ai')"
+                ),
+                {
+                    "id": rows["verdict_id"], "message": rows["message_id"],
+                    "account": rows["account_id"], "key": f"<isolation-{rows['tag']}@example.com>",
+                    "sender": rows["sender"], "reasoning": f"Reasoning {rows['tag']}",
+                },
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO pipeline_runs (id, account_id, msg_key, message_id, dedup_key, "
+                    "origin, status, last_error) VALUES (:id, :account, :key, :message, :key, "
+                    "'live', 'failed', :error)"
+                ),
+                {
+                    "id": rows["run_id"], "account": rows["account_id"],
+                    "key": f"isolation-run-{rows['tag']}", "message": rows["message_id"],
+                    "error": f"Run error {rows['tag']}",
+                },
+            )
+            rows["notification_id"] = str(await conn.scalar(
+                text(
+                    "INSERT INTO sync_notifications (account_id, action, error, detail) "
+                    "VALUES (:account, 'flag_add', :error, '{}'::jsonb) RETURNING id"
+                ),
+                {"account": rows["account_id"], "error": f"Notification {rows['tag']}"},
+            ))
+            await conn.execute(
+                text(
+                    "INSERT INTO image_exceptions (id, account_id, exception_type, value) "
+                    "VALUES (:id, :account, 'sender', :value)"
+                ),
+                {
+                    "id": rows["exception_id"], "account": rows["account_id"],
+                    "value": f"images-{rows['tag']}@example.com",
+                },
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO pending_sends (id, account_id, from_addr, to_addrs, subject, "
+                    "body_text, send_after) VALUES (:id, :account, :email, '[\"x@example.com\"]', "
+                    ":subject, 'staged', now() + interval '1 day')"
+                ),
+                {
+                    "id": rows["pending_send_id"], "account": rows["account_id"],
+                    "email": rows["email"], "subject": f"Staged {rows['tag']}",
+                },
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO pending_send_attachments (id, pending_send_id, filename, data) "
+                    "VALUES (:id, :pending, :name, 'bytes')"
+                ),
+                {
+                    "id": rows["pending_attachment_id"], "pending": rows["pending_send_id"],
+                    "name": f"staged-{rows['tag']}.txt",
+                },
+            )
     finally:
         await engine.dispose()
 
@@ -350,9 +412,12 @@ def world(
     rows: dict[str, Any] = {
         "tag": tag, "b_user_id": b_user_id, "account_id": b_account_id,
         "folder_id": folder_id, "message_id": message_id, "subject": b_subject,
-        "email": b_email, "view_id": str(uuid.uuid4()), "alert_id": str(uuid.uuid4()),
-        "order_id": str(uuid.uuid4()), "subscription_id": str(uuid.uuid4()),
-        "identity_id": str(uuid.uuid4()),
+        "email": b_email, "sender": b_sender, "view_id": str(uuid.uuid4()),
+        "alert_id": str(uuid.uuid4()), "order_id": str(uuid.uuid4()),
+        "subscription_id": str(uuid.uuid4()), "identity_id": str(uuid.uuid4()),
+        "verdict_id": str(uuid.uuid4()), "run_id": str(uuid.uuid4()),
+        "exception_id": str(uuid.uuid4()), "pending_send_id": str(uuid.uuid4()),
+        "pending_attachment_id": str(uuid.uuid4()),
     }
     asyncio.run(_seed_owned_rows(postgres_url, rows))
 
@@ -363,7 +428,8 @@ def world(
         "contact_email": b_contact_email,
         **{key: rows[key] for key in (
             "view_id", "alert_id", "order_id", "subscription_id", "identity_id",
-            "pipeline_revision",
+            "pipeline_revision", "verdict_id", "run_id", "exception_id", "pending_send_id",
+            "pending_attachment_id", "notification_id",
         )},
     }
     return World(
@@ -375,7 +441,13 @@ def world(
         b_markers=frozenset({
             b_user_id, b_email, b_subject, b_sender, f"B cal {tag}", f"B view {tag}",
             f"Merchant {tag}", f"B book {tag}", f"B group {tag}", b_contact_name,
-            *(value for key, value in b.items() if key != "pipeline_revision"),
+            f"Reasoning {tag}", f"Run error {tag}", f"Notification {tag}", f"Staged {tag}",
+            f"images-{tag}@example.com", f"staged-{tag}.txt",
+            # A bare counter and a revision number would match anything.
+            *(
+                value for key, value in b.items()
+                if key not in ("pipeline_revision", "notification_id")
+            ),
         }),
         b_content=frozenset({b_subject, b_sender}),
     )

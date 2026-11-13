@@ -27,6 +27,8 @@ from mail_verdict.alerts.dispatch import (
     create_mail_alert_for_arrival,
 )
 from mail_verdict.alerts.resolve import resolve_for_message_event
+from mail_verdict.auth.ownership import set_account_owner
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Alert, Message
 from mail_verdict.database.repository import AlertRepository
@@ -46,7 +48,10 @@ async def _settings(db: DatabaseConnection, *, archive_marks_read: bool = True) 
     whole pg layer, so a default merge would depend on file order."""
     service = SettingsService(db)
     await service.load()
-    await service.update("mail", {"mark_read_on_file_to_archive_or_junk": archive_marks_read})
+    await service.update_for_user(
+        "mail", OWNER_USER_ID, {"mark_read_on_file_to_archive_or_junk": archive_marks_read},
+        is_admin=True,
+    )
     return service
 
 
@@ -335,6 +340,43 @@ class TestAlertResolvesWhenItsMailIsRead:
 
         assert (await _alert(migrated_db, read_alert)).dismissed_at is not None
         assert (await _alert(migrated_db, unread_alert)).dismissed_at is None
+
+
+class TestEachOwnersSettingDecides:
+    @pytest.mark.asyncio
+    async def test_the_reconcile_follows_the_setting_of_the_accounts_owner(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Two accounts with mail in Archive: the owner who keeps archiving
+        unread has it left alone, the other's is marked read."""
+        keeps_unread, marks_read = uuid.uuid4(), uuid.uuid4()
+        async with migrated_db.session() as session:
+            for user in (keeps_unread, marks_read):
+                await session.execute(
+                    text("INSERT INTO users (id, display_name) VALUES (:id, :name)"),
+                    {"id": user, "name": f"user-{user}"},
+                )
+        settings = await _settings(migrated_db)
+        for user, archive_marks_read in ((keeps_unread, False), (marks_read, True)):
+            await settings.update_for_user(
+                "mail", user, {"mark_read_on_file_to_archive_or_junk": archive_marks_read},
+                is_admin=False,
+            )
+        archived: dict[uuid.UUID, uuid.UUID] = {}
+        for user in (keeps_unread, marks_read):
+            account_id, _inbox, _junk, archive_id, _trash = await _seed_account_with_archive(
+                migrated_db,
+            )
+            async with migrated_db.session() as session:
+                await set_account_owner(session, account_id, user)
+                archived[user] = await _insert_message(
+                    session, account_id, archive_id, imap_uid=1, header=f"<{uuid.uuid4()}@x>",
+                )
+
+        await reconcile_read_state_once(migrated_db, None, settings)
+
+        assert not await _is_seen(migrated_db, archived[keeps_unread])
+        assert await _is_seen(migrated_db, archived[marks_read])
 
 
 class TestArchiveAndTrashAreRead:

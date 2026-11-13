@@ -13,10 +13,11 @@ import logging
 import uuid
 from typing import NamedTuple
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.api.access import owned_account
 from mail_verdict.api.schemas import (
     ImageExceptionCreate,
     ImageExceptionResponse,
@@ -114,7 +115,10 @@ async def is_sender_image_allowed(account_id: uuid.UUID, from_addr: str | None) 
         )
         return result.scalar_one_or_none() is not None
 
-router = APIRouter(prefix="/accounts/{account_id}/image-exceptions", tags=["image-exceptions"])
+router = APIRouter(
+    prefix="/accounts/{account_id}/image-exceptions", tags=["image-exceptions"],
+    dependencies=[Depends(owned_account)],
+)
 
 
 @router.get("", response_model=list[ImageExceptionResponse])

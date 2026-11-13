@@ -20,6 +20,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.helpers.auth import act_as, owner_scope
+
 os.environ.setdefault(
     "MAIL_VERDICT_DATABASE_URL", "postgresql+asyncpg://unused:unused@127.0.0.1:1/unused"
 )
@@ -61,6 +63,7 @@ def test_update_account_never_forwards_insert_only_imap_fields(
     account_id = uuid.uuid4()
     owner = uuid.uuid4()
     account = _make_account(account_id)
+    act_as(client.app, owner_scope([account_id]))  # type: ignore[arg-type]
 
     session = AsyncMock()
     session.execute = AsyncMock(

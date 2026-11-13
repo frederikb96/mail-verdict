@@ -18,13 +18,14 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, select, text
 from sqlalchemy import func as sa_func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.api.deps import get_account_prefs_repo, get_folder_prefs_repo
+from mail_verdict.api.access import ensure_folder_access, owned_account
+from mail_verdict.api.deps import current_scope, get_account_prefs_repo, get_folder_prefs_repo
 from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import (
     FolderCreateRequest,
@@ -35,6 +36,7 @@ from mail_verdict.api.schemas import (
     FolderResponse,
 )
 from mail_verdict.api.unified import set_folder_views, view_ids_by_folder
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
@@ -51,8 +53,23 @@ from mail_verdict.postimap.contract import read_postimap_info, supports_folder_c
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/accounts/{account_id}", tags=["folder-management"])
-folder_prefs_router = APIRouter(prefix="/folders/{folder_id}", tags=["folder-management"])
+router = APIRouter(
+    prefix="/accounts/{account_id}", tags=["folder-management"],
+    dependencies=[Depends(owned_account)],
+)
+
+
+async def owned_folder(folder_id: uuid.UUID, scope: Scope = Depends(current_scope)) -> None:
+    """Dependency: refuse (403) a folder that is not the caller's own. An id
+    that names nothing passes, and the route answers 404 itself."""
+    async with get_db_connection().session() as session:
+        await ensure_folder_access(session, scope, folder_id)
+
+
+folder_prefs_router = APIRouter(
+    prefix="/folders/{folder_id}", tags=["folder-management"],
+    dependencies=[Depends(owned_folder)],
+)
 
 _FOLDER_CRUD_UNSUPPORTED_DETAIL = (
     "Folder creation and deletion require PostIMAP service_version >= 1.3.0; "

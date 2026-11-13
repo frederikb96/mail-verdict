@@ -12,15 +12,6 @@ defining the endpoint.
 from __future__ import annotations
 
 PENDING_ROUTES: frozenset[str] = frozenset({
-    # api/accounts.py
-    "GET /api/accounts",
-    "POST /api/accounts",
-    "DELETE /api/accounts/{account_id}",
-    "GET /api/accounts/{account_id}",
-    "PATCH /api/accounts/{account_id}",
-    "GET /api/accounts/{account_id}/folders",
-    "POST /api/accounts/{account_id}/sync",
-    "GET /api/accounts/{account_id}/sync-status",
     # api/alerts.py
     "GET /api/alerts",
     "GET /api/alerts/badge",
@@ -40,54 +31,8 @@ PENDING_ROUTES: frozenset[str] = frozenset({
     "GET /api/embeddings/search",
     # api/events.py
     "GET /api/events",
-    # api/folder_management.py
-    "GET /api/accounts/{account_id}/folder-order",
-    "PUT /api/accounts/{account_id}/folder-order",
-    "POST /api/accounts/{account_id}/folders",
-    "DELETE /api/folders/{folder_id}",
-    "PATCH /api/folders/{folder_id}/prefs",
-    # api/identities.py
-    "GET /api/identities",
-    "POST /api/identities",
-    "DELETE /api/identities/{identity_id}",
-    "PATCH /api/identities/{identity_id}",
-    # api/image_exceptions.py
-    "GET /api/accounts/{account_id}/image-exceptions",
-    "POST /api/accounts/{account_id}/image-exceptions",
-    "GET /api/accounts/{account_id}/image-exceptions/check",
-    "DELETE /api/accounts/{account_id}/image-exceptions/{exception_id}",
-    # api/mails.py
-    "GET /api/accounts/{account_id}/messages",
-    "POST /api/accounts/{account_id}/messages/bulk-action",
-    "GET /api/accounts/{account_id}/messages/selection",
-    "GET /api/messages/{message_id}",
-    "POST /api/messages/{message_id}/action",
-    "GET /api/messages/{message_id}/attachments/{attachment_id}",
-    "GET /api/messages/{message_id}/location",
-    "GET /api/messages/{message_id}/quote",
-    "GET /api/messages/{message_id}/raw",
-    "GET /api/messages/{message_id}/thread",
-    # api/notifications.py
-    "GET /api/accounts/{account_id}/notifications",
-    "POST /api/accounts/{account_id}/notifications/ack-all",
-    "GET /api/accounts/{account_id}/notifications/unacknowledged-count",
-    "POST /api/accounts/{account_id}/notifications/{notification_id}/ack",
-    "GET /api/notifications",
-    # api/outbox.py
-    "GET /api/outbox",
-    "POST /api/outbox",
-    "GET /api/outbox/pending",
-    "GET /api/outbox/pending/{pending_send_id}/attachments/{attachment_id}",
-    "POST /api/outbox/pending/{pending_send_id}/cancel",
-    # api/runs.py
-    "GET /api/mails/{mail_id}/runs",
-    "GET /api/runs",
-    "GET /api/runs/{run_id}",
-    "POST /api/runs/{run_id}/retry",
     # api/search.py
     "GET /api/search",
-    # api/stats.py
-    "GET /api/stats",
     # api/unified.py
     "PUT /api/accounts/{account_id}/emoji",
     "GET /api/unified/folder-order",
@@ -97,11 +42,6 @@ PENDING_ROUTES: frozenset[str] = frozenset({
     "POST /api/unified/views",
     "DELETE /api/unified/views/{view_id}",
     "PATCH /api/unified/views/{view_id}",
-    # api/verdicts.py
-    "POST /api/mails/{mail_id}/feedback",
-    "GET /api/mails/{mail_id}/verdict",
-    "GET /api/verdicts",
-    "GET /api/verdicts/spam-review",
 })
 
 PENDING_TOOLS: frozenset[str] = frozenset({

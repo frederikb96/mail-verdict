@@ -6,7 +6,7 @@ GET  /api/accounts/:id/notifications/unacknowledged-count -- badge count
 POST /api/accounts/:id/notifications/:notification_id/ack -- acknowledge one
 POST /api/accounts/:id/notifications/ack-all       -- acknowledge every
   unacknowledged notification for the account
-GET  /api/notifications                           -- every account's, newest first
+GET  /api/notifications                           -- every account of the caller's, newest first
 
 Built on PostIMAP's sync_notifications: a durable, acknowledgeable record
 of a write that gave up permanently, including a send that never left.
@@ -17,16 +17,21 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from mail_verdict.api.deps import get_sync_notification_repo
+from mail_verdict.api.access import owned_account
+from mail_verdict.api.deps import current_scope, get_sync_notification_repo
 from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import NotificationCountResponse, NotificationResponse
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.postimap.actions import acknowledge_all_notifications, acknowledge_notification
 from mail_verdict.postimap.contract import read_postimap_info, supports_sync_notifications
 
-router = APIRouter(prefix="/accounts/{account_id}/notifications", tags=["notifications"])
+router = APIRouter(
+    prefix="/accounts/{account_id}/notifications", tags=["notifications"],
+    dependencies=[Depends(owned_account)],
+)
 all_accounts_router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 _UNSUPPORTED_DETAIL = (
@@ -70,12 +75,13 @@ async def list_notifications(
 async def list_all_notifications(
     unacknowledged_only: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=500),
+    scope: Scope = Depends(current_scope),
 ) -> list[NotificationResponse]:
-    """Every account's notifications in one list, newest first -- inactive
-    accounts included (see SyncNotificationRepository.list_all)."""
+    """Every one of the caller's accounts' notifications in one list, newest
+    first -- inactive accounts included (see SyncNotificationRepository.list_all)."""
     await _require_support()
     rows = await get_sync_notification_repo().list_all(
-        unacknowledged_only=unacknowledged_only, limit=limit,
+        scope.account_ids, unacknowledged_only=unacknowledged_only, limit=limit,
     )
     return [_to_response(row) for row in rows]
 
@@ -114,7 +120,7 @@ async def acknowledge(account_id: uuid.UUID, notification_id: int) -> None:
     await _require_support()
     db = get_db_connection()
     async with db.session() as session:
-        await acknowledge_notification(session, notification_id)
+        await acknowledge_notification(session, account_id, notification_id)
     await _announce_notifications_changed(account_id)
 
 

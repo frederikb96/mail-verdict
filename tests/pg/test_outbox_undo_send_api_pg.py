@@ -20,18 +20,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.outbox import router as outbox_router
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.outbox.pending import _process_due_sends
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
+from tests.helpers.auth import act_as_owner_of_everything
 
 _OUTBOX_TARGET = "mail_verdict.api.outbox.get_db_connection"
 _OUTBOX_EVENT_RING_TARGET = "mail_verdict.api.outbox.get_event_ring"
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(outbox_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 
@@ -65,7 +68,9 @@ async def _seed_account_and_settings(
         account_id = await _seed_account(session)
         await session.commit()
     settings_service = await init_settings_service(migrated_db)
-    await settings_service.update("outbox", {"undo_send_seconds": undo_send_seconds})
+    await settings_service.update_for_user(
+        "outbox", OWNER_USER_ID, {"undo_send_seconds": undo_send_seconds}, is_admin=True,
+    )
     return account_id
 
 

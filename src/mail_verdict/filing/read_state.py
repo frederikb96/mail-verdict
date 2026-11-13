@@ -1,8 +1,8 @@
 """
 Mail in Archive or Trash is read, however it got there -- filed from this
 application, by a rule, or by another mail client entirely. Trash always;
-Archive unless settings.mail.mark_read_on_file_to_archive_or_junk is off,
-the same setting that decides whether archiving here marks read.
+Archive unless the account owner's settings.mail.mark_read_on_file_to_archive_or_junk
+is off, the same setting that decides whether archiving here marks read.
 
 Two halves. mark_read_on_landing reacts to the postimap event that lands a
 message in either folder (filing/landing.py), which is what makes it
@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import text
 
 from mail_verdict.alerts.resolve import announce_alerts_dismissed, resolve_all
+from mail_verdict.auth.ownership import owner_of_account
 from mail_verdict.database.repository import FolderRepository
 from mail_verdict.filing.landing import landing_from_event, landing_role
 from mail_verdict.postimap.actions import mark_seen_if_live
@@ -73,9 +74,12 @@ _WINDOW = 500
 Cursors = dict[uuid.UUID, int]
 
 
-def always_read_roles(settings_service: SettingsService) -> tuple[str, ...]:
-    """The folder roles whose mail is kept read, under the current settings."""
-    if settings_service.get("mail")["mark_read_on_file_to_archive_or_junk"]:
+def always_read_roles(
+    settings_service: SettingsService, owner: uuid.UUID | None,
+) -> tuple[str, ...]:
+    """The folder roles whose mail is kept read, under the settings of the
+    user owning the account (None: an account with no owner, on defaults)."""
+    if settings_service.get_for_user("mail", owner)["mark_read_on_file_to_archive_or_junk"]:
         return ("archive", "trash")
     return ("trash",)
 
@@ -98,7 +102,9 @@ async def mark_read_on_landing(
     landing = landing_from_event(event)
     if landing is None:
         return 0
-    if await landing_role(db, landing, always_read_roles(settings_service)) is None:
+    async with db.session() as session:
+        owner = await owner_of_account(session, landing.account_id)
+    if await landing_role(db, landing, always_read_roles(settings_service, owner)) is None:
         return 0
     async with db.session() as session:
         return await mark_seen_if_live(
@@ -202,16 +208,20 @@ async def reconcile_read_state_once(
         (messages marked read, alerts resolved)
     """
     cursors = {} if cursors is None else cursors
-    roles = always_read_roles(settings_service)
     async with db.session() as session:
-        account_ids = (
-            await session.execute(text("SELECT id FROM accounts WHERE is_active"))
-        ).scalars().all()
+        accounts = (
+            await session.execute(
+                text(
+                    "SELECT a.id, o.user_id FROM accounts a "
+                    "LEFT JOIN account_owners o ON o.account_id = a.id WHERE a.is_active"
+                )
+            )
+        ).all()
 
     repo = FolderRepository(db)
     marked = 0
-    for account_id in account_ids:
-        for role in roles:
+    for account_id, owner in accounts:
+        for role in always_read_roles(settings_service, owner):
             folder_id = await repo.resolve_special_folder(account_id, role)
             if folder_id is not None:
                 marked += await _reconcile_folder(db, folder_id, cursors)

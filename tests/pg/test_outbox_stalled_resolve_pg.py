@@ -26,6 +26,7 @@ from mail_verdict.outbox.stalled import (
     raise_stalled_outbox_alerts_once,
     resolve_stalled_for_outbox_event,
 )
+from tests.helpers.auth import act_as_owner_of_everything
 from tests.pg.test_outbox_stalled_pg import (
     _THRESHOLD,
     _alerts_for,
@@ -165,9 +166,10 @@ class TestStalledAlertResolves:
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(outbox_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

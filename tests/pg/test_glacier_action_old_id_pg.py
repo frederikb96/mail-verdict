@@ -11,16 +11,22 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 import pytest
 from sqlalchemy import text
 
-from mail_verdict.api.mails import bulk_action as api_bulk_action
-from mail_verdict.api.mails import message_action as api_message_action
+from mail_verdict.api.mails import bulk_action as _bulk_action
+from mail_verdict.api.mails import message_action as _message_action
 from mail_verdict.api.schemas import BulkActionRequest, MessageActionRequest
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.glacier.operations import glacier_message_now
 from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
+from tests.helpers.auth import owner_scope
+
+api_bulk_action = partial(_bulk_action, scope=owner_scope())
+api_message_action = partial(_message_action, scope=owner_scope())
+
 
 _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
 

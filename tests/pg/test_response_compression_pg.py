@@ -20,18 +20,20 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from mail_verdict.api.mails import router as mails_router
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import act_as_owner_of_everything
 
 _MAILS_TARGET = "mail_verdict.api.mails.get_db_connection"
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     """The same minimal app test_outbox_html_pg.py builds, with the
     production GZipMiddleware added -- the setting under test, not the
     default Starlette carries without it."""
     app = FastAPI()
     app.include_router(mails_router)
     app.add_middleware(GZipMiddleware, minimum_size=500)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

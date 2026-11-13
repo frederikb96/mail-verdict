@@ -13,10 +13,13 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 
+from mail_verdict.api.access import ensure_message_access
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.schemas import PipelineRunResponse
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 
 router = APIRouter(tags=["runs"])
@@ -45,18 +48,18 @@ async def list_runs(
     account_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    scope: Scope = Depends(current_scope),
 ) -> list[PipelineRunResponse]:
-    """List pipeline runs, newest first, optionally filtered."""
+    """List the caller's own pipeline runs, newest first, optionally filtered."""
     db = get_db_connection()
-    conditions = []
-    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    conditions = ["account_id = ANY(:account_ids)"]
+    params: dict[str, Any] = {
+        "limit": limit, "offset": offset, "account_ids": list(scope.narrow(account_id)),
+    }
     if status is not None:
         conditions.append("status = :status")
         params["status"] = status
-    if account_id is not None:
-        conditions.append("account_id = :account_id")
-        params["account_id"] = account_id
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    where = f"WHERE {' AND '.join(conditions)}"
 
     async with db.session() as session:
         result = await session.execute(
@@ -70,7 +73,9 @@ async def list_runs(
 
 
 @router.get("/runs/{run_id}", response_model=PipelineRunResponse)
-async def get_run(run_id: uuid.UUID) -> PipelineRunResponse:
+async def get_run(
+    run_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> PipelineRunResponse:
     """Get one run's full trace."""
     db = get_db_connection()
     async with db.session() as session:
@@ -80,15 +85,25 @@ async def get_run(run_id: uuid.UUID) -> PipelineRunResponse:
         row = result.one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Run not found")
+    scope.require_account(row.account_id)
     return _to_response(row)
 
 
 @router.post("/runs/{run_id}/retry", response_model=PipelineRunResponse)
-async def retry_run(run_id: uuid.UUID) -> PipelineRunResponse:
+async def retry_run(
+    run_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> PipelineRunResponse:
     """Re-queue a failed run -- clears the terminal status and error, and
     lets the ordinary claim/lease mechanics pick it up again."""
     db = get_db_connection()
     async with db.session() as session:
+        owner_account = (
+            await session.execute(
+                text("SELECT account_id FROM pipeline_runs WHERE id = :id"), {"id": run_id},
+            )
+        ).scalar_one_or_none()
+        if owner_account is not None:
+            scope.require_account(owner_account)
         result = await session.execute(
             text(
                 "UPDATE pipeline_runs SET status = 'pending', attempts = 0, last_error = NULL, "
@@ -105,16 +120,20 @@ async def retry_run(run_id: uuid.UUID) -> PipelineRunResponse:
 
 
 @router.get("/mails/{mail_id}/runs", response_model=list[PipelineRunResponse])
-async def list_runs_for_mail(mail_id: uuid.UUID) -> list[PipelineRunResponse]:
+async def list_runs_for_mail(
+    mail_id: uuid.UUID, scope: Scope = Depends(current_scope),
+) -> list[PipelineRunResponse]:
     """Every pipeline run for one message's current row id -- "why did
     this message get that treatment"."""
     db = get_db_connection()
     async with db.session() as session:
+        await ensure_message_access(session, scope, mail_id)
         result = await session.execute(
             text(
-                f"SELECT {_LIST_COLUMNS} FROM pipeline_runs WHERE message_id = :mail_id "
+                f"SELECT {_LIST_COLUMNS} FROM pipeline_runs "
+                "WHERE message_id = :mail_id AND account_id = ANY(:account_ids) "
                 "ORDER BY created_at DESC"
             ),
-            {"mail_id": mail_id},
+            {"mail_id": mail_id, "account_ids": list(scope.account_ids)},
         )
         return [_to_response(row) for row in result.all()]

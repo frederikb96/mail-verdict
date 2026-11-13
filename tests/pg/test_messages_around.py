@@ -34,6 +34,7 @@ from mail_verdict.api.mails import (
     account_router,
 )
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import act_as_owner_of_everything
 from tests.pg.test_threaded_messages import _seed_account_and_inbox, _seed_message
 
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -42,9 +43,10 @@ _MAILS_TARGET = "mail_verdict.api.mails.get_db_connection"
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(account_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

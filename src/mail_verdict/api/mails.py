@@ -24,11 +24,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import ColumnElement, all_, any_, case, desc, func, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, defer
 
+from mail_verdict.api.access import ensure_message_access, owned_account
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.image_exceptions import (
     ImageAllowlist,
@@ -53,6 +55,7 @@ from mail_verdict.api.schemas import (
     ThreadResponse,
     VerdictResponse,
 )
+from mail_verdict.auth.scope import Scope
 from mail_verdict.config import get_config
 from mail_verdict.core.content_disposition import content_disposition
 from mail_verdict.core.cursor import after_cursor, before_cursor
@@ -113,11 +116,23 @@ GLACIER_REFUSAL_REASON = "This message is no longer on the mail server -- it is 
 
 logger = logging.getLogger(__name__)
 
+async def owned_message(message_id: uuid.UUID, scope: Scope = Depends(current_scope)) -> None:
+    """Dependency: refuse (403) a message that is not the caller's own. An
+    id that names nothing passes, and the route answers 404 itself."""
+    async with get_db_connection().session() as session:
+        await ensure_message_access(session, scope, message_id)
+
+
 # Detail/thread/action/attachment routes: /api/messages/...
-router = APIRouter(prefix="/messages", tags=["messages"])
+router = APIRouter(
+    prefix="/messages", tags=["messages"], dependencies=[Depends(owned_message)],
+)
 
 # List + bulk-action routes: /api/accounts/{account_id}/messages...
-account_router = APIRouter(prefix="/accounts/{account_id}/messages", tags=["messages"])
+account_router = APIRouter(
+    prefix="/accounts/{account_id}/messages", tags=["messages"],
+    dependencies=[Depends(owned_account)],
+)
 
 # A list row (MessageSummary) never renders these -- deferring them keeps a
 # page of the list from pulling the full raw message and its HTML body
@@ -352,9 +367,10 @@ async def _read_message_page(
     cursor_param = after if after is not None else before
     cursor_received_at, cursor_id = None, None
     if cursor_param is not None:
-        cursor_result = await session.execute(
-            select(entity.received_at, entity.id).where(entity.id == cursor_param)
-        )
+        cursor_stmt = select(entity.received_at, entity.id).where(entity.id == cursor_param)
+        if account_id is not None:
+            cursor_stmt = cursor_stmt.where(entity.account_id == account_id)
+        cursor_result = await session.execute(cursor_stmt)
         cursor_row = cursor_result.one_or_none()
         if cursor_row is None:
             raise HTTPException(
@@ -1201,18 +1217,18 @@ async def get_thread(
     db = get_db_connection()
     async with db.session() as session:
         anchor = await session.execute(
-            select(Message.thread_id).where(
+            select(Message.thread_id, Message.account_id).where(
                 Message.id == message_id, Message.expunged_at.is_(None),
             )
         )
-        thread_id = anchor.scalar_one_or_none()
+        thread_id, account_id = anchor.one_or_none() or (None, None)
         if thread_id is None:
             glacier_anchor = await session.execute(
-                select(GlacierMessage.thread_id).where(
+                select(GlacierMessage.thread_id, GlacierMessage.account_id).where(
                     GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None),
                 )
             )
-            thread_id = glacier_anchor.scalar_one_or_none()
+            thread_id, account_id = glacier_anchor.one_or_none() or (None, None)
         if thread_id is None:
             if await was_permanently_expunged(session, message_id):
                 # Destroyed on purpose through the glacier's own delete-
@@ -1226,9 +1242,9 @@ async def get_thread(
             # client). thread_id is never repointed for that case, so the
             # expunged row's own id still resolves the right conversation.
             stale_anchor = await session.execute(
-                select(Message.thread_id).where(Message.id == message_id)
+                select(Message.thread_id, Message.account_id).where(Message.id == message_id)
             )
-            thread_id = stale_anchor.scalar_one_or_none()
+            thread_id, account_id = stale_anchor.one_or_none() or (None, None)
         if thread_id is None:
             raise HTTPException(status_code=404, detail="Message not found")
 
@@ -1244,14 +1260,19 @@ async def get_thread(
         live_result = await session.execute(
             select(Message)
             .options(*_DETAIL_DEFERRED_COLUMNS)
-            .where(Message.thread_id == thread_id, Message.expunged_at.is_(None))
+            .where(
+                Message.thread_id == thread_id, Message.account_id == account_id,
+                Message.expunged_at.is_(None),
+            )
         )
         live_messages: list[Message | GlacierMessage] = list(live_result.scalars().all())
         glacier_result = await session.execute(
             select(GlacierMessage)
             .options(return_path_option(GlacierMessage))
             .where(
-                GlacierMessage.thread_id == thread_id, GlacierMessage.visible_at.is_not(None),
+                GlacierMessage.thread_id == thread_id,
+                GlacierMessage.account_id == account_id,
+                GlacierMessage.visible_at.is_not(None),
             )
         )
         glacier_messages = list(glacier_result.scalars().all())
@@ -1270,10 +1291,10 @@ async def get_thread(
         attachments_by_mail = await list_attachments_for_mails(session, mail_ids)
         verdicts_by_mail = await list_latest_verdicts_for_mails(session, mail_ids)
 
-        # A thread never spans accounts (thread_id is resolved and indexed
-        # per account -- see postimap/actions.py's own note on how a Sent
-        # reply resolves onto it), so one allowlist load covers every
-        # sender in the conversation.
+        # A thread never spans accounts: the queries above are limited to
+        # the anchor's own account, since the same conversation delivered
+        # to two accounts carries one thread_id in both. One allowlist load
+        # therefore covers every sender in the conversation.
         allowlist = (
             await load_image_allowlist(session, thread_messages[0].account_id)
             if thread_messages
@@ -1499,6 +1520,7 @@ async def get_message_quote(message_id: uuid.UUID) -> MessageQuoteResponse:
 async def message_action(
     message_id: uuid.UUID,
     request: MessageActionRequest,
+    scope: Scope = Depends(current_scope),
 ) -> MessageActionResponse:
     """
     Perform an action on a message.
@@ -1509,22 +1531,24 @@ async def message_action(
     idempotency_key is applied once however often it is repeated
     (mail_actions/submissions.py).
     """
+    user_id = scope.require_user()
     if request.idempotency_key is None:
-        return await _apply_and_locate(message_id, request)
+        return await _apply_and_locate(message_id, request, user_id)
     return await run_once(
         get_db_connection(),
+        user_id,
         request.idempotency_key,
         request_fingerprint("message", message_id, request),
         MessageActionResponse,
-        lambda: _apply_and_locate(message_id, request),
+        lambda: _apply_and_locate(message_id, request, user_id),
     )
 
 
 async def _apply_and_locate(
-    message_id: uuid.UUID, request: MessageActionRequest,
+    message_id: uuid.UUID, request: MessageActionRequest, user_id: uuid.UUID,
 ) -> MessageActionResponse:
     """Apply the action, then say which folder the message is in now."""
-    response = await _apply_message_action(message_id, request)
+    response = await _apply_message_action(message_id, request, user_id)
     if response.applied and response.folder_id is None:
         # A branch that already set folder_id itself (moving into the
         # glacier, whose id and folder no longer belong to `messages` at
@@ -1539,9 +1563,10 @@ async def _apply_and_locate(
 
 
 async def _apply_message_action(
-    message_id: uuid.UUID, request: MessageActionRequest,
+    message_id: uuid.UUID, request: MessageActionRequest, user_id: uuid.UUID,
 ) -> MessageActionResponse:
-    """Perform one message action -- message_action without its key.
+    """Perform one message action for `user_id`, who owns the message --
+    message_action without its key.
 
     An expunged message is gone: acting on it would only reach a server
     that no longer holds it and come back as a write failure. With
@@ -1650,7 +1675,7 @@ async def _apply_message_action(
                 session, [message_id], expected, target_folder_id,
             ):
                 return _not_applied(action, message_id)
-            if _should_mark_read_on_file(target_role):
+            if _should_mark_read_on_file(target_role, user_id):
                 await set_flags(session, message_id, is_seen=True)
         return MessageActionResponse(
             success=True, action=action, message_id=message_id,
@@ -1922,7 +1947,7 @@ async def _handle_spam_action(
 _MARK_READ_SPECIAL_USE = frozenset({"archive", "junk"})
 
 
-def _should_mark_read_on_file(target_role: str | None) -> bool:
+def _should_mark_read_on_file(target_role: str | None, user_id: uuid.UUID) -> bool:
     """
     Whether a move into a folder with this effective special_use should
     mark the moved message(s) read -- the toolbar Archive action and a
@@ -1939,6 +1964,7 @@ def _should_mark_read_on_file(target_role: str | None) -> bool:
     Args:
         target_role: The move's target folder's effective special_use, or
             None if it isn't one of PostIMAP's or folder_prefs' known roles
+        user_id: Whose setting decides -- the owner of the moved mail
 
     Returns:
         False immediately if target_role isn't archive or junk, without
@@ -1947,7 +1973,7 @@ def _should_mark_read_on_file(target_role: str | None) -> bool:
     """
     if target_role not in _MARK_READ_SPECIAL_USE:
         return False
-    settings = get_settings_service().get("mail")
+    settings = get_settings_service().get_for_user("mail", user_id)
     return bool(settings.get("mark_read_on_file_to_archive_or_junk", True))
 
 
@@ -2145,7 +2171,9 @@ async def mint_selection(
 
 
 @account_router.post("/bulk-action", response_model=BulkActionResponse)
-async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> BulkActionResponse:
+async def bulk_action(
+    account_id: uuid.UUID, request: BulkActionRequest, scope: Scope = Depends(current_scope),
+) -> BulkActionResponse:
     """
     Apply one action to many messages, selected by an id list, a scope, or
     both -- a predicate scope plus explicit ids added on top of it (a row
@@ -2156,21 +2184,24 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
     the client holding every id. A request carrying an idempotency_key is
     applied once however often it is repeated (mail_actions/submissions.py).
     """
+    user_id = scope.require_user()
     if request.idempotency_key is None:
-        return await _apply_bulk_action(account_id, request)
+        return await _apply_bulk_action(account_id, request, user_id)
     return await run_once(
         get_db_connection(),
+        user_id,
         request.idempotency_key,
         request_fingerprint("bulk", account_id, request),
         BulkActionResponse,
-        lambda: _apply_bulk_action(account_id, request),
+        lambda: _apply_bulk_action(account_id, request, user_id),
     )
 
 
 async def _apply_bulk_action(
-    account_id: uuid.UUID, request: BulkActionRequest,
+    account_id: uuid.UUID, request: BulkActionRequest, user_id: uuid.UUID,
 ) -> BulkActionResponse:
-    """Apply one bulk action -- bulk_action without its key.
+    """Apply one bulk action to messages of `account_id`, which `user_id`
+    owns -- bulk_action without its key.
 
     Every write is made per group of messages sharing the folder the caller
     expected them in (expected_folder_ids), guarded to that folder, so a
@@ -2364,7 +2395,7 @@ async def _apply_bulk_action(
                             detail="target_folder_id does not belong to this account",
                         )
                     landed = await move_groups(session, target)
-                    if landed and _should_mark_read_on_file(target_role):
+                    if landed and _should_mark_read_on_file(target_role, user_id):
                         await set_flags_bulk(session, landed, is_seen=True)
     elif action in ("spam", "not_spam"):
         from mail_verdict.server import get_spam_processor

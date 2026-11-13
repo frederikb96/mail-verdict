@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from mail_verdict.api.accounts import router
 from mail_verdict.settings.defaults import SETTING_DEFAULTS, SettingCategory
+from tests.helpers.auth import act_as, owner_scope
 
 
 @pytest.fixture()
@@ -29,11 +30,13 @@ def client() -> Iterator[TestClient]:
 def _enable(client: TestClient, **orders: Any) -> Any:
     service = MagicMock()
     service.get.return_value = {**SETTING_DEFAULTS[SettingCategory.ORDERS], **orders}
+    account_id = uuid.uuid4()
+    act_as(client.app, owner_scope([account_id]))  # type: ignore[arg-type]
     with (
         patch("mail_verdict.api.accounts.get_settings_service", return_value=service),
         patch("mail_verdict.api.accounts.get_db_connection", return_value=MagicMock()),
     ):
-        return client.patch(f"/accounts/{uuid.uuid4()}", json={"orders_enabled": True})
+        return client.patch(f"/accounts/{account_id}", json={"orders_enabled": True})
 
 
 @pytest.mark.parametrize(

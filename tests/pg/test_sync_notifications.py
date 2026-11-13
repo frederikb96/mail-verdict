@@ -71,7 +71,7 @@ async def test_repository_unacknowledged_only_filter(migrated_db: DatabaseConnec
         account_id = await _seed_account(session)
         acked_id = await _seed_notification(session, account_id=account_id)
         unacked_id = await _seed_notification(session, account_id=account_id)
-        await acknowledge_notification(session, acked_id)
+        await acknowledge_notification(session, account_id, acked_id)
 
     repo = SyncNotificationRepository(migrated_db)
     unacked = await repo.list_for_account(account_id, unacknowledged_only=True)
@@ -175,3 +175,33 @@ async def test_acknowledging_all_announces_itself(migrated_db: DatabaseConnectio
     new_events = await event_ring.replay_from(seq_before, str(account_id))
     matching = [e for e in new_events if e["event_type"] == "notification.new"]
     assert len(matching) == 1, f"expected one notification.new event, got {new_events!r}"
+
+
+@pytest.mark.asyncio
+async def test_acknowledging_ignores_a_notification_of_another_account(
+    migrated_db: DatabaseConnection,
+) -> None:
+    async with migrated_db.session() as session:
+        mine = await _seed_account(session)
+        theirs = await _seed_account(session)
+        their_notification = await _seed_notification(session, account_id=theirs)
+
+    async with migrated_db.session() as session:
+        await acknowledge_notification(session, mine, their_notification)
+
+    repo = SyncNotificationRepository(migrated_db)
+    assert await repo.unacknowledged_count(theirs) == 1
+
+
+@pytest.mark.asyncio
+async def test_listing_several_accounts_names_only_those(migrated_db: DatabaseConnection) -> None:
+    async with migrated_db.session() as session:
+        mine = await _seed_account(session)
+        theirs = await _seed_account(session)
+        mine_id = await _seed_notification(session, account_id=mine)
+        await _seed_notification(session, account_id=theirs)
+
+    rows = await SyncNotificationRepository(migrated_db).list_all([mine])
+
+    assert [r.id for r in rows] == [mine_id]
+    assert await SyncNotificationRepository(migrated_db).list_all([]) == []

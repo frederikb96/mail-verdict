@@ -24,15 +24,17 @@ from sqlalchemy import text
 from mail_verdict.api.mails import account_router as messages_router
 from mail_verdict.api.unified import unified_router
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import act_as_owner_of_everything
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders, _seed_messages
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     """One persistent portal for the whole test -- see test_identities_api_pg.py."""
     app = FastAPI()
     app.include_router(messages_router)
     app.include_router(unified_router)
+    act_as_owner_of_everything(app, migrated_db)
     with TestClient(app) as c:
         yield c
 

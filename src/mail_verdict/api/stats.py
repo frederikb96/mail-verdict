@@ -9,14 +9,17 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 
+from mail_verdict.api.deps import current_scope
 from mail_verdict.api.schemas import (
     AccountSyncStatus,
     StatsResponse,
     WeeklyTrendPoint,
 )
+from mail_verdict.auth.ownership import account_display_name
+from mail_verdict.auth.scope import Scope
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, Folder, Message
 from mail_verdict.spam.metrics import SpamMetrics
@@ -29,23 +32,29 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 @router.get("", response_model=StatsResponse)
 async def get_stats(
     account_id: uuid.UUID | None = Query(default=None),
+    scope: Scope = Depends(current_scope),
 ) -> StatsResponse:
     """
     Get dashboard statistics.
 
     Returns spam metrics, sync status, and weekly accuracy trend.
-    If account_id is provided, scopes to that account.
-    Otherwise, aggregates across all accounts.
+    If account_id is provided, scopes to that account (an account that is
+    not the caller's counts as no account at all). Otherwise, aggregates
+    across all of the caller's accounts.
     """
     db = get_db_connection()
     metrics = SpamMetrics(db)
 
-    # Get all accounts
+    # The caller's accounts, narrowed to the one asked for
     async with db.session() as session:
-        result = await session.execute(select(Account).order_by(Account.name))
+        result = await session.execute(
+            select(Account)
+            .where(Account.id.in_(scope.narrow(account_id)))
+            .order_by(Account.name)
+        )
         accounts = list(result.scalars().all())
 
-    account_ids = [account_id] if account_id else [a.id for a in accounts]
+    account_ids = [a.id for a in accounts]
 
     # Aggregate spam stats
     total_spam = 0
@@ -79,17 +88,15 @@ async def get_stats(
 
     # Total message count
     async with db.session() as session:
-        msg_count_stmt = select(func.count(Message.id))
-        if account_id:
-            msg_count_stmt = msg_count_stmt.where(Message.account_id == account_id)
+        msg_count_stmt = select(func.count(Message.id)).where(
+            Message.account_id.in_(account_ids)
+        )
         count_result = await session.execute(msg_count_stmt)
         total_messages: int = count_result.scalar_one()
 
     # Per-account sync status
     account_sync: list[AccountSyncStatus] = []
     for acc in accounts:
-        if account_id and acc.id != account_id:
-            continue
         async with db.session() as session:
             folder_result = await session.execute(select(Folder).where(Folder.account_id == acc.id))
             folders = list(folder_result.scalars().all())
@@ -106,7 +113,7 @@ async def get_stats(
         account_sync.append(
             AccountSyncStatus(
                 account_id=acc.id,
-                account_name=acc.name,
+                account_name=account_display_name(acc.name),
                 last_synced_at=last_sync,
                 folder_count=len(folders),
                 message_count=acc_msg_count,
