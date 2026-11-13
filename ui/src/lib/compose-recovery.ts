@@ -15,6 +15,8 @@ export interface ComposeRecoverySnapshot {
   bodyHtml: string;
 }
 
+import { userLocalStorage } from "@/lib/user-storage";
+
 const STORAGE_PREFIX = "mailverdict:compose-recovery:";
 
 /**
@@ -39,7 +41,7 @@ function storageKey(composerKey: string): string {
  * this key -- either way there is nothing usable to offer back. */
 export function readComposeRecovery(composerKey: string): ComposeRecoverySnapshot | null {
   try {
-    const raw = localStorage.getItem(storageKey(composerKey));
+    const raw = userLocalStorage().getItem(storageKey(composerKey));
     if (!raw) return null;
     return JSON.parse(raw) as ComposeRecoverySnapshot;
   } catch {
@@ -51,7 +53,7 @@ export function writeComposeRecovery(
   composerKey: string, snapshot: ComposeRecoverySnapshot,
 ): void {
   try {
-    localStorage.setItem(storageKey(composerKey), JSON.stringify(snapshot));
+    userLocalStorage().setItem(storageKey(composerKey), JSON.stringify(snapshot));
   } catch {
     // Storage full or disabled (private browsing) -- losing the recovery
     // buffer is no worse than never having had one.
@@ -60,7 +62,7 @@ export function writeComposeRecovery(
 
 export function clearComposeRecovery(composerKey: string): void {
   try {
-    localStorage.removeItem(storageKey(composerKey));
+    userLocalStorage().removeItem(storageKey(composerKey));
   } catch {
     // See writeComposeRecovery.
   }

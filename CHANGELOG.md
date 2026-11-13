@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Every mail and DAV account belongs to the user who added it. Two users may give an account the
   same name.
 - `scripts/devstack.py --as owner|second` runs its own token issuer and acts as the chosen user.
+- The web UI asks `/api/me` who is signed in before it renders: the Pipeline entry and the AI
+  and automation settings are for admins, and `AdminOnly` explains an admin page to anyone else.
+  A 401, or a 403 that is not JSON (the auth proxy refusing the token), reloads the page into the
+  sign-in.
+- Everything the web UI keeps in the browser -- query cache, queued mail actions, compose
+  recovery, search and view preferences, shortcut bindings, the push subscription id -- is
+  stored per user, so two people on one browser never see or replay each other's state. Entries
+  from before this are discarded on first load, and another user's cached data is removed.
 
 ### Changed
 

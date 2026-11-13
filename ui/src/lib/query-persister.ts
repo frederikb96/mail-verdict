@@ -7,6 +7,7 @@
  */
 
 import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
+import { QUERY_CACHE_KEY, scopedKey } from "@/lib/user-storage";
 
 /** Queries matching these key prefixes are not persisted. A conversation
  * ("thread") carries every message's body and is also fetched ahead of
@@ -50,6 +51,8 @@ function isCalendarEventChunkQuery(queryKey: readonly unknown[]): boolean {
 
 export function isEphemeralQuery(queryKey: readonly unknown[]): boolean {
   const first = queryKey[0];
+  // Who is signed in is always asked of the server, never restored from a copy.
+  if (first === "me") return true;
   if (isMailListQuery(queryKey) || isCalendarEventChunkQuery(queryKey)) return true;
   if (typeof first !== "string") return false;
   return EPHEMERAL_PREFIXES.some((p) => first.startsWith(p));
@@ -73,14 +76,16 @@ export function shouldPersistQuery(
   );
 }
 
-export const queryPersister =
-  typeof window !== "undefined"
-    ? createSyncStoragePersister({
-        storage: window.localStorage,
-        key: "mail-verdict-query-cache",
-        throttleTime: 1000,
-      })
-    : null;
+/** The stored query cache of the signed-in user; null where there is no
+ * localStorage (the static export's prerender). */
+export function createQueryPersister() {
+  if (typeof window === "undefined") return null;
+  return createSyncStoragePersister({
+    storage: window.localStorage,
+    key: scopedKey(QUERY_CACHE_KEY),
+    throttleTime: 1000,
+  });
+}
 
 /** Max age for persisted cache entries (24 hours). */
 export const PERSIST_MAX_AGE = 1000 * 60 * 60 * 24;

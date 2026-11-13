@@ -16,6 +16,7 @@ import { useAtomValue } from "jotai";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
+import { userLocalStorage } from "@/lib/user-storage";
 import { alertEnabledFolderIdsAtom, isArrivalFolder } from "@/lib/alert-prefs";
 import { useSearchFolders } from "@/hooks/use-search-folders";
 import type { PushSubscriptionResponse } from "@/types/api";
@@ -28,13 +29,13 @@ export const pushSubscriptionKeys = {
 
 function readStoredSubscriptionId(): string | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(SUBSCRIPTION_ID_KEY);
+  return userLocalStorage().getItem(SUBSCRIPTION_ID_KEY);
 }
 
 function writeStoredSubscriptionId(id: string | null) {
   if (typeof window === "undefined") return;
-  if (id === null) window.localStorage.removeItem(SUBSCRIPTION_ID_KEY);
-  else window.localStorage.setItem(SUBSCRIPTION_ID_KEY, id);
+  if (id === null) userLocalStorage().removeItem(SUBSCRIPTION_ID_KEY);
+  else userLocalStorage().setItem(SUBSCRIPTION_ID_KEY, id);
 }
 
 /** Whether this browser could possibly support Web Push at all -- distinct

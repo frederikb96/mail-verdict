@@ -12,6 +12,7 @@ import type {
   AlertResponse,
   AlertUnseenCountResponse,
   AccountUpdateRequest,
+  MeResponse,
   PushSubscriptionResponse,
   VapidPublicKeyResponse,
   AddressbookSummary,
@@ -95,6 +96,7 @@ import type {
   UnifiedViewResponse,
   VerdictResponse,
 } from "@/types/api";
+import { isSignInFailure } from "@/lib/sign-in-failure";
 
 const BASE_URL = "/api";
 
@@ -148,6 +150,25 @@ async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   }
 }
 
+const REAUTH_AT_KEY = "mailverdict:reauth-at";
+const REAUTH_MIN_INTERVAL_MS = 15_000;
+
+/** Reloads the page so the proxy signs the person in again. Returns false
+ * (leaving the failure to surface as an error) when it already did so a
+ * moment ago, so a login that cannot succeed does not reload forever. */
+function reloadForSignIn(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const last = Number(window.sessionStorage.getItem(REAUTH_AT_KEY) ?? 0);
+    if (Date.now() - last < REAUTH_MIN_INTERVAL_MS) return false;
+    window.sessionStorage.setItem(REAUTH_AT_KEY, String(Date.now()));
+  } catch {
+    // No sessionStorage: reload anyway, once per page load at worst.
+  }
+  window.location.reload();
+  return true;
+}
+
 async function send<T>(path: string, init: RequestInit): Promise<T> {
   const isFormData = init.body instanceof FormData;
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -156,6 +177,10 @@ async function send<T>(path: string, init: RequestInit): Promise<T> {
       : { "Content-Type": "application/json", ...init.headers },
     ...init,
   });
+  if (!res.ok && isSignInFailure(res) && reloadForSignIn()) {
+    // The page is going away; nothing should react to this request.
+    return new Promise<T>(() => {});
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     // FastAPI error bodies are `{"detail": "..."}` -- surface that string
@@ -482,6 +507,12 @@ export const api = {
       );
       if (!res.ok) throw new ApiError(res.status, res.statusText);
       return res.blob();
+    },
+  },
+
+  me: {
+    get(): Promise<MeResponse> {
+      return request("/me");
     },
   },
 

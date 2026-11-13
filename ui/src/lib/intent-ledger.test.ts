@@ -27,8 +27,10 @@ Object.assign(globalThis, {
   },
 });
 
+const { bindUser, scopedKey } = await import("./user-storage.ts");
+bindUser("u1", { length: 0, key: () => null, removeItem: () => {} });
 const ledger = await import("./intent-ledger.ts");
-const STORAGE_KEY = "mail-verdict-mail-intents";
+const STORAGE_KEY = scopedKey("mail-verdict-mail-intents");
 
 function intent(id: string, now = Date.now()): MailIntent {
   return {
@@ -183,4 +185,12 @@ test("a stored ledger of the wrong shape does not break loading", () => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ v: 1, intents: [{ id: 3 }], undo: "x" }));
   ledger.addIntents([intent("v1")]);
   assert.deepEqual(ledger.getLedgerSnapshot().intents.map((i) => i.id), ["v1"]);
+});
+
+test("the ledger is stored under the signed-in user's key only", () => {
+  reset();
+  ledger.addIntents([intent("k1")]);
+  assert.ok(STORAGE_KEY.endsWith("@u1"));
+  assert.ok(localStorage.data.has(STORAGE_KEY));
+  assert.equal(localStorage.data.has("mail-verdict-mail-intents"), false);
 });
