@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.auth.principal import OWNER_USER_ID
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.repository import AccountPrefsRepository
 from mail_verdict.pipeline.context import FolderResolver
@@ -45,6 +46,10 @@ async def _seed_account_with_override_junk(
             "'\\x00' || convert_to('pw', 'UTF8'))"
         ),
         {"id": account_id, "name": f"acct-{account_id}"},
+    )
+    await session.execute(
+        text("INSERT INTO account_owners (account_id, user_id) VALUES (:id, :owner)"),
+        {"id": account_id, "owner": OWNER_USER_ID},
     )
     await session.execute(
         text("INSERT INTO folders (id, account_id, imap_name) VALUES (:id, :account_id, 'INBOX')"),
