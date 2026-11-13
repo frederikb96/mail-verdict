@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.accounts import router as accounts_router
 from mail_verdict.database.connection import DatabaseConnection
+from tests.helpers.auth import act_as, owner_scope
 
 _ACCOUNTS_DB_TARGET = "mail_verdict.api.accounts.get_db_connection"
 _ACCOUNTS_EVENT_RING_TARGET = "mail_verdict.api.accounts.get_event_ring"
@@ -31,6 +32,7 @@ _ACCOUNTS_EVENT_RING_TARGET = "mail_verdict.api.accounts.get_event_ring"
 def client() -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(accounts_router)
+    act_as(app, owner_scope())
     with TestClient(app) as c:
         yield c
 

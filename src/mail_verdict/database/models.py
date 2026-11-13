@@ -1168,7 +1168,10 @@ class UnifiedView(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("user_id", "name", name="uq_unified_views_user_name"),
+        UniqueConstraint(
+            "user_id", "name", name="uq_unified_views_user_name",
+            postgresql_nulls_not_distinct=True,
+        ),
         Index("ix_unified_views_user_id", "user_id"),
     )
 

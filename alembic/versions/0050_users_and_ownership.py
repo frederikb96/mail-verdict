@@ -130,8 +130,11 @@ def upgrade() -> None:
     )
 
     op.drop_constraint("uq_unified_views_name", "unified_views", type_="unique")
+    # NULLS NOT DISTINCT: a view written before its writer stamps a user
+    # stays unique by name among the other unowned ones, as before.
     op.create_unique_constraint(
         "uq_unified_views_user_name", "unified_views", ["user_id", "name"],
+        postgresql_nulls_not_distinct=True,
     )
 
     current = bind.scalar(sa.text("SELECT revision FROM calendar_links_revision LIMIT 1"))
