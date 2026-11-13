@@ -17,11 +17,20 @@ import { formatFullDate } from "@/lib/format";
 import { useRetryRun, useRun } from "@/hooks/use-runs";
 import type { PipelineTraceEntry } from "@/types/api";
 
-function TraceStage({ entry }: { entry: PipelineTraceEntry }) {
+/** One step of a trace; `names` swaps a rule's id for the name it is listed under. */
+export function TraceStage({
+  entry,
+  names,
+}: {
+  entry: PipelineTraceEntry;
+  names?: Map<string, string>;
+}) {
   return (
     <div className="rounded-md border p-3">
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-sm font-medium">{entry.stage_id}</span>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={names?.has(entry.stage_id) ? "text-sm font-medium" : "font-mono text-sm font-medium"}>
+          {names?.get(entry.stage_id) ?? entry.stage_id}
+        </span>
         <span className="text-xs text-muted-foreground">{entry.type}</span>
         {entry.matched === false ? (
           <XCircle className="h-3.5 w-3.5 text-muted-foreground" />

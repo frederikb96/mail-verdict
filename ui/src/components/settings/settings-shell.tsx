@@ -15,6 +15,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { AdminOnly } from "@/components/common/admin-only";
 import { useTheme } from "@/components/theme-provider";
+import { useAdminUsers } from "@/hooks/use-admin";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useIsAdmin, useMe } from "@/hooks/use-me";
 import { useProvidersStatus } from "@/hooks/use-settings";
@@ -38,12 +39,15 @@ function CategoryHint({ area, id }: { area: SettingsArea; id: string }) {
   const { data: accounts } = useAccounts();
   const { data: providers } = useProvidersStatus();
   const isAdmin = useIsAdmin();
+  // Admin-only data is asked for only when an administrator is looking.
+  const { data: adminUsers } = useAdminUsers({ enabled: isAdmin && area === "admin" && id === "users" });
 
   if (area === "settings" && id === "appearance") {
     return <span>{theme.charAt(0).toUpperCase() + theme.slice(1)}</span>;
   }
   if (area === "settings" && id === "views" && views) return <span>{views.length}</span>;
   if (area === "settings" && id === "accounts" && accounts) return <span>{accounts.length}</span>;
+  if (area === "admin" && id === "users" && adminUsers) return <span>{adminUsers.length}</span>;
   if (area === "admin" && id === "providers" && isAdmin) {
     const broken = (providers?.breakers ?? []).some((b) => b.state !== "closed");
     if (broken) {

@@ -13,13 +13,17 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError } from "@/lib/api";
+import { RuleSentence } from "@/components/rules/rule-row";
+import { useFolderNames } from "@/hooks/use-folder-names";
 import { pipelineKeys } from "@/hooks/use-pipeline";
+import { describeRule } from "@/lib/rule-summary";
 import { useToast } from "@/hooks/use-toast";
 import type {
   DiffRow,
   RuleAssistantChange,
   RuleAssistantResponse,
   RuleAssistantRuleChange,
+  StageOut,
 } from "@/types/api";
 
 const MAX_PROMPT_CHARS = 1000;
@@ -312,12 +316,28 @@ const KIND_LABEL: Record<RuleAssistantRuleChange["kind"], string> = {
   removed: "Removed",
 };
 
+function stageFromText(text: string | null): StageOut | null {
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as StageOut;
+  } catch {
+    return null;
+  }
+}
+
 function RuleChangeView({ rule }: { rule: RuleAssistantRuleChange }) {
+  const folderName = useFolderNames();
+  const stage = stageFromText(rule.kind === "removed" ? rule.before_text : rule.after_text);
   return (
     <section className="flex min-w-0 flex-col gap-2 rounded-md border p-2">
       <p className="text-sm">
         <span className="font-medium">{KIND_LABEL[rule.kind]}</span> — {rule.name}
       </p>
+      {stage && rule.kind !== "moved" && (
+        <p className="break-words text-sm text-muted-foreground">
+          <RuleSentence summary={describeRule(stage, folderName)} />
+        </p>
+      )}
       {rule.kind === "moved" ? (
         <p className="text-xs text-muted-foreground">
           Only its place in the rule order changes; the rule itself stays as it is.

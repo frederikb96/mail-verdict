@@ -10,6 +10,7 @@ import {
   Palette,
   ShieldCheck,
   UserCircle,
+  Users,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -41,6 +42,7 @@ export const SETTINGS_CATEGORIES: CategoryDef[] = [
 /** Instance-wide categories, for administrators: what changes every user's
  * mail, spend or models. */
 export const ADMIN_CATEGORIES: CategoryDef[] = [
+  { id: "users", label: "Users", icon: Users, wide: true },
   { id: "models", label: "Models", icon: Bot, wide: true },
   { id: "providers", label: "Providers & keys", icon: ShieldCheck },
   { id: "processing", label: "Processing", icon: Workflow, wide: true },

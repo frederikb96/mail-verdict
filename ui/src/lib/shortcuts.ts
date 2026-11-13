@@ -173,6 +173,7 @@ export const SHORTCUT_ACTIONS = [
   { id: "go_accounts", label: "Go to accounts", scope: "global", default: ctrlAlt("Digit7") },
   { id: "go_pipeline", label: "Go to admin processing", scope: "global", default: ctrlAlt("Digit8") },
   { id: "go_settings", label: "Go to settings", scope: "global", default: ctrlAlt("Digit9") },
+  { id: "go_rules", label: "Go to rules", scope: "global", default: ctrlAlt("Digit0") },
   { id: "focus_search", label: "Focus search", scope: "global", default: chord("/") },
   { id: "toggle_sidebar", label: "Show or hide the sidebar", scope: "global", default: chord("KeyB", { ctrl: true }) },
   { id: "show_shortcuts", label: "Show the shortcut cheat sheet", scope: "global", default: chord("?") },

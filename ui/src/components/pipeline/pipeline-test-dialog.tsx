@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { ApiError } from "@/lib/api";
@@ -11,24 +11,22 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { ExampleMailPicker } from "@/components/rules/example-mail-picker";
+import { TraceStage } from "@/components/pipeline/run-detail-sheet";
+import { OptionSelect } from "@/components/settings/setting-fields";
+import { usePipeline, useTestPipeline, useTestStage } from "@/hooks/use-pipeline";
+import type { PipelineTestOrigin, PipelineTraceEntry } from "@/types/api";
 
-import { useTestPipeline, useTestStage } from "@/hooks/use-pipeline";
-import type { PipelineTestOrigin } from "@/types/api";
+const ORIGIN_OPTIONS = [
+  { value: "live", label: "Newly arrived" },
+  { value: "historical", label: "Already in the mailbox" },
+];
 
 /**
- * Dry-run tester: nothing applied or persisted, either for the whole
- * pipeline or one stage. Needs an existing message's id -- there is no
- * message picker here, only a paste field, since finding one is a quick
- * copy from the mail list's URL or the runs tail.
+ * Dry-run tester: nothing applied or persisted, for all of your rules or
+ * one. Pick one of your recent mails and see which rules would act on it
+ * and what each would do.
  */
 export function PipelineTestDialog({
   open,
@@ -37,24 +35,35 @@ export function PipelineTestDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Undefined tests the whole pipeline; set tests just that one stage. */
+  /** Undefined tests every rule; set tests just that one. */
   stageId?: string;
 }) {
-  const [messageId, setMessageId] = useState("");
+  const [messageId, setMessageId] = useState<string | null>(null);
   const [origin, setOrigin] = useState<PipelineTestOrigin>("live");
   const testPipeline = useTestPipeline();
   const testStage = useTestStage();
+  const { data: pipeline } = usePipeline();
+  const names = useMemo(
+    () => new Map((pipeline?.stages ?? []).map((s) => [s.stage_id, s.name])),
+    [pipeline],
+  );
 
   const pending = testPipeline.isPending || testStage.isPending;
-  const result = stageId ? testStage.data : testPipeline.data;
+  const whole = testPipeline.data;
+  const entries: PipelineTraceEntry[] | null = stageId
+    ? testStage.data
+      ? [testStage.data as unknown as PipelineTraceEntry]
+      : null
+    : (whole?.trace ?? null);
   const error = testPipeline.error ?? testStage.error;
+  const title = stageId ? `Test “${names.get(stageId) ?? stageId}”` : "Test your rules";
 
   const handleRun = () => {
-    if (!messageId.trim()) return;
+    if (!messageId) return;
     if (stageId) {
-      testStage.mutate({ stageId, data: { message_id: messageId.trim(), origin } });
+      testStage.mutate({ stageId, data: { message_id: messageId, origin } });
     } else {
-      testPipeline.mutate({ message_id: messageId.trim(), origin });
+      testPipeline.mutate({ message_id: messageId, origin });
     }
   };
 
@@ -65,46 +74,37 @@ export function PipelineTestDialog({
         if (!o) {
           testPipeline.reset();
           testStage.reset();
-          setMessageId("");
+          setMessageId(null);
         }
         onOpenChange(o);
       }}
     >
-      <DialogContent size="lg" className="max-h-[85vh] overflow-y-auto">
+      <DialogContent size="xl" className="max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>
-            {stageId ? `Test stage “${stageId}”` : "Test the whole pipeline"}
-          </DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
-          Dry-runs against an existing message. Nothing is applied or persisted.
+          Choose a mail to try {stageId ? "this rule" : "your rules"} on. Nothing is changed and
+          nothing is saved.
         </p>
-        <div className="flex gap-2">
-          <div className="flex-1 grid gap-1.5">
-            <Label className="text-sm">Message id</Label>
-            <Input
-              value={messageId}
-              onChange={(e) => setMessageId(e.target.value)}
-              placeholder="paste a message UUID"
+        <ExampleMailPicker selectedId={messageId} onPick={(m) => setMessageId(m.id)} />
+        <details className="text-sm">
+          <summary className="cursor-pointer text-muted-foreground">Options</summary>
+          <div className="mt-2 flex items-center gap-2">
+            <Label className="text-sm">Treat the mail as</Label>
+            <OptionSelect
+              aria-label="Treat the mail as"
+              value={origin}
+              options={ORIGIN_OPTIONS}
+              className="w-56"
+              onChange={(v) => setOrigin(v as PipelineTestOrigin)}
             />
           </div>
-          <div className="grid gap-1.5">
-            <Label className="text-sm">Origin</Label>
-            <Select value={origin} onValueChange={(v) => setOrigin(v as PipelineTestOrigin)}>
-              <SelectTrigger className="w-32">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="live">live</SelectItem>
-                <SelectItem value="historical">historical</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+        </details>
         <div className="flex justify-end">
-          <Button onClick={handleRun} disabled={pending || !messageId.trim()}>
+          <Button onClick={handleRun} disabled={pending || !messageId}>
             {pending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-            Run
+            Run test
           </Button>
         </div>
 
@@ -114,11 +114,17 @@ export function PipelineTestDialog({
           </p>
         )}
 
-        {result && (
-          <div className="rounded-md border bg-muted/30 p-2">
-            <pre className="max-h-96 overflow-auto whitespace-pre-wrap text-xs">
-              {JSON.stringify(result, null, 2)}
-            </pre>
+        {entries && (
+          <div className="flex flex-col gap-2">
+            {!stageId && whole && (
+              <p className="text-sm">
+                Result: <span className="font-medium">{whole.status}</span>
+                {whole.skip_reason ? ` — ${whole.skip_reason}` : ""}
+              </p>
+            )}
+            {entries.map((entry, i) => (
+              <TraceStage key={i} entry={entry} names={names} />
+            ))}
           </div>
         )}
       </DialogContent>

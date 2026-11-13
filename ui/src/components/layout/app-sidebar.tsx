@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Snowflake,
   Wrench,
+  Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -673,6 +674,15 @@ export function AppSidebar() {
             >
               <ShieldAlert className="h-4 w-4" />
               <span>Spam review</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<Link href="/rules" prefetch={false} />}
+              isActive={pathname === "/rules"}
+            >
+              <Zap className="h-4 w-4" />
+              <span>Rules</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>

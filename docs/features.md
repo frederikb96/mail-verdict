@@ -151,17 +151,32 @@ Everything MailVerdict does, area by area. The [README](../README.md) has the ov
   say.
 - Conditions over incoming mail with actions that move, tag, flag or delete it, or send it to a
   webhook.
+- **The Rules page** (sidebar, `Ctrl+Alt+0`) lists a user's rules grouped by purpose -- Spam,
+  Filing, Forwarding, Orders & tickets -- each as a sentence ("If sender domain **shop.example** and
+  has a **pdf** attachment → move to **Receipts**, mark read") with its accounts, a switch and a
+  menu (edit, duplicate, move up or down, test with a mail, delete). Rules reorder by dragging or
+  from the menu, a filter narrows the list, and a rule whose target folder does not exist shows a
+  warning on its row. Spam detection and orders & tickets are switched per account at the top of
+  the page. The menu beside the buttons tests every rule against a recent mail, opens the history
+  of earlier versions and pauses or resumes all rules.
+- **The rule editor** is a form of conditions (sender, subject, body, header, attachment, size,
+  folder, tag, spam verdict; all or any, each negatable, one group level) and actions (move to a
+  folder, mark read or unread, star, keyword, tag, trash, delete permanently, notify), with the
+  accounts it applies to and a stop switch. "Edit as JSON" is the advanced view of the same rule;
+  a rule the form cannot show exactly (a webhook, an unusual condition) opens as JSON instead of
+  being simplified. A rule that deletes permanently asks for a confirmation when saved.
 - **Webhooks:** the message's raw source is posted to a URL, with a header that can take its value
   from a named secret stored encrypted in the database (set under Admin → Secrets, never shown again). A
   delivery is queued, retried when the receiver is unavailable, never repeated once it succeeded,
   and raises an alert when it gives up. Mail that predates a rule can be sent once, oldest first,
   through the API. Only an administrator may write a webhook rule.
-- **Rule assistant:** from an open mail, the "Add rule" icon takes a sentence ("these should go to
+- **Rule assistant:** from an open mail, the "Add rule" icon -- or "Describe a rule" on the Rules
+  page, which first asks for a recent mail the rule is about -- takes a sentence ("these should go to
   Newsletter too", "split this rule by sender") and proposes one change to the rules, which may
   add, change, reorder or remove several rules at once. It shows the explanation, each affected
   rule as it is and as it would be, and what the touched rules would have caught among the last
-  100 mails, for Accept or Decline as a whole. Nothing is kept, and it never proposes permanent
-  deletion or a webhook.
+  100 mails, for Accept or Decline as a whole, with each rule also written as a sentence. Nothing
+  is kept, and it never proposes permanent deletion or a webhook.
 
 ## Glacier storage
 
@@ -264,15 +279,20 @@ mail client: a `mailto:` link opens the composer filled in from the link.
 - Folders are chosen with one picker, for a unified view and for the folders that raise a
   notification: a filter, a switch hiding system folders (Drafts, Sent, Trash, Junk and folders
   the sidebar hides), and a collapsible group per account whose checkbox ticks everything it lists.
-- *Admin* is a sidebar entry for administrators only. It holds the machinery: Models (one row per
-  AI task with provider, model, reasoning effort and token budget), Providers & keys, Processing,
-  Secrets and System (usage export, semantic index coverage, queue tuning). Anyone else who opens
+- *Admin* is a sidebar entry for administrators only. It holds the people and the machinery: Users
+  (role, accounts by name, last seen; make or remove admin, disable or enable sign-in, rename,
+  pre-create a user, reassign a mail or calendar account to another user -- never anyone's mail),
+  Models (one row per
+  AI task with provider, model, reasoning effort and token budget), Providers & keys, Processing
+  (queues as compact tiles with their controls in a menu, failed runs, and each user's rule set as
+  counts only), Secrets and System (usage export, semantic index coverage, queue tuning). Anyone else who opens
   an Admin address is told it is for administrators.
 
 ## Keyboard shortcuts
 
 - From any page, `Ctrl+Alt+1` to `Ctrl+Alt+9` jump to mail, calendar, contacts, orders & tickets,
-  spam review, the search page, accounts, admin processing (administrators only) and settings. `/`
+  spam review, the search page, accounts, admin processing (administrators only) and settings,
+  and `Ctrl+Alt+0` to the rules. `/`
   focuses search, `Ctrl+B` shows or hides the sidebar, and `?` lists every shortcut.
 - The calendar has its own (`t` today, `d`/`w`/`m`/`a` views, `n` new event, `j`/`k` and the
   arrows for the next and previous period), and orders & tickets step through the list with
