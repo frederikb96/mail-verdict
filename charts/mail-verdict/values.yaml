@@ -257,12 +257,12 @@ existingSecretKeys:
   encryptionKey: ENCRYPTION_KEY
 
 ingress:
-  # -- Browser-facing ingress. MailVerdict has no login page or auth
-  # mechanism of its own -- this is expected to sit behind an
-  # authenticating proxy (OIDC, basic auth, an internal SSO) that handles
-  # sign-in before traffic ever reaches the pod. See the chart README's
-  # access section for a worked Traefik ForwardAuth example. `annotations`
-  # is deliberately free-form: no identity provider is hard-coded here.
+  # -- Browser-facing ingress. MailVerdict validates an OIDC token on every
+  # /api and /mcp request itself but has no login page, so a browser needs
+  # an authenticating proxy in front that signs it in and forwards its ID
+  # token as `Authorization: Bearer ...`. See the chart README's access
+  # section for a worked Traefik ForwardAuth example. `annotations` is
+  # deliberately free-form: no identity provider is hard-coded here.
   enabled: false
   className: ""
   annotations: {}
@@ -278,10 +278,10 @@ ingress:
 apiIngress:
   # -- Optional second ingress for programmatic clients (MCP clients,
   # scripts) that can't do an interactive browser login flow. Point this at
-  # a host/path your `ingress` ForwardAuth middleware doesn't intercept,
-  # and put whatever auth mechanism suits a machine client (mTLS, a static
-  # bearer token, an IP allowlist) in front of it instead -- entirely a
-  # proxy-level decision, since the application enforces nothing itself.
+  # a host/path your `ingress` ForwardAuth middleware doesn't intercept:
+  # these clients send their own OIDC access token, which the application
+  # validates like any other. Anything further in front of it (mTLS, an IP
+  # allowlist) is an additional, proxy-level restriction.
   enabled: false
   className: ""
   annotations: {}

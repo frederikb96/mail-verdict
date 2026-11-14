@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The chart README names the oauth2-proxy flag that works behind ForwardAuth
+  (`--set-authorization-header`), and the chart's ingress comments and install notes describe the
+  token every request needs instead of an application with no authentication.
+- The README and architecture notes say that an admin can give any account to themselves and is
+  therefore trusted with every account's mail.
+
 ## [8.0.0] - 2026-11-14
 
 ### Added

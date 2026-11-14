@@ -138,8 +138,11 @@ extraEnv:
 ```
 
 A browser cannot hold a token by itself, so the web UI sits behind an authenticating proxy that
-signs the browser in and forwards its ID token as `Authorization: Bearer ...` (oauth2-proxy with
-`--pass-authorization-header`, for example). Native apps and agents send their own access token.
+signs the browser in and forwards its ID token as `Authorization: Bearer ...`. With oauth2-proxy
+behind a ForwardAuth middleware that is `--set-authorization-header`, which puts the token on the
+auth response for the middleware to copy; `--pass-authorization-header` only adds it to requests
+the proxy itself forwards upstream, so behind ForwardAuth the application receives no token and
+answers 401. Native apps and agents send their own access token.
 No identity provider is hard-coded into this chart -- `ingress.annotations` is free-form.
 
 A worked Traefik example, assuming [traefik/traefik](https://github.com/traefik/traefik-helm-chart)

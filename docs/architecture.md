@@ -1267,7 +1267,9 @@ acts for, whether they are admin, and the accounts they own. A request gets it f
   (`mail_actions.submissions.scoped_key`), for message actions and for sends.
 - Admin is not "every account". An admin's scope covers their own accounts like anyone's. Reaching
   other users is the `/api/admin` routes' job — users, and who owns which account, by display
-  name — and none of them reads mail, events or contacts.
+  name — and none of them reads mail, events or contacts. They can, however, give any account to
+  the admin calling them (`PUT /admin/accounts/{id}/owner`) and make any user an admin, after which
+  the account's mail is in that admin's scope: an admin is trusted with every account's mail.
 
 `tests/e2e/test_multiuser_isolation.py` holds every route and MCP tool to this. It enumerates the
 live application and fails on anything not classified, either by a case in an area module of
