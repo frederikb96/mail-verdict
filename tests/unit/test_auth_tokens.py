@@ -32,10 +32,12 @@ def _verifier(issuer: TestIssuer, **overrides: object) -> TokenVerifier:
         "owner_subjects": ["owner"],
         "auto_provision": True,
         "leeway_seconds": 0,
+        "max_token_lifetime_seconds": 86400,
         "jwks_cache_seconds": 3600,
         "request_timeout_seconds": 5,
         "token_cache_seconds": 60,
         "principal_cache_seconds": 30,
+        "native_sign_in_handle": "zitadel_jti",
         "native_client_id": "",
         "native_scopes": "openid",
         "native_redirect_uri": "app://cb",
@@ -67,7 +69,11 @@ async def test_any_one_audience_of_the_configured_set_is_enough(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "case", ["other_audience", "other_issuer", "expired", "foreign_key", "garbage", "unsigned"],
+    "case",
+    [
+        "other_audience", "other_issuer", "expired", "foreign_key", "garbage", "unsigned",
+        "no_issued_at", "lifetime_over_ceiling",
+    ],
 )
 async def test_a_token_that_is_not_ours_is_refused(auth_issuer: TestIssuer, case: str) -> None:
     if case == "other_audience":
@@ -80,6 +86,13 @@ async def test_a_token_that_is_not_ours_is_refused(auth_issuer: TestIssuer, case
         # Same key id, different key: a forger who read the published set.
         other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         token = auth_issuer.mint("mallory", signing_key=other)
+    elif case == "no_issued_at":
+        token = auth_issuer.mint("mallory", without=("iat",))
+    elif case == "lifetime_over_ceiling":
+        # Issued an hour ago for a day and an hour: unexpired, but longer
+        # lived than any token may be.
+        issued = int(time.time()) - 3600
+        token = auth_issuer.mint("mallory", extra={"iat": issued, "exp": issued + 86401})
     elif case == "garbage":
         token = "not.a.jwt"
     else:
@@ -129,3 +142,17 @@ async def test_an_unreachable_issuer_refuses_rather_than_raising(
 
     with pytest.raises(InvalidToken):
         await verifier.verify(auth_issuer.mint("alice"))
+
+
+@pytest.mark.asyncio
+async def test_a_token_exactly_as_long_lived_as_the_ceiling_passes(
+    auth_issuer: TestIssuer,
+) -> None:
+    """The ceiling is inclusive, so a deployment can name the exact lifetime
+    of the tokens it still accepts."""
+    issued = int(time.time()) - 60
+    token = auth_issuer.mint("alice", extra={"iat": issued, "exp": issued + 86400})
+
+    claims = await _verifier(auth_issuer).verify(token)
+
+    assert claims["sub"] == "alice"

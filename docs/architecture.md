@@ -94,7 +94,8 @@ keys again from the `users` table whenever an account changes owner or an admin 
 role or sign-in — `auth/ownership.py` announces each committed change — and at least every
 `auth.principal_cache_seconds` besides. So an account added, deleted or given away mid-stream
 starts or stops reaching it at once rather than at the next reconnect, a demoted admin stops
-receiving the admin key, and a disabled user's stream ends (its reconnect is then refused).
+receiving the admin key, and a disabled user's stream, or a revoked sign-in's, ends (its reconnect
+is then refused).
 
 Two deliberate details:
 
@@ -1199,8 +1200,8 @@ key, or rotating a stored one, takes effect on the next request with no restart.
 
 Every request under `/api` and `/mcp` carries an OIDC JWT as `Authorization: Bearer ...`, and the
 application validates it itself (`auth/tokens.py`): signed by a key the issuer publishes, naming
-the configured issuer, unexpired, and with an audience shared with `auth.audiences`. The same
-validator serves every caller. A browser's token is the ID token an authenticating proxy in front
+the configured issuer, unexpired, with an audience shared with `auth.audiences`, and issued (`iat`)
+for no longer than `auth.max_token_lifetime_seconds`. The same validator serves every caller. A browser's token is the ID token an authenticating proxy in front
 of the application forwards; a native app or an agent sends its own access token. Only
 `/api/health` (readiness has no token) and `/api/auth/config` (how a native app starts a sign-in)
 answer without one, plus the bare `/mcp` redirect. A missing or invalid token is 401 with
@@ -1213,14 +1214,48 @@ included (each call sees the caller of the request that carried it, not whoever 
 session — `tests/unit/test_auth_middleware.py` holds FastMCP to that).
 
 A token's subject is a user through `user_identities`, so one person can sign in under several
-subjects (their login, their machine tokens). The subjects in `auth.owner_subjects` are the
-**owner**: the user the 0050 migration created and handed every account that existed before
-there were users. They resolve to it as admin from configuration alone, without reading a table,
-so the owner can always sign in. Any other subject is looked up in the database; an unknown one
-becomes an ordinary user on first request while `auth.auto_provision` is on, and is refused with
-403 `unknown_user` otherwise. A `disabled` user gets 403 `user_disabled`. Roles (`admin`, `user`)
-live in the `users` table rather than in a token claim, so they do not depend on how an identity
-provider shapes its claims; the token decides only who may sign in at all.
+subjects (their login, their machine tokens). The **owner** is the user the 0050 migration created
+and handed every account that existed before there were users; it is always an enabled admin.
+`auth/bootstrap.py` links the subjects in `auth.owner_subjects` to it at startup only while it has
+no subject at all, so configuration gives a new instance its first admin and is not read again:
+an admin adds and removes the owner's subjects like anyone's (`/api/admin/users/{id}/subjects`),
+and a removed one stays removed across restarts. An unknown subject becomes an ordinary user on
+first request while `auth.auto_provision` is on, and is refused with 403 `unknown_user` otherwise.
+A `disabled` user gets 403 `user_disabled`. Roles (`admin`, `user`) live in the `users` table
+rather than in a token claim, so they do not depend on how an identity provider shapes its claims;
+the token decides only who may sign in at all.
+
+### Which sign-in
+
+The identity provider authenticates; the application decides whether one particular sign-in of an
+authenticated user may still be used. Past the token check, the gate matches every request to a
+`sign_ins` row (`auth/sign_ins.py`), created on first sight, and refuses a revoked one with 401
+`device_revoked`, which every client treats as being signed out:
+
+- A **phone** is a token from the native app's client (`azp` or `client_id` equal to
+  `auth.native_client_id`). Zitadel names each access token `<OIDC session>-at_<token>` in its
+  `jti`, and the session part stays the same across every refresh of one sign-in, so it is the
+  handle (`auth.native_sign_in_handle: zitadel_jti`). The shape is Zitadel's internal format: a
+  native token whose `jti` does not have it is refused (401 `device_unrecognised`) rather than let
+  through unlisted. Signing in again is a new session and a new row. The app names itself with
+  `X-Device-Name`. With `subject`, phones are one row per person, for an issuer whose access tokens
+  carry no such handle.
+- A **browser** is an ID token, as the authenticating proxy forwards it (`auth_time` or `sid`
+  present), one row per user: the proxy's sessions cannot be told apart reliably. A revoked entry
+  refuses every ID token authenticated (`auth_time`) at or before the revocation; a refreshed token
+  keeps its `auth_time`, so only a fresh sign-in at the identity provider reinstates it.
+- A **machine** client is any other token, by subject: a client-credentials token starts a new
+  provider session every time, so nothing narrower stays the same. A revoked one stays refused
+  however many tokens it mints.
+
+A revoked row stays, so the same handle is refused when it comes back. The identity provider is
+not told: Zitadel offers no per-session revocation to anyone but the token's holder, so a revoked
+phone's refresh token keeps working there and every token it yields is refused here. The result
+is remembered for `auth.principal_cache_seconds`, which also paces how often `last_seen_at` is
+written; a revocation counts at once on the replica that made it, ends the sign-in's open event
+streams, and reaches the others within that window. Removing a subject from a user revokes its
+phones and machine clients with it. Under `auth.auto_provision`, a removed subject's next request
+makes it a new, empty user; its revoked sign-ins stay refused.
 
 ### Who owns what
 

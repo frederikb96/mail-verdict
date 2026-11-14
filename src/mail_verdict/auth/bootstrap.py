@@ -1,18 +1,19 @@
 """
-The instance owner, made consistent with configuration at startup.
+The instance owner, created at startup if missing and given a way in.
 
 The owner row (OWNER_USER_ID) is created by the 0050 migration; this restores
-it if it is missing, and links every subject in auth.owner_subjects to it, so
-the users tables agree with what the resolver already decides from config
-alone. A subject linked to another user is moved to the owner -- the
-configuration is the authority -- and the move is logged.
+it if it is missing. While the owner has no subject at all -- a new instance,
+or one whose owner lost every subject -- the subjects in auth.owner_subjects
+are linked to it. Once the owner has any, the users table is the authority:
+an admin adds and removes the owner's subjects like anyone else's, and a
+subject removed that way stays removed across restarts.
 """
 
 from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mail_verdict.auth.principal import OWNER_USER_ID
@@ -24,7 +25,11 @@ logger = logging.getLogger(__name__)
 
 async def ensure_owner(db: DatabaseConnection, owner_subjects: list[str]) -> None:
     """
-    Create the owner row if missing and link the owner subjects to it.
+    Create the owner row if missing; link the owner subjects to it if it
+    has none.
+
+    A configured subject that already signs in as another user is left
+    there, and the owner gets the rest.
 
     Args:
         db: The initialized database connection.
@@ -36,28 +41,23 @@ async def ensure_owner(db: DatabaseConnection, owner_subjects: list[str]) -> Non
             .values(id=OWNER_USER_ID, display_name="Owner", role="admin")
             .on_conflict_do_nothing(index_elements=[User.id])
         )
-        linked = dict(
-            (
-                await session.execute(
-                    select(UserIdentity.subject, UserIdentity.user_id).where(
-                        UserIdentity.subject.in_(owner_subjects)
-                    )
-                )
-            ).tuples().all()
+        held = await session.scalar(
+            select(func.count()).select_from(UserIdentity).where(
+                UserIdentity.user_id == OWNER_USER_ID
+            )
         )
+        if held:
+            return
         for subject in owner_subjects:
-            previous = linked.get(subject)
-            if previous == OWNER_USER_ID:
-                continue
-            if previous is not None:
-                logger.warning(
-                    "Owner subject was linked to user %s; linking it to the owner instead",
-                    previous,
-                )
-            await session.execute(
+            linked = await session.scalar(
                 pg_insert(UserIdentity)
                 .values(subject=subject, user_id=OWNER_USER_ID)
-                .on_conflict_do_update(
-                    index_elements=[UserIdentity.subject], set_={"user_id": OWNER_USER_ID},
-                )
+                .on_conflict_do_nothing(index_elements=[UserIdentity.subject])
+                .returning(UserIdentity.subject)
             )
+            if linked is None:
+                logger.warning(
+                    "An auth.owner_subjects entry already signs in as another user; "
+                    "it was not linked to the owner"
+                )
+        logger.info("Linked the owner, who had no subject, to auth.owner_subjects")

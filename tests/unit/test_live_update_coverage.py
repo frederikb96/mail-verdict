@@ -86,6 +86,23 @@ _UNANNOUNCED: dict[str, str] = {
         "An admin adding a user changes nobody's mail, calendar or settings; the admin's own "
         "user list refetches after the write it made."
     ),
+    "POST /admin/users/{user_id}/subjects": (
+        "The same, for a subject added to a user."
+    ),
+    "DELETE /admin/users/{user_id}/subjects/{subject}": (
+        "The same, for a subject removed; the streams of the sign-ins it revokes end at once "
+        "(api/events.py), and their clients' next request is refused."
+    ),
+    "POST /me/sign-ins/{sign_in_id}/revoke": (
+        "A revoked sign-in's own stream ends at once and its client's next request is refused; "
+        "another open list of sign-ins shows it revoked when it is next opened."
+    ),
+    "POST /admin/sign-ins/{sign_in_id}/revoke": (
+        "The same, revoked by an admin."
+    ),
+    "POST /admin/users/{user_id}/sign-out": (
+        "The same, for every sign-in of the user at once."
+    ),
     "DELETE /dav-accounts/{dav_account_id}": (
         "The owned write is the deleted account's owner row; the deletion itself is PostIMAP's "
         "and announced by its NOTIFY."

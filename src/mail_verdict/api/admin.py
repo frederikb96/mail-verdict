@@ -8,6 +8,8 @@ who owns what, by display name, never what they hold.
 GET   /api/admin/users                         -- every user, their subjects and account counts
 POST  /api/admin/users                         -- add a user before their first sign-in
 PATCH /api/admin/users/{user_id}               -- rename, change role, disable or enable
+POST  /api/admin/users/{user_id}/subjects      -- let another token subject sign in as a user
+DELETE /api/admin/users/{user_id}/subjects/{subject} -- stop a subject signing in as a user
 GET   /api/admin/accounts                      -- every mail account and its owner
 PUT   /api/admin/accounts/{account_id}/owner   -- give a mail account to another user
 GET   /api/admin/dav-accounts                  -- every CalDAV/CardDAV account and its owner
@@ -26,8 +28,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from mail_verdict.alerts.audience import reassign_account_alerts
-from mail_verdict.api.deps import require_admin
+from mail_verdict.api.deps import require_admin, require_principal
 from mail_verdict.api.events import get_event_ring
+from mail_verdict.api.sign_ins import revoke_sign_ins
 from mail_verdict.api.unified import drop_account_memberships
 from mail_verdict.auth.ownership import (
     account_display_name,
@@ -37,13 +40,14 @@ from mail_verdict.auth.ownership import (
     set_dav_account_owner,
     user_changed_on_commit,
 )
-from mail_verdict.auth.principal import OWNER_USER_ID, get_principal_resolver
+from mail_verdict.auth.principal import OWNER_USER_ID, Principal, get_principal_resolver
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
     AccountOwner,
     DavAccount,
     DavAccountOwner,
+    SignIn,
     User,
     UserIdentity,
 )
@@ -87,6 +91,12 @@ class AdminUserUpdateRequest(BaseModel):
     display_name: str | None = Field(default=None, min_length=1)
     role: Literal["admin", "user"] | None = None
     disabled: bool | None = None
+
+
+class AdminSubjectRequest(BaseModel):
+    """A token subject (`sub` claim) to sign in as a user."""
+
+    subject: str = Field(min_length=1)
 
 
 class AdminAccountResponse(BaseModel):
@@ -186,8 +196,9 @@ async def create_user(request: AdminUserCreateRequest) -> AdminUserResponse:
 @router.patch("/users/{user_id}", response_model=AdminUserResponse)
 async def update_user(user_id: uuid.UUID, request: AdminUserUpdateRequest) -> AdminUserResponse:
     """Rename a user, change their role, or disable or enable them. The owner
-    can be neither demoted nor disabled -- the configuration makes them admin
-    regardless, so either change would only make this table lie."""
+    can be neither demoted nor disabled -- they are an enabled admin
+    regardless (auth/principal.py), so either change would only make this
+    table lie."""
     values = request.model_dump(exclude_unset=True, exclude_none=True)
     if not values:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -203,6 +214,49 @@ async def update_user(user_id: uuid.UUID, request: AdminUserUpdateRequest) -> Ad
     resolver = get_principal_resolver()
     if resolver is not None:
         resolver.forget(user_id)
+    return (await _user_responses(user_id))[0]
+
+
+@router.post("/users/{user_id}/subjects", response_model=AdminUserResponse, status_code=201)
+async def add_subject(user_id: uuid.UUID, request: AdminSubjectRequest) -> AdminUserResponse:
+    """Let another token subject sign in as this user -- a second login, or
+    a machine client's. 409 if the subject already signs in as someone."""
+    try:
+        async with get_db_connection().session() as session:
+            if await session.get(User, user_id) is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            session.add(UserIdentity(subject=request.subject, user_id=user_id))
+            await session.flush()
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="subject already belongs to a user") from exc
+    resolver = get_principal_resolver()
+    if resolver is not None:
+        resolver.forget()
+    return (await _user_responses(user_id))[0]
+
+
+@router.delete("/users/{user_id}/subjects/{subject}", response_model=AdminUserResponse)
+async def remove_subject(
+    user_id: uuid.UUID, subject: str, principal: Principal = Depends(require_principal),
+) -> AdminUserResponse:
+    """Stop a token subject signing in as this user -- the owner's included
+    -- and revoke the phones and machine clients recorded for it. 404 if it
+    is not this user's; 400 for the subject this request signed in with,
+    which would lock the caller out mid-request."""
+    if user_id == principal.user_id and subject == principal.subject:
+        raise HTTPException(
+            status_code=400, detail="this is the subject you are signed in with",
+        )
+    async with get_db_connection().session() as session:
+        identity = await session.get(UserIdentity, subject)
+        if identity is None or identity.user_id != user_id:
+            raise HTTPException(status_code=404, detail="Subject not found for this user")
+        await session.delete(identity)
+        user_changed_on_commit(session)
+    await revoke_sign_ins(SignIn.subject == subject, SignIn.kind != "browser")
+    resolver = get_principal_resolver()
+    if resolver is not None:
+        resolver.forget()
     return (await _user_responses(user_id))[0]
 
 

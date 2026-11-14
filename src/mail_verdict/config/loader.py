@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -245,10 +245,12 @@ class AuthConfig(BaseModel):
     owner_subjects: list[str]
     auto_provision: bool
     leeway_seconds: float
+    max_token_lifetime_seconds: float
     jwks_cache_seconds: float
     request_timeout_seconds: float
     token_cache_seconds: float
     principal_cache_seconds: float
+    native_sign_in_handle: Literal["zitadel_jti", "subject"]
     native_client_id: str
     native_scopes: str
     native_redirect_uri: str

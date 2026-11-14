@@ -8,7 +8,7 @@ PostIMAP-owned tables: accounts, folders, messages, attachments, sync_state,
   consumer contract -- see postimap/contract.py for the version this
   projection is built against)
 
-MailVerdict-owned tables: users, user_identities, account_owners,
+MailVerdict-owned tables: users, user_identities, sign_ins, account_owners,
   dav_account_owners, user_settings, verdicts, mail_tags, settings, image_exceptions,
   account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings,
   identities, calendar_prefs, calendar_intake, calendar_replies,
@@ -765,9 +765,8 @@ class User(Base):
 
     Identified by user_identities, never by email: one user may sign in under
     several token subjects. OWNER_USER_ID (auth/principal.py) is the row the
-    0050 migration created and handed every pre-existing account; the
-    auth.owner_subjects config resolves to it whatever this table says.
-    Users are never deleted; `disabled` refuses every request they make.
+    0050 migration created and handed every pre-existing account; it is
+    always an enabled admin. `disabled` refuses every request a user makes.
     """
 
     __tablename__ = "users"
@@ -799,6 +798,39 @@ class UserIdentity(Base):
     )
 
     __table_args__ = (Index("ix_user_identities_user_id", "user_id"),)
+
+
+class SignIn(Base):
+    """One signed-in phone, browser or machine client, and whether it may
+    still be used (auth/sign_ins.py).
+
+    `handle` is what tells it apart from the same user's other sign-ins:
+    the identity provider's session id for a phone, the user id for a
+    person's browsers, the token subject for a machine client. A row is
+    revoked, never deleted, so the handle stays refused when it comes back.
+    """
+
+    __tablename__ = "sign_ins"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('phone', 'browser', 'machine')", name="ck_sign_ins_kind"),
+        UniqueConstraint("kind", "handle", name="uq_sign_ins_kind_handle"),
+        Index("ix_sign_ins_user_id", "user_id"),
+    )
 
 
 class AccountOwner(Base):

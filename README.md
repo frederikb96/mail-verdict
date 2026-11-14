@@ -184,15 +184,31 @@ an authenticating proxy in front of the web UI (oauth2-proxy, for example, which
 sign-in), or an access token a native app or an agent sends itself. MailVerdict keeps no sessions
 and no passwords of its own. Set the `auth:` section of
 [`config/config.yaml`](config/config.yaml): the issuer, its key set, the audiences to accept, and
-the owner's subjects. It refuses to start without them.
+the owner's subjects. It refuses to start without them. A token issued for longer than
+`auth.max_token_lifetime_seconds` (a day by default) is refused however valid its signature, so
+long-lived tokens cannot outlast a revocation; phones renew their short access tokens on their own.
+
+The identity provider decides who someone is; MailVerdict decides which of their sign-ins may
+still be used. It lists every signed-in phone, a person's browsers, and every machine client (an
+agent or script with its own token), with the name a phone gives itself and when each was last
+seen. Anyone can sign out one of their own phones or browsers in *Settings*; an admin can revoke any
+sign-in, and sign a person out everywhere at once. A revoked phone stays signed out until it signs
+in again, a revoked machine client's subject stays refused, and a person's browsers come back once
+they sign in again at the identity provider. Telling one phone from another relies on how Zitadel
+shapes its access tokens (`auth.native_sign_in_handle`); with another identity provider, phones are
+listed one per person.
 
 Several people can share one instance. Each person sees only the mail, calendars and contacts of
-the accounts they added. The owner, named by `auth.owner_subjects`, is the first admin and owns
-whatever existed before there were users. Admins manage users and who owns which account through
-`/api/admin`, whose routes return no mail themselves. An admin can still give any account to
-themselves there, so an admin is trusted with every account's mail. A new person becomes a user the first time they
-sign in, unless `auth.auto_provision` is off, in which case an admin adds them first. The chart
-README has a worked example.
+the accounts they added. The owner is the first admin and owns whatever existed before there were
+users; `auth.owner_subjects` signs them in on a new instance, and after that their subjects are
+ordinary entries an admin adds and removes like anyone's. Admins manage users, their subjects and
+who owns which account through `/api/admin`; no admin screen shows another person's mail. A new
+person becomes a user the first time they sign in, unless `auth.auto_provision` is off, in which
+case an admin adds them first. The chart README has a worked example.
+
+Like any server-side mail client, MailVerdict is not end-to-end encrypted: whoever runs the server
+can technically reach the mail it stores, and so can an admin, who can give any account to
+themselves.
 
 ## On a phone
 

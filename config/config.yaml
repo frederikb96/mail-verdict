@@ -40,11 +40,15 @@ auth:
   # machine tokens carry, and the native app's client id. Comma-separated in
   # MAIL_VERDICT_AUTH_AUDIENCES.
   audiences: []
-  # Subjects (`sub` claims) that are the instance owner: the first user, who
-  # owns every account that existed before users did and is admin whatever
-  # the users table says. Every subject listed here is the SAME user -- list
-  # one person's own identities (their login, their machine tokens), never
-  # two people. Comma-separated in MAIL_VERDICT_AUTH_OWNER_SUBJECTS.
+  # Subjects (`sub` claims) that sign in as the instance owner: the first
+  # user, who owns every account that existed before users did and is always
+  # an enabled admin. Every subject listed here is the SAME user -- list one
+  # person's own identities (their login, their machine tokens), never two
+  # people. They are linked to the owner at startup only while the owner has
+  # no subject at all (a new instance, or one whose owner lost every subject);
+  # after that the users table decides, and an admin adds and removes the
+  # owner's subjects like anyone's. Comma-separated in
+  # MAIL_VERDICT_AUTH_OWNER_SUBJECTS.
   owner_subjects: []
   # Whether a valid token whose subject is unknown creates a new ordinary user
   # on first request. With false, users exist only once an admin adds them
@@ -53,6 +57,11 @@ auth:
   auto_provision: true
   # Clock skew tolerated on exp/nbf/iat.
   leeway_seconds: 60
+  # The longest lifetime (exp minus iat) a token may have. A longer-lived
+  # token is refused however valid its signature, so a token that would
+  # otherwise outlive any revocation cannot be used here at all; every token
+  # must carry iat. Phones renew their short access tokens on their own.
+  max_token_lifetime_seconds: 86400
   # How long a fetched key set is used before it is fetched again. A token
   # signed by a key not in the set triggers an earlier refetch.
   jwks_cache_seconds: 3600
@@ -61,9 +70,19 @@ auth:
   # How long a validated token is remembered (never past its own expiry), so
   # a busy client is not re-verified on every request.
   token_cache_seconds: 60
-  # How long who-a-subject-is is remembered. A user disabled or made admin
-  # takes effect within this, or at once on the replica that made the change.
+  # How long who-a-subject-is, and whether a sign-in is still allowed, is
+  # remembered. A user disabled or made admin, or a sign-in revoked, takes
+  # effect within this, or at once on the replica that made the change. It
+  # is also how often a sign-in's last-seen time is written.
   principal_cache_seconds: 30
+  # How a native app's sign-in is told apart from the same person's other
+  # sign-ins, so that one phone can be revoked alone (auth/sign_ins.py).
+  # `zitadel_jti`: the OIDC session id Zitadel puts in front of every access
+  # token's jti (`<session>-at_<token>`), the same across every refresh of
+  # one sign-in; a token from the native client whose jti is not in that
+  # shape is refused rather than let through unlisted. `subject`: one entry
+  # per person, for an issuer whose access tokens carry no such handle.
+  native_sign_in_handle: zitadel_jti
   # Served unauthenticated by GET /api/auth/config so a native app can start
   # a sign-in before it holds a token. An empty client id means this server
   # offers no native sign-in.

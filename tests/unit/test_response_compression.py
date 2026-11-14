@@ -20,6 +20,10 @@ from starlette.datastructures import Headers
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.types import Message, Receive, Scope, Send
 
+import mail_verdict.auth.principal as principal_module
+import mail_verdict.auth.sign_ins as sign_ins_module
+from mail_verdict.auth.principal import OWNER_USER_ID, _DirectoryEntry
+from tests.helpers.sign_ins import InMemorySignInStore
 from tests.setup.auth import OWNER_SUBJECT, TestIssuer, bearer
 
 os.environ.setdefault(
@@ -27,14 +31,31 @@ os.environ.setdefault(
 )
 
 
+class _OwnerOnly:
+    """The users table of an instance with only its owner in it."""
+
+    async def find(self, subject: str) -> _DirectoryEntry | None:
+        if subject != OWNER_SUBJECT:
+            return None
+        return _DirectoryEntry(user_id=OWNER_USER_ID, role="admin", disabled=False)
+
+    async def provision(self, subject: str, email: str | None, name: str) -> _DirectoryEntry:
+        raise AssertionError("not reached")
+
+    async def touch(self, user_id: object, email: str | None) -> None:
+        pass
+
+
 @pytest.fixture()
-def client(auth_issuer: TestIssuer) -> TestClient:
+def client(auth_issuer: TestIssuer, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """The real, fully composed application -- no lifespan (no DB needed):
     /api/events answers its own 503 "not ready" placeholder without a live
-    EventRing, and /api/openapi.json needs no database at all. The owner's
-    token passes the gate without one too."""
+    EventRing, and /api/openapi.json needs no database at all. The gate
+    reads its users and sign-ins from memory instead."""
     import mail_verdict.server as server_module
 
+    monkeypatch.setattr(principal_module, "DatabaseUserDirectory", _OwnerOnly)
+    monkeypatch.setattr(sign_ins_module, "DatabaseSignInStore", InMemorySignInStore)
     return TestClient(
         server_module.create_app(), headers=bearer(auth_issuer.mint(OWNER_SUBJECT)),
     )

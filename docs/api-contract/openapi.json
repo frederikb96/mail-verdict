@@ -776,6 +776,21 @@
         "title": "AdminPipelineUserOut",
         "type": "object"
       },
+      "AdminSubjectRequest": {
+        "description": "A token subject (`sub` claim) to sign in as a user.",
+        "properties": {
+          "subject": {
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject"
+        ],
+        "title": "AdminSubjectRequest",
+        "type": "object"
+      },
       "AdminUserCreateRequest": {
         "description": "A user added ahead of their first sign-in, so an account can be given\nto them first. `subject` is the `sub` claim their tokens will carry.",
         "properties": {
@@ -8564,6 +8579,98 @@
         "title": "SettingsUpdateRequest",
         "type": "object"
       },
+      "SignInResponse": {
+        "description": "One sign-in. `name` is what a phone or client calls itself\n(X-Device-Name); `current` is the sign-in making this request.",
+        "properties": {
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "title": "First Seen At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "phone",
+              "browser",
+              "machine"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "kind",
+          "name",
+          "subject",
+          "first_seen_at",
+          "last_seen_at",
+          "revoked_at",
+          "current"
+        ],
+        "title": "SignInResponse",
+        "type": "object"
+      },
+      "SignOutResponse": {
+        "description": "How many sign-ins a sign-out revoked.",
+        "properties": {
+          "revoked": {
+            "title": "Revoked",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "title": "SignOutResponse",
+        "type": "object"
+      },
       "SpamReviewItem": {
         "description": "A message whose latest verdict called it spam and has not been\nruled on -- cross-account and cross-folder, since the review screen is\na view over verdicts rather than a folder. Carries account_id since a\nrow here can belong to any account, not just the one currently open.",
         "properties": {
@@ -11510,6 +11617,126 @@
         ]
       }
     },
+    "/admin/sign-ins": {
+      "get": {
+        "description": "Every sign-in, or one user's, or one kind's (`machine` is the list of\naccess keys).",
+        "operationId": "list_sign_ins_admin_sign_ins_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "phone",
+                    "browser",
+                    "machine"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SignInResponse"
+                  },
+                  "title": "Response List Sign Ins Admin Sign Ins Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Sign Ins",
+        "tags": [
+          "sign-ins"
+        ]
+      }
+    },
+    "/admin/sign-ins/{sign_in_id}/revoke": {
+      "post": {
+        "description": "Revoke any sign-in.",
+        "operationId": "revoke_sign_in_admin_sign_ins__sign_in_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sign_in_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Sign In Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Sign In",
+        "tags": [
+          "sign-ins"
+        ]
+      }
+    },
     "/admin/users": {
       "get": {
         "description": "Every user.",
@@ -11578,7 +11805,7 @@
     },
     "/admin/users/{user_id}": {
       "patch": {
-        "description": "Rename a user, change their role, or disable or enable them. The owner\ncan be neither demoted nor disabled -- the configuration makes them admin\nregardless, so either change would only make this table lie.",
+        "description": "Rename a user, change their role, or disable or enable them. The owner\ncan be neither demoted nor disabled -- they are an enabled admin\nregardless (auth/principal.py), so either change would only make this\ntable lie.",
         "operationId": "update_user_admin_users__user_id__patch",
         "parameters": [
           {
@@ -11625,6 +11852,157 @@
           }
         },
         "summary": "Update User",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/users/{user_id}/sign-out": {
+      "post": {
+        "description": "Revoke every sign-in of a user: their phones, their browsers and\ntheir machine clients. Their phones and browsers can sign in again; a\nmachine client's subject stays refused.",
+        "operationId": "sign_out_user_admin_users__user_id__sign_out_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignOutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sign Out User",
+        "tags": [
+          "sign-ins"
+        ]
+      }
+    },
+    "/admin/users/{user_id}/subjects": {
+      "post": {
+        "description": "Let another token subject sign in as this user -- a second login, or\na machine client's. 409 if the subject already signs in as someone.",
+        "operationId": "add_subject_admin_users__user_id__subjects_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSubjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Subject",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/users/{user_id}/subjects/{subject}": {
+      "delete": {
+        "description": "Stop a token subject signing in as this user -- the owner's included\n-- and revoke the phones and machine clients recorded for it. 404 if it\nis not this user's; 400 for the subject this request signed in with,\nwhich would lock the caller out mid-request.",
+        "operationId": "remove_subject_admin_users__user_id__subjects__subject__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "title": "Subject",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Subject",
         "tags": [
           "admin"
         ]
@@ -14448,6 +14826,76 @@
         "summary": "Get Me",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/me/sign-ins": {
+      "get": {
+        "description": "The caller's sign-ins, live ones first, most recently seen first.",
+        "operationId": "list_own_sign_ins_me_sign_ins_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SignInResponse"
+                  },
+                  "title": "Response List Own Sign Ins Me Sign Ins Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Own Sign Ins",
+        "tags": [
+          "sign-ins"
+        ]
+      }
+    },
+    "/me/sign-ins/{sign_in_id}/revoke": {
+      "post": {
+        "description": "Revoke one of the caller's sign-ins -- the current one included,\nwhose next request is then refused. 403 for someone else's.",
+        "operationId": "revoke_own_sign_in_me_sign_ins__sign_in_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sign_in_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Sign In Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Own Sign In",
+        "tags": [
+          "sign-ins"
         ]
       }
     },

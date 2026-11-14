@@ -39,6 +39,8 @@ from mail_verdict.api.runs import router as runs_router
 from mail_verdict.api.search import router as search_router
 from mail_verdict.api.secrets import router as secrets_router
 from mail_verdict.api.settings_api import router as settings_router
+from mail_verdict.api.sign_ins import admin_router as sign_ins_admin_router
+from mail_verdict.api.sign_ins import me_router as sign_ins_me_router
 from mail_verdict.api.stats import router as stats_router
 from mail_verdict.api.unified import account_router as unified_account_router
 from mail_verdict.api.unified import unified_router
@@ -49,7 +51,9 @@ from mail_verdict.api.webhooks import router as webhooks_router
 all_routers: list[APIRouter] = [
     auth_config_router,
     me_router,
+    sign_ins_me_router,
     admin_router,
+    sign_ins_admin_router,
     mails_router,
     mails_account_router,
     notifications_router,

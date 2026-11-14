@@ -142,7 +142,9 @@ signs the browser in and forwards its ID token as `Authorization: Bearer ...`. W
 behind a ForwardAuth middleware that is `--set-authorization-header`, which puts the token on the
 auth response for the middleware to copy; `--pass-authorization-header` only adds it to requests
 the proxy itself forwards upstream, so behind ForwardAuth the application receives no token and
-answers 401. Native apps and agents send their own access token.
+answers 401. Native apps and agents send their own access token, which must be short-lived:
+anything issued for longer than `config.auth.max_token_lifetime_seconds` (a day unless set) is
+refused, so that revoking a sign-in in the application holds.
 No identity provider is hard-coded into this chart -- `ingress.annotations` is free-form.
 
 A worked Traefik example, assuming [traefik/traefik](https://github.com/traefik/traefik-helm-chart)

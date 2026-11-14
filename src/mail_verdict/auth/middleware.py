@@ -7,7 +7,8 @@ task that runs them. Every path under /api and /mcp needs a valid bearer
 token except PUBLIC_PATHS; every other path is the static web UI, which is
 public code and carries no data. A request without a valid token gets 401
 with `WWW-Authenticate: Bearer`; a disabled or (with auto-provisioning off)
-unknown user gets 403 naming which.
+unknown user gets 403 naming which. A token of a revoked sign-in
+(auth/sign_ins.py) gets 401 `device_revoked`.
 
 CORS preflights (OPTIONS) pass unauthenticated: a browser sends them without
 credentials by design, and they reach no endpoint.
@@ -21,6 +22,7 @@ import logging
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from mail_verdict.auth.principal import AuthError, PrincipalResolver, bind_principal
+from mail_verdict.auth.sign_ins import DEVICE_NAME_HEADER, SignInRegistry, device_name
 from mail_verdict.auth.tokens import InvalidToken, TokenVerifier
 
 logger = logging.getLogger(__name__)
@@ -41,12 +43,20 @@ def requires_token(path: str) -> bool:
 
 
 class AuthMiddleware:
-    """Validates the bearer token and binds the principal for the request."""
+    """Validates the bearer token, matches it to its sign-in and binds the
+    principal for the request."""
 
-    def __init__(self, app: ASGIApp, verifier: TokenVerifier, resolver: PrincipalResolver) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        verifier: TokenVerifier,
+        resolver: PrincipalResolver,
+        sign_ins: SignInRegistry,
+    ) -> None:
         self.app = app
         self.verifier = verifier
         self.resolver = resolver
+        self.sign_ins = sign_ins
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope["method"] == "OPTIONS":
@@ -62,12 +72,23 @@ class AuthMiddleware:
                 raise InvalidToken()
             claims = await self.verifier.verify(token)
             principal = await self.resolver.resolve(claims)
+            principal = await self.sign_ins.admit(
+                principal, claims, device_name(_header(scope, DEVICE_NAME_HEADER)),
+            )
         except AuthError as exc:
             await _refuse(send, exc)
             return
 
         with bind_principal(principal):
             await self.app(scope, receive, send)
+
+
+def _header(scope: Scope, name: bytes) -> bytes | None:
+    """The first value of a request header, if it was sent."""
+    for key, value in scope["headers"]:
+        if key == name:
+            return bytes(value)
+    return None
 
 
 def _bearer_token(scope: Scope) -> str | None:

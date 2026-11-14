@@ -11,8 +11,9 @@ caller's user, admin and everyone keys stay. The keys are resolved again
 whenever an account changes owner or a user's role or sign-in changes
 (auth/ownership.py), so an account added, removed or given away mid-stream
 starts or stops reaching it at once, and at least every
-auth.principal_cache_seconds besides. A stream whose user has been disabled
-ends at that point; the client's reconnect is then refused by the gate.
+auth.principal_cache_seconds besides. A stream whose user has been disabled,
+or whose sign-in has been revoked (auth/sign_ins.py), ends at that point; the
+client's reconnect is then refused by the gate.
 
 On fresh connect: sends connected event, then streams live events.
 On reconnect (Last-Event-ID header): replays missed events of the caller's
@@ -45,7 +46,7 @@ from mail_verdict.auth.principal import OWNER_USER_ID, Principal, current_princi
 from mail_verdict.auth.scope import EVERYONE_RING_KEY, Scope
 from mail_verdict.config import get_config
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import User
+from mail_verdict.database.models import SignIn, User
 
 if TYPE_CHECKING:
     from mail_verdict.api.event_ring import EventRing
@@ -228,7 +229,8 @@ KeyResolver = Callable[[], Awaitable[frozenset[str]]]
 
 
 class StreamClosed(Exception):
-    """The caller of a stream may no longer stream: their user is disabled."""
+    """The caller of a stream may no longer stream: their user is disabled
+    or their sign-in revoked."""
 
 
 async def _sse_generator(
@@ -359,19 +361,29 @@ async def _scope_of(principal: Principal) -> Scope:
     """
     The scope a stream of `principal` reads, as of now: read from the users
     table rather than the principal, so a role changed since the stream
-    opened counts, and a user disabled since then closes it.
+    opened counts, and a user disabled or a sign-in revoked since then
+    closes it.
 
     Raises:
-        StreamClosed: The user is disabled (the owner never is).
+        StreamClosed: The user is disabled (the owner never is), or the
+            stream's sign-in has been revoked.
     """
     db = get_db_connection()
-    if principal.user_id != OWNER_USER_ID:
-        async with db.session() as session:
+    async with db.session() as session:
+        if principal.user_id != OWNER_USER_ID:
             disabled = await session.scalar(
                 select(User.disabled).where(User.id == principal.user_id)
             )
-        if disabled is not False:
-            raise StreamClosed()
+            if disabled is not False:
+                raise StreamClosed()
+        if principal.sign_in_id is not None:
+            revoked = await session.execute(
+                select(SignIn.id).where(
+                    SignIn.id == principal.sign_in_id, SignIn.revoked_at.is_not(None),
+                )
+            )
+            if revoked.first() is not None:
+                raise StreamClosed()
     return await Scope.for_user(db, principal.user_id)
 
 
