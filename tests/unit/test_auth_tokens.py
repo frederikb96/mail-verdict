@@ -39,6 +39,7 @@ def _verifier(issuer: TestIssuer, **overrides: object) -> TokenVerifier:
         "principal_cache_seconds": 30,
         "native_sign_in_handle": "zitadel_jti",
         "native_client_id": "",
+        "app_client_ids": [],
         "native_scopes": "openid",
         "native_redirect_uri": "app://cb",
     }

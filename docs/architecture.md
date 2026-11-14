@@ -1236,7 +1236,8 @@ authenticated user may still be used. Past the token check, the gate matches eve
 `device_revoked`, which every client treats as being signed out:
 
 - A **phone** is a token from the native app's client (`azp` or `client_id` equal to
-  `auth.native_client_id`). Zitadel names each access token `<OIDC session>-at_<token>` in its
+  `auth.native_client_id`), or from another app listed in `auth.app_client_ids` that forwards its
+  own user's token to this server (its audience naming this server). Zitadel names each access token `<OIDC session>-at_<token>` in its
   `jti`, and the session part stays the same across every refresh of one sign-in, so it is the
   handle (`auth.native_sign_in_handle: zitadel_jti`). The shape is Zitadel's internal format: a
   native token whose `jti` does not have it is refused (401 `device_unrecognised`) rather than let

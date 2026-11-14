@@ -89,6 +89,12 @@ auth:
   native_client_id: ""
   native_scopes: "openid profile email offline_access"
   native_redirect_uri: "mailverdict://auth/callback"
+  # Client ids of other apps whose access tokens reach this server on their
+  # user's behalf -- a companion app forwarding its own user's token, with
+  # this server's audience in it. Their tokens are phone sign-ins like the
+  # native client's: listed, named by X-Device-Name and revoked one by one.
+  # Comma-separated in MAIL_VERDICT_AUTH_APP_CLIENT_IDS.
+  app_client_ids: []
 
 security:
   # AES-256-GCM key (64 hex characters / 32 bytes) encrypting provider API

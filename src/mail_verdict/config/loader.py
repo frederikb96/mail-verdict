@@ -252,6 +252,7 @@ class AuthConfig(BaseModel):
     principal_cache_seconds: float
     native_sign_in_handle: Literal["zitadel_jti", "subject"]
     native_client_id: str
+    app_client_ids: list[str]
     native_scopes: str
     native_redirect_uri: str
 

@@ -851,7 +851,7 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
     sign_ins = init_sign_in_registry(
         SignInRegistry(
             DatabaseSignInStore(),
-            native_client_id=config.auth.native_client_id,
+            app_client_ids=frozenset([config.auth.native_client_id, *config.auth.app_client_ids]),
             native_handle=config.auth.native_sign_in_handle,
             cache_seconds=config.auth.principal_cache_seconds,
         )
