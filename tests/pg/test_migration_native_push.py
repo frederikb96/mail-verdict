@@ -78,10 +78,12 @@ async def db_at_previous(postgres_url: str) -> AsyncIterator[str]:
         await admin.dispose()
 
 
+# Written at head, where every device names its user: the owner row 0050 creates.
 _NATIVE_INSERT = (
-    "INSERT INTO push_subscriptions "
-    "(transport, installation_id, relay_url, encrypted_relay_ticket, encrypted_content_key) "
-    "VALUES ('apns', :installation, 'https://relay.example', :ticket, '\\x01'::bytea)"
+    "INSERT INTO push_subscriptions (transport, installation_id, relay_url, "
+    "encrypted_relay_ticket, encrypted_content_key, user_id) "
+    "VALUES ('apns', :installation, 'https://relay.example', :ticket, '\\x01'::bytea, "
+    "'00000000-0000-0000-0000-000000000001')"
 )
 
 
@@ -132,18 +134,21 @@ async def test_each_transport_must_carry_its_own_fields(db_at_previous: str) -> 
         (
             "a native row with no ticket",
             "INSERT INTO push_subscriptions (transport, installation_id, relay_url, "
-            "encrypted_content_key) VALUES ('apns', gen_random_uuid(), 'https://r', '\\x01')",
+            "encrypted_content_key, user_id) "
+            "VALUES ('apns', gen_random_uuid(), 'https://r', '\\x01', "
+            "'00000000-0000-0000-0000-000000000001')",
             {},
         ),
         (
             "a browser row with no endpoint",
-            "INSERT INTO push_subscriptions (transport, p256dh, auth) VALUES ('webpush', 'p', 'a')",
+            "INSERT INTO push_subscriptions (transport, p256dh, auth, user_id) "
+            "VALUES ('webpush', 'p', 'a', '00000000-0000-0000-0000-000000000001')",
             {},
         ),
         (
             "an unknown transport",
-            "INSERT INTO push_subscriptions (transport, endpoint, p256dh, auth) "
-            "VALUES ('fcm', 'https://x', 'p', 'a')",
+            "INSERT INTO push_subscriptions (transport, endpoint, p256dh, auth, user_id) "
+            "VALUES ('fcm', 'https://x', 'p', 'a', '00000000-0000-0000-0000-000000000001')",
             {},
         ),
         (

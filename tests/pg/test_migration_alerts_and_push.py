@@ -141,16 +141,18 @@ async def test_a_second_subscription_cannot_reuse_an_endpoint(db_at_0021: str) -
     async with engine.begin() as conn:
         await conn.execute(
             text(
-                "INSERT INTO push_subscriptions (endpoint, p256dh, auth) "
-                "VALUES ('https://push.example/1', 'key', 'auth')"
+                "INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_id) "
+                "VALUES ('https://push.example/1', 'key', 'auth', "
+                "'00000000-0000-0000-0000-000000000001')"
             )
         )
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match="endpoint"):
         async with engine.begin() as conn:
             await conn.execute(
                 text(
-                    "INSERT INTO push_subscriptions (endpoint, p256dh, auth) "
-                    "VALUES ('https://push.example/1', 'other-key', 'other-auth')"
+                    "INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_id) "
+                    "VALUES ('https://push.example/1', 'other-key', 'other-auth', "
+                    "'00000000-0000-0000-0000-000000000001')"
                 )
             )
     await engine.dispose()
