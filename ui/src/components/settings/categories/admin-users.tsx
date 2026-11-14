@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * Admin > Users: who is on this instance, their role, and which accounts
- * they own, by name. An administrator manages people and ownership here and
- * never sees what is inside anyone's accounts.
+ * Admin > Users: who is on this instance, their role, which accounts they
+ * own, by name, and their sign-ins and sign-in subjects. No screen here
+ * shows what is inside anyone's accounts.
  */
 
 import { useMemo, useState } from "react";
@@ -11,6 +11,7 @@ import { ChevronDown, MoreVertical, UserPlus } from "lucide-react";
 
 import { CategoryHeader } from "@/components/settings/blocks";
 import { OptionSelect } from "@/components/settings/setting-fields";
+import { SignInList } from "@/components/settings/sign-in-list";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -39,6 +40,13 @@ import {
   useUpdateAdminUser,
 } from "@/hooks/use-admin";
 import { useMe } from "@/hooks/use-me";
+import {
+  useAddSubject,
+  useAdminSignIns,
+  useRemoveSubject,
+  useRevokeSignIn,
+  useSignOutUser,
+} from "@/hooks/use-sign-ins";
 import { useToast } from "@/hooks/use-toast";
 import { ApiError } from "@/lib/api";
 import { formatRelativeAgo } from "@/lib/format";
@@ -328,6 +336,122 @@ function ReassignDialog({
   );
 }
 
+function AddSubjectDialog({ user, onClose }: { user: AdminUser; onClose: () => void }) {
+  const add = useAddSubject();
+  const [subject, setSubject] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const submit = () => {
+    if (!subject.trim() || add.isPending) return;
+    add.mutate(
+      { userId: user.id, subject: subject.trim() },
+      { onSuccess: onClose, onError: (err) => setError(errorText(err, "Could not add it")) },
+    );
+  };
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>Add a sign-in subject</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Another login or machine user that signs in as {user.display_name}: the sub claim its
+          tokens carry.
+        </p>
+        <div className="grid gap-1.5">
+          <Label htmlFor="add-subject">Subject</Label>
+          <Input
+            id="add-subject"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submit()}
+          />
+        </div>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={!subject.trim() || add.isPending} onClick={submit}>
+            Add
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** One person's sign-ins and the subjects they sign in under, loaded when
+ * their row is opened. */
+function UserAccess({ user }: { user: AdminUser }) {
+  const { push } = useToast();
+  const { data: signIns } = useAdminSignIns({ userId: user.id });
+  const revoke = useRevokeSignIn();
+  const remove = useRemoveSubject();
+  const [removing, setRemoving] = useState<string | null>(null);
+
+  return (
+    <div className="flex flex-col gap-3 py-2">
+      <div className="flex flex-col gap-1.5">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Sign-ins
+        </h3>
+        {signIns ? (
+          <SignInList
+            signIns={signIns}
+            isRevoking={revoke.isPending}
+            empty="Nothing has signed in yet."
+            onRevoke={(signIn) =>
+              revoke.mutateAsync(signIn.id).catch((err: unknown) =>
+                push(errorText(err, "Could not sign it out"), "error"),
+              )
+            }
+          />
+        ) : (
+          <Skeleton className="h-10 w-full" />
+        )}
+      </div>
+      <div className="flex flex-col gap-1">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Sign-in subjects
+        </h3>
+        {user.subjects.length === 0 && (
+          <p className="text-xs text-muted-foreground">None: nobody signs in as this user.</p>
+        )}
+        {user.subjects.map((subject) => (
+          <div key={subject} className="flex items-center gap-2 text-sm">
+            <span className="min-w-0 flex-1 break-all font-mono text-xs">{subject}</span>
+            <Button variant="ghost" size="sm" onClick={() => setRemoving(subject)}>
+              Remove
+            </Button>
+          </div>
+        ))}
+      </div>
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(open) => !open && setRemoving(null)}
+        title="Remove this subject?"
+        description={`Tokens with this subject no longer sign in as ${user.display_name}, and the phones and access keys that used it are signed out.`}
+        confirmLabel="Remove"
+        isConfirming={remove.isPending}
+        onConfirm={() => {
+          if (removing === null) return;
+          remove.mutate(
+            { userId: user.id, subject: removing },
+            {
+              onSettled: () => setRemoving(null),
+              onError: (err) => push(errorText(err, "Could not remove it"), "error"),
+            },
+          );
+        }}
+      />
+    </div>
+  );
+}
+
 // --- Rows ---------------------------------------------------------------
 
 function AccountLine({
@@ -363,7 +487,8 @@ function AccountLine({
 
 type Pending =
   | { kind: "role"; user: AdminUser }
-  | { kind: "disable"; user: AdminUser };
+  | { kind: "disable"; user: AdminUser }
+  | { kind: "sign-out"; user: AdminUser };
 
 function UserRow({
   user,
@@ -373,6 +498,7 @@ function UserRow({
   onReassign,
   onPending,
   onEnable,
+  onAddSubject,
 }: {
   user: AdminUser;
   accounts: KindedAccount[];
@@ -381,6 +507,7 @@ function UserRow({
   onReassign: (account: KindedAccount | null) => void;
   onPending: (p: Pending) => void;
   onEnable: () => void;
+  onAddSubject: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const isAdmin = user.role === "admin";
@@ -391,7 +518,7 @@ function UserRow({
         <button
           type="button"
           aria-expanded={open}
-          aria-label={`${open ? "Hide" : "Show"} accounts of ${user.display_name}`}
+          aria-label={`${open ? "Hide" : "Show"} accounts and sign-ins of ${user.display_name}`}
           className="mt-0.5 rounded p-0.5 text-muted-foreground hover:text-foreground"
           onClick={() => setOpen((v) => !v)}
         >
@@ -437,6 +564,12 @@ function UserRow({
             <DropdownMenuItem disabled={accounts.length === 0} onClick={() => onReassign(null)}>
               Reassign an account…
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={onAddSubject}>Add a sign-in subject…</DropdownMenuItem>
+            {!isSelf && (
+              <DropdownMenuItem variant="destructive" onClick={() => onPending({ kind: "sign-out", user })}>
+                Sign out everywhere…
+              </DropdownMenuItem>
+            )}
             {!locked && (
               <>
                 <DropdownMenuSeparator />
@@ -458,6 +591,7 @@ function UserRow({
           {accounts.map((a) => (
             <AccountLine key={`${a.kind}-${a.id}`} account={a} onReassign={() => onReassign(a)} />
           ))}
+          <UserAccess user={user} />
         </div>
       )}
     </div>
@@ -471,9 +605,11 @@ export function AdminUsers() {
   const { data: mailAccounts } = useAdminAccounts();
   const { data: davAccounts } = useAdminDavAccounts();
   const update = useUpdateAdminUser();
+  const signOut = useSignOutUser();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [renaming, setRenaming] = useState<AdminUser | null>(null);
+  const [addingSubject, setAddingSubject] = useState<AdminUser | null>(null);
   const [reassign, setReassign] = useState<{ owner: string; account: KindedAccount | null } | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
 
@@ -508,7 +644,7 @@ export function AdminUsers() {
     <div className="flex flex-col gap-4">
       <CategoryHeader
         title="Users"
-        description="Sign-in is through your identity provider; a person appears here after their first sign-in. You manage who exists and who owns which account, and you never see anyone's mail."
+        description="Sign-in is through your identity provider; a person appears here after their first sign-in. You manage who exists, how they sign in and who owns which account. No screen here shows anyone's mail, though like any server-side mail client this is not end-to-end encrypted: whoever runs the server can technically reach the mail it stores."
         actions={
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <UserPlus className="mr-1 h-3.5 w-3.5" />
@@ -544,6 +680,7 @@ export function AdminUsers() {
               onReassign={(account) => setReassign({ owner: user.id, account })}
               onPending={setPending}
               onEnable={() => mutate(user, { disabled: false }, () => undefined)}
+              onAddSubject={() => setAddingSubject(user)}
             />
           ))}
         </div>
@@ -567,6 +704,9 @@ export function AdminUsers() {
 
       <PreCreateDialog open={createOpen} onOpenChange={setCreateOpen} />
       {renaming && <RenameDialog user={renaming} onClose={() => setRenaming(null)} />}
+      {addingSubject && (
+        <AddSubjectDialog user={addingSubject} onClose={() => setAddingSubject(null)} />
+      )}
       {reassign && users && (
         <ReassignDialog
           users={users}
@@ -587,7 +727,7 @@ export function AdminUsers() {
           description={
             pending.user.role === "admin"
               ? "They keep their own mail and rules but lose access to Administration."
-              : "They gain access to Administration: models, provider keys, queues and other people's accounts by name. They still cannot read anyone's mail."
+              : "They gain access to Administration: models, provider keys, queues, and other people's accounts by name, which they can give to anyone, themselves included."
           }
           confirmLabel={pending.user.role === "admin" ? "Remove admin" : "Make admin"}
           confirmVariant="default"
@@ -608,6 +748,24 @@ export function AdminUsers() {
           confirmLabel="Disable sign-in"
           isConfirming={update.isPending}
           onConfirm={() => mutate(pending.user, { disabled: true }, () => setPending(null))}
+        />
+      )}
+      {pending?.kind === "sign-out" && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => !open && setPending(null)}
+          title={`Sign ${pending.user.display_name} out everywhere?`}
+          description="Every phone, web browser and access key of theirs is signed out. Phones and browsers can sign in again; their access keys stay refused."
+          confirmLabel="Sign out everywhere"
+          isConfirming={signOut.isPending}
+          onConfirm={() =>
+            signOut.mutate(pending.user.id, {
+              onSuccess: ({ revoked }) =>
+                push(`${revoked} sign-in${revoked === 1 ? "" : "s"} signed out`, "success"),
+              onError: (err) => push(errorText(err, "Could not sign them out"), "error"),
+              onSettled: () => setPending(null),
+            })
+          }
         />
       )}
     </div>

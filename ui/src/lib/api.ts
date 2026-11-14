@@ -88,6 +88,8 @@ import type {
   SearchResponse,
   SelectionSnapshotResponse,
   SemanticSearchResponse,
+  SignIn,
+  SignOutResponse,
   SpamReviewListResponse,
   StageCreateRequest,
   StageTypeOut,
@@ -521,6 +523,12 @@ export const api = {
     get(): Promise<MeResponse> {
       return request("/me");
     },
+    signIns(): Promise<SignIn[]> {
+      return request("/me/sign-ins");
+    },
+    revokeSignIn(id: string): Promise<SignIn> {
+      return request(`/me/sign-ins/${id}/revoke`, { method: "POST" });
+    },
   },
 
   admin: {
@@ -553,6 +561,30 @@ export const api = {
     },
     ruleSets(): Promise<AdminRuleSet[]> {
       return request("/admin/pipeline/overview");
+    },
+    signIns(filter: { userId?: string; kind?: SignIn["kind"] } = {}): Promise<SignIn[]> {
+      const params = new URLSearchParams();
+      if (filter.userId) params.set("user_id", filter.userId);
+      if (filter.kind) params.set("kind", filter.kind);
+      const query = params.toString();
+      return request(`/admin/sign-ins${query ? `?${query}` : ""}`);
+    },
+    revokeSignIn(id: string): Promise<SignIn> {
+      return request(`/admin/sign-ins/${id}/revoke`, { method: "POST" });
+    },
+    signOutUser(userId: string): Promise<SignOutResponse> {
+      return request(`/admin/users/${userId}/sign-out`, { method: "POST" });
+    },
+    addSubject(userId: string, subject: string): Promise<AdminUser> {
+      return request(`/admin/users/${userId}/subjects`, {
+        method: "POST",
+        body: JSON.stringify({ subject }),
+      });
+    },
+    removeSubject(userId: string, subject: string): Promise<AdminUser> {
+      return request(`/admin/users/${userId}/subjects/${encodeURIComponent(subject)}`, {
+        method: "DELETE",
+      });
     },
   },
 
