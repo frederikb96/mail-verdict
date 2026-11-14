@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sign-out. *Admin → Users* shows a person's sign-ins and sign-in subjects, adds and removes
   subjects and signs a person out everywhere; *Admin → Access keys* lists every machine client.
   A browser that was signed out says so instead of reporting the server unreachable.
+- `auth.app_client_ids` names other apps whose users' tokens reach this server through them (a
+  companion app forwarding its own user's token): their tokens are listed and revoked as phone
+  sign-ins, by their Zitadel session.
 - An admin removes a user completely (`DELETE /api/admin/users/{id}`, *Admin → Users → Remove
   user…*): their mail and DAV accounts are deleted from MailVerdict as deleting each one does, then
   their orders, files, rules, views, settings, alerts, push devices, sign-ins and subjects, and the

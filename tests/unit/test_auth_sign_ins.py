@@ -50,7 +50,10 @@ def _alice(subject: str = "alice") -> Principal:
 
 
 def _identify(claims: dict[str, Any]) -> tuple[str, str]:
-    presented = identify(claims, ALICE, native_client_id="native-app", native_handle="zitadel_jti")
+    presented = identify(
+        claims, ALICE, app_client_ids=frozenset({"native-app", "companion-app"}),
+        native_handle="zitadel_jti",
+    )
     return presented.kind, presented.handle
 
 
@@ -58,6 +61,12 @@ def test_a_phone_is_its_zitadel_session_the_same_across_refreshes() -> None:
     assert _identify(_phone(token="at_1")) == ("phone", "V2_3001")
     assert _identify(_phone(token="at_2")) == ("phone", "V2_3001")
     assert _identify(_phone(session="V2_3002")) == ("phone", "V2_3002")
+
+
+def test_another_apps_forwarded_token_is_a_phone_too() -> None:
+    claims = {**_phone(session="V2_7"), "azp": "companion-app"}
+
+    assert _identify(claims) == ("phone", "V2_7")
 
 
 def test_the_native_client_is_recognised_by_client_id_as_well() -> None:
@@ -80,7 +89,7 @@ def test_a_native_token_without_a_session_handle_is_refused(jti: Any) -> None:
 def test_the_subject_strategy_lists_one_phone_per_person() -> None:
     presented = identify(
         {"sub": "alice", "azp": "native-app", "iat": _now()}, ALICE,
-        native_client_id="native-app", native_handle="subject",
+        app_client_ids=frozenset({"native-app"}), native_handle="subject",
     )
 
     assert (presented.kind, presented.handle) == ("phone", "alice")
@@ -94,7 +103,7 @@ def test_an_id_token_is_the_persons_browsers_and_a_machine_token_its_subject() -
 
 
 def test_without_a_native_client_every_access_token_is_a_machine() -> None:
-    presented = identify(_phone(), ALICE, native_client_id="", native_handle="zitadel_jti")
+    presented = identify(_phone(), ALICE, app_client_ids=frozenset(), native_handle="zitadel_jti")
 
     assert presented.kind == "machine"
 

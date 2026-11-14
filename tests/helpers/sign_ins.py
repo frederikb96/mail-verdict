@@ -55,10 +55,10 @@ class InMemorySignInStore:
 
 
 def registry(
-    store: InMemorySignInStore, *, native_client_id: str = "native-app", cache_seconds: float = 0,
+    store: InMemorySignInStore, *, cache_seconds: float = 0,
 ) -> SignInRegistry:
     """A registry over `store` that remembers nothing unless told to."""
     return SignInRegistry(
-        store, native_client_id=native_client_id, native_handle="zitadel_jti",
+        store, app_client_ids=frozenset({"native-app"}), native_handle="zitadel_jti",
         cache_seconds=cache_seconds,
     )

@@ -5,8 +5,10 @@ The identity provider authenticates; this decides whether one particular
 sign-in of an authenticated user is still allowed. Every request past the
 token check is matched to a sign_ins row, created on first sight:
 
-- **phone**: a token from the native app's client (`azp` or `client_id`
-  equal to auth.native_client_id). With auth.native_sign_in_handle
+- **phone**: a token from a phone app's client (`azp` or `client_id`
+  equal to auth.native_client_id or one of auth.app_client_ids -- another
+  app forwarding its user's own token counts like this server's own
+  app). With auth.native_sign_in_handle
   `zitadel_jti` the handle is the OIDC session id Zitadel puts in front of
   every access token's jti (`<session>-at_<token>`), which stays the same
   across every refresh of one sign-in and differs for the next sign-in. A
@@ -125,7 +127,7 @@ def identify(
     claims: Mapping[str, Any],
     user_id: uuid.UUID,
     *,
-    native_client_id: str,
+    app_client_ids: frozenset[str],
     native_handle: NativeHandle,
 ) -> Presented:
     """
@@ -137,7 +139,7 @@ def identify(
     subject = str(claims["sub"])
     issued_at = _instant(claims.get("iat")) or datetime.now(timezone.utc)
     client = claims.get("azp") or claims.get("client_id")
-    if native_client_id and client == native_client_id:
+    if isinstance(client, str) and client in app_client_ids:
         if native_handle == "subject":
             return Presented("phone", subject, issued_at)
         session = zitadel_session(claims.get("jti"))
@@ -248,12 +250,12 @@ class SignInRegistry:
         self,
         store: SignInStore,
         *,
-        native_client_id: str,
+        app_client_ids: frozenset[str],
         native_handle: NativeHandle,
         cache_seconds: float,
     ) -> None:
         self._store = store
-        self._native_client_id = native_client_id
+        self._app_client_ids = app_client_ids - {""}
         self._native_handle = native_handle
         self._cache_seconds = cache_seconds
         self._cache: dict[tuple[str, str], tuple[float, Recorded]] = {}
@@ -270,7 +272,7 @@ class SignInRegistry:
         """
         presented = identify(
             claims, principal.user_id,
-            native_client_id=self._native_client_id, native_handle=self._native_handle,
+            app_client_ids=self._app_client_ids, native_handle=self._native_handle,
         )
         key = (presented.kind, presented.handle)
         cached = self._cache.get(key)
