@@ -11,6 +11,17 @@ type Gate =
   | { state: "ready"; me: MeResponse }
   | { state: "failed"; message: string };
 
+/** What the gate says when `/api/me` is refused. A browser that was signed
+ * out from Settings or by an administrator stays refused until its person
+ * signs in again at the identity provider, which a reload alone does not do. */
+function failureMessage(err: unknown): string {
+  if (err instanceof ApiError && err.status === 401 && err.message === "device_revoked") {
+    return "This browser was signed out. Sign out at your identity provider and sign in again to continue.";
+  }
+  if (err instanceof ApiError && err.status === 403) return "You are not allowed to use this instance.";
+  return "MailVerdict could not reach the server.";
+}
+
 /**
  * Asks `/api/me` who is signed in, binds that user to browser storage, and
  * only then renders its children. Everything persisted in this browser is
@@ -38,11 +49,7 @@ export function UserGate({ children }: { children: (me: MeResponse) => ReactNode
         setGate({ state: "ready", me });
       })
       .catch((err: unknown) => {
-        const message =
-          err instanceof ApiError && err.status === 403
-            ? "You are not allowed to use this instance."
-            : "MailVerdict could not reach the server.";
-        setGate({ state: "failed", message });
+        setGate({ state: "failed", message: failureMessage(err) });
       });
   }, []);
 

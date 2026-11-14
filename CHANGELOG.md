@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is refused with `401` `device_unrecognised`.
 - An admin adds and removes a user's token subjects (`POST /api/admin/users/{id}/subjects`,
   `DELETE /api/admin/users/{id}/subjects/{subject}`), the owner's included.
+- *Settings → Signed-in devices* lists one's own phones, browsers and access keys, each with a
+  sign-out. *Admin → Users* shows a person's sign-ins and sign-in subjects, adds and removes
+  subjects and signs a person out everywhere; *Admin → Access keys* lists every machine client.
+  A browser that was signed out says so instead of reporting the server unreachable.
 
 ### Changed
 
@@ -34,8 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The chart README names the oauth2-proxy flag that works behind ForwardAuth
   (`--set-authorization-header`), and the chart's ingress comments and install notes describe the
   token every request needs instead of an application with no authentication.
-- The README and architecture notes say that an admin can give any account to themselves and is
-  therefore trusted with every account's mail.
+- The README and *Admin → Users* say plainly that no admin screen shows anyone's mail, that an
+  admin can give any account to themselves, and that whoever runs the server can technically
+  reach the mail it stores: MailVerdict is not end-to-end encrypted. Admin → Users no longer
+  claims admins cannot read anyone's mail.
 
 ## [8.0.0] - 2026-11-14
 

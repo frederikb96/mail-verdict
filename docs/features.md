@@ -291,14 +291,21 @@ mail client: a `mailto:` link opens the composer filled in from the link.
 - Anyone else is refused the machinery outright.
 - Settings shows one category at a time, each at an address of its own: Appearance, Mail (filing,
   undo send, how orders are summarised and closed), Unified views, Notifications, Calendar,
-  Accounts and Keyboard shortcuts. On a phone the list of categories is a screen of its own.
+  Accounts, Signed-in devices and Keyboard shortcuts. On a phone the list of categories is a
+  screen of its own.
+- Signed-in devices lists every phone (by the name it gives itself) and access key that has used
+  the account, and the person's web browsers as one entry, with when each was last used. Signing
+  one out takes effect on its next request: a phone stays out until it signs in again, an access
+  key for good, and the browsers until their person signs in again at the identity provider.
 - Folders are chosen with one picker, for a unified view and for the folders that raise a
   notification: a filter, a switch hiding system folders (Drafts, Sent, Trash, Junk and folders
   the sidebar hides), and a collapsible group per account whose checkbox ticks everything it lists.
 - *Admin* is a sidebar entry for administrators only. It holds the people and the machinery: Users
-  (role, accounts by name, last seen; make or remove admin, disable or enable sign-in, rename,
-  pre-create a user, reassign a mail or calendar account to another user -- never anyone's mail),
-  Models (one row per
+  (role, accounts by name, last seen, sign-ins and sign-in subjects; make or remove admin, disable
+  or enable sign-in, rename, pre-create a user, add or remove a sign-in subject, sign someone out
+  everywhere, sign out one of their phones, browsers or access keys, reassign a mail or calendar
+  account to another user -- no screen for anyone's mail), Access keys (every machine client that
+  has signed in, whoever it belongs to, each of which can be signed out), Models (one row per
   AI task with provider, model, reasoning effort and token budget), Providers & keys, Processing
   (queues as compact tiles with their controls in a menu, failed runs, and each user's rule set as
   counts only), Secrets and System (usage export, semantic index coverage, queue tuning). Anyone else who opens

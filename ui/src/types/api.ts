@@ -1649,6 +1649,26 @@ export interface AdminUser {
   last_seen_at: string | null;
 }
 
+/** One signed-in phone, person's browsers or machine client
+ * (`GET /api/me/sign-ins`, `GET /api/admin/sign-ins`). */
+export interface SignIn {
+  id: string;
+  user_id: string;
+  kind: "phone" | "browser" | "machine";
+  /** What a phone or client calls itself (`X-Device-Name`). */
+  name: string | null;
+  subject: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  revoked_at: string | null;
+  /** The sign-in making this request. */
+  current: boolean;
+}
+
+export interface SignOutResponse {
+  revoked: number;
+}
+
 export interface AdminUserCreateRequest {
   subject: string;
   display_name: string;

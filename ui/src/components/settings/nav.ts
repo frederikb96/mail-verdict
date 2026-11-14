@@ -5,8 +5,10 @@ import {
   Cpu,
   Keyboard,
   KeyRound,
+  KeySquare,
   Layers,
   Mail,
+  MonitorSmartphone,
   Palette,
   ShieldCheck,
   UserCircle,
@@ -36,6 +38,7 @@ export const SETTINGS_CATEGORIES: CategoryDef[] = [
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
   { id: "accounts", label: "Accounts", icon: UserCircle },
+  { id: "sign-ins", label: "Signed-in devices", icon: MonitorSmartphone },
   { id: "shortcuts", label: "Keyboard shortcuts", icon: Keyboard, hideOnTouch: true },
 ];
 
@@ -43,6 +46,7 @@ export const SETTINGS_CATEGORIES: CategoryDef[] = [
  * mail, spend or models. */
 export const ADMIN_CATEGORIES: CategoryDef[] = [
   { id: "users", label: "Users", icon: Users, wide: true },
+  { id: "access-keys", label: "Access keys", icon: KeySquare },
   { id: "models", label: "Models", icon: Bot, wide: true },
   { id: "providers", label: "Providers & keys", icon: ShieldCheck },
   { id: "processing", label: "Processing", icon: Workflow, wide: true },
