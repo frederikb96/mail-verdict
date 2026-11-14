@@ -18,10 +18,17 @@ Every request under `/api` and to the MCP server at `/mcp` carries an OpenID Con
 configured issuer as `Authorization: Bearer <token>`; without a valid one the answer is `401` with
 `WWW-Authenticate: Bearer`. Two routes answer without a token: `GET /api/health` (readiness) and
 `GET /api/auth/config` (the issuer, the native client id, scopes and redirect URI a native app
-starts its sign-in with). A user an admin has disabled gets `403` with detail `user_disabled`,
+starts its sign-in with). A token issued for longer than `auth.max_token_lifetime_seconds`, or
+without `iat`, is a `401` too. A user an admin has disabled gets `403` with detail `user_disabled`,
 and an event stream they hold open ends;
 with `auth.auto_provision` off, a subject no user has gets `403` `unknown_user`. Any other `403`
 is a request for something the caller does not own.
+
+A native app sends `X-Device-Name: <name>` (UTF-8, at most 64 characters; longer is cut) on every
+request, the name its sign-in is listed under. A sign-in that has been revoked gets `401` with
+detail `device_revoked`, and its open event stream ends; a native app's token whose sign-in the
+server cannot tell apart (see [architecture](architecture.md#which-sign-in)) gets `401`
+`device_unrecognised`. A client treats either like any other `401`: it is signed out.
 
 `GET /api/me` says who the token signs in as and whether they are admin. A caller sees and acts
 on the accounts they added, and only those; `/api/admin` (admins only) manages users and who owns
@@ -338,8 +345,8 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 
 | Group | Prefix | What it's for |
 |---|---|---|
-| Identity | `/me`, `/auth/config` | Who the token signs in as (`user_id`, `email`, `display_name`, `role`); the sign-in parameters a native app starts from, answered without a token |
-| Admin | `/admin` | Admins only: users (`GET`, `POST` one ahead of their first sign-in by token `subject`, `PATCH` `display_name`/`role`/`disabled`; the owner can be neither demoted nor disabled), every mail and DAV account with its owner, and `PUT /admin/accounts/{id}/owner` / `PUT /admin/dav-accounts/{id}/owner` to give an account to another user (`409` if they already have one by that name). Nothing here returns mail, events or contacts |
+| Identity | `/me`, `/me/sign-ins`, `/auth/config` | Who the token signs in as (`user_id`, `email`, `display_name`, `role`); the caller's own sign-ins (`kind` `phone`, `browser` or `machine`, `name`, first and last seen, `revoked_at`, `current` for the one making the request) and `POST /me/sign-ins/{id}/revoke` for one of them (`403` for someone else's); the sign-in parameters a native app starts from, answered without a token |
+| Admin | `/admin` | Admins only: users (`GET`, `POST` one ahead of their first sign-in by token `subject`, `PATCH` `display_name`/`role`/`disabled`; the owner can be neither demoted nor disabled), a user's subjects (`POST /admin/users/{id}/subjects`, `409` if the subject is taken; `DELETE /admin/users/{id}/subjects/{subject}`, which also revokes that subject's phones and machine clients, `400` for the subject the request itself signed in with), every sign-in (`GET /admin/sign-ins`, `?user_id=`, `?kind=machine` for the access keys), `POST /admin/sign-ins/{id}/revoke` and `POST /admin/users/{id}/sign-out` (every sign-in of a user, answering `{"revoked": n}`), every mail and DAV account with its owner, and `PUT /admin/accounts/{id}/owner` / `PUT /admin/dav-accounts/{id}/owner` to give an account to another user (`409` if they already have one by that name). Nothing here returns mail, events or contacts |
 | Accounts | `/accounts` | Create, update, delete, list; folder listing; sync status and manual sync trigger. `PATCH` accepts `glacier_enabled`/`glacier_auto_days` (`409` disabling while it still holds mail); folder listing includes the one synthetic glacier folder (`kind: "glacier"`) once enabled; `glacier_sweep_last_refusal` names why the automatic sweep's last tick skipped this account, null once a tick actually proceeds — see [architecture.md](architecture.md#glacier-storage) |
 | Identities | `/identities` | An account's addresses to send as — create, update, delete, list (optionally scoped by `account_id`); at most one default per account, enforced at the database level. `POST /outbox`'s `identity_id` resolves through these |
 | DAV accounts | `/dav-accounts` | CalDAV/CardDAV server connections, mirrored the same way a mail account is — create, update, delete, list with each account's collections, manual sync trigger. The discovery URL goes under `discovery_url` (see the Quickstart example below — the underlying `dav_accounts.url` column is named differently). Every route under this and the four groups below answers `501` until PostIMAP reports `service_version >= 1.6.0` |

@@ -1,8 +1,8 @@
 """How a validated token's subject becomes the user a request acts as.
 
-The owner case is the one that must survive anything: the owner subjects
-resolve from configuration alone, so an empty or broken users table can never
-lock the owner out of their own instance.
+The owner's subjects are ordinary rows: a subject an admin removed from the
+owner signs in as nobody, whatever auth.owner_subjects lists. The owner user
+itself stays an enabled admin whatever the table says about it.
 """
 
 from __future__ import annotations
@@ -46,18 +46,8 @@ class _Directory:
         pass
 
 
-class _BrokenDirectory(_Directory):
-    """A users table that cannot be read at all."""
-
-    async def find(self, subject: str) -> _DirectoryEntry | None:
-        raise RuntimeError("users table unreadable")
-
-
 def _resolver(directory: _Directory, *, auto_provision: bool = True) -> PrincipalResolver:
-    return PrincipalResolver(
-        directory, ["owner-login", "owner-agent"], auto_provision=auto_provision,
-        cache_seconds=30,
-    )
+    return PrincipalResolver(directory, auto_provision=auto_provision, cache_seconds=30)
 
 
 def _claims(sub: str, **extra: Any) -> dict[str, Any]:
@@ -65,14 +55,26 @@ def _claims(sub: str, **extra: Any) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("subject", ["owner-login", "owner-agent"])
-async def test_every_owner_subject_is_the_owner_and_admin_without_reading_any_table(
-    subject: str,
-) -> None:
-    principal = await _resolver(_BrokenDirectory()).resolve(_claims(subject))
+async def test_an_owner_subject_is_the_owner_and_admin_through_the_table() -> None:
+    directory = _Directory({
+        "owner-login": _DirectoryEntry(user_id=OWNER_USER_ID, role="user", disabled=False),
+    })
+
+    principal = await _resolver(directory).resolve(_claims("owner-login"))
 
     assert principal.user_id == OWNER_USER_ID
     assert principal.is_admin
+    assert directory.finds == 1
+
+
+@pytest.mark.asyncio
+async def test_a_subject_removed_from_the_owner_is_nobody() -> None:
+    """Configuration no longer outranks the table: an owner subject that is
+    not in user_identities is an unknown subject like any other."""
+    directory = _Directory()
+
+    with pytest.raises(UnknownUser):
+        await _resolver(directory, auto_provision=False).resolve(_claims("owner-agent"))
 
 
 @pytest.mark.asyncio

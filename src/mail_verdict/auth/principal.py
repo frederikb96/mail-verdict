@@ -1,17 +1,16 @@
 """
 Who is calling: the principal a validated token resolves to.
 
-A token's subject resolves to a user through user_identities. The subjects in
-auth.owner_subjects resolve to OWNER_USER_ID, as admin, from configuration
-alone -- no table is read for them, so the owner can always sign in, whatever
-state the users tables are in. Any other subject resolves through the
-database; an unknown one becomes a new ordinary user when auth.auto_provision
-allows it.
+A token's subject resolves to a user through user_identities, the owner's
+subjects included (auth/bootstrap.py links auth.owner_subjects to the owner
+on a new instance; after that they are ordinary rows an admin can remove).
+An unknown subject becomes a new ordinary user when auth.auto_provision
+allows it. The owner (OWNER_USER_ID) is always admin and never disabled.
 
-The resolved principal is bound for the request by auth/middleware.py and read
-back with current_principal(). Code acting on data does not read it directly:
-it asks for a Scope (auth/scope.py), which carries the accounts the principal
-owns.
+The resolved principal is bound for the request by auth/middleware.py, which
+also matches it to its sign-in (auth/sign_ins.py), and read back with
+current_principal(). Code acting on data does not read it directly: it asks
+for a Scope (auth/scope.py), which carries the accounts the principal owns.
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ from mail_verdict.database.models import User, UserIdentity
 logger = logging.getLogger(__name__)
 
 # The user every account that predates users belongs to, created by the 0050
-# migration; auth.owner_subjects sign in as it.
+# migration; auth.owner_subjects are linked to it on a new instance.
 OWNER_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 class AuthError(Exception):
@@ -68,11 +67,14 @@ class Principal:
         user_id: The users row.
         subject: The token subject that signed in.
         is_admin: Whether this user may use the admin routes and settings.
+        sign_in_id: The sign_ins row the request's token belongs to, once
+            the gate has matched it (auth/sign_ins.py).
     """
 
     user_id: uuid.UUID
     subject: str
     is_admin: bool
+    sign_in_id: uuid.UUID | None = None
 
 
 _current_principal: ContextVar[Principal | None] = ContextVar(
@@ -210,13 +212,11 @@ class PrincipalResolver:
     def __init__(
         self,
         directory: UserDirectory,
-        owner_subjects: list[str],
         *,
         auto_provision: bool,
         cache_seconds: float,
     ) -> None:
         self._directory = directory
-        self._owner_subjects = frozenset(owner_subjects)
         self._auto_provision = auto_provision
         self._cache_seconds = cache_seconds
         self._cache: dict[str, tuple[float, Principal | AuthError]] = {}
@@ -230,9 +230,6 @@ class PrincipalResolver:
             UnknownUser: The subject is unknown and auto-provisioning is off.
         """
         subject = str(claims["sub"])
-        if subject in self._owner_subjects:
-            return Principal(user_id=OWNER_USER_ID, subject=subject, is_admin=True)
-
         cached = self._cache.get(subject)
         if cached is not None and cached[0] > time.monotonic():
             outcome = cached[1]

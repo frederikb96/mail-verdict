@@ -29,17 +29,21 @@ from mail_verdict.auth.principal import (
 )
 from mail_verdict.auth.tokens import InvalidToken
 from tests.helpers.mcp_http import McpHttpSession
+from tests.helpers.sign_ins import InMemorySignInStore, registry
 
 ALICE, BOB, CAROL = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
 
 class _Verifier:
-    """Accepts a token named after a known subject; refuses anything else."""
+    """Accepts a token named after a known subject, or `alice-phone` for
+    Alice's phone; refuses anything else."""
 
     async def verify(self, token: str) -> Mapping[str, Any]:
+        if token == "alice-phone":
+            return {"sub": "alice", "azp": "native-app", "jti": "V2_1-at_1", "iat": 0}
         if token not in {"alice", "bob", "carol"}:
             raise InvalidToken()
-        return {"sub": token}
+        return {"sub": token, "iat": 0}
 
 
 class _Directory:
@@ -65,7 +69,12 @@ def _whoami(request: Request) -> JSONResponse:
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def store() -> InMemorySignInStore:
+    return InMemorySignInStore()
+
+
+@pytest.fixture()
+def client(store: InMemorySignInStore) -> Iterator[TestClient]:
     mcp = FastMCP("probe")
 
     @mcp.tool
@@ -90,10 +99,11 @@ def client() -> Iterator[TestClient]:
         ],
         lifespan=lifespan,
     )
-    resolver = PrincipalResolver(
-        _Directory(), ["owner"], auto_provision=False, cache_seconds=30,
+    resolver = PrincipalResolver(_Directory(), auto_provision=False, cache_seconds=30)
+    app = AuthMiddleware(
+        inner, verifier=_Verifier(), resolver=resolver,  # type: ignore[arg-type]
+        sign_ins=registry(store),
     )
-    app = AuthMiddleware(inner, verifier=_Verifier(), resolver=resolver)  # type: ignore[arg-type]
     with TestClient(app) as test_client:
         yield test_client
 
@@ -142,6 +152,29 @@ def test_a_valid_token_reaches_the_endpoint_as_its_user(client: TestClient) -> N
 
     assert response.status_code == 200
     assert response.json() == {"user_id": str(ALICE)}
+
+
+def test_a_phone_is_recorded_under_the_name_it_sends(
+    client: TestClient, store: InMemorySignInStore,
+) -> None:
+    headers = {**_bearer("alice-phone"), "X-Device-Name": "Kim’s Pixel".encode()}
+
+    assert client.get("/api/thing", headers=headers).status_code == 200  # type: ignore[arg-type]
+
+    assert store.rows[("phone", "V2_1")].name == "Kim’s Pixel"
+
+
+def test_a_revoked_sign_in_is_401_device_revoked(
+    client: TestClient, store: InMemorySignInStore,
+) -> None:
+    assert client.get("/api/thing", headers=_bearer("alice-phone")).status_code == 200
+    store.revoke("phone", "V2_1")
+
+    response = client.get("/api/thing", headers=_bearer("alice-phone"))
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "device_revoked"}
+    assert client.get("/api/thing", headers=_bearer("alice")).status_code == 200
 
 
 def test_a_public_path_answers_without_a_token(client: TestClient) -> None:

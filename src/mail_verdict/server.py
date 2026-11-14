@@ -183,7 +183,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from mail_verdict.auth.bootstrap import ensure_owner
 
     await ensure_owner(db, config.auth.owner_subjects)
-    logger.info("Instance owner linked to %d subject(s)", len(config.auth.owner_subjects))
     settings_service = await init_settings_service(db)
     logger.info("Settings loaded from DB")
 
@@ -825,17 +824,31 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
         PrincipalResolver,
         init_principal_resolver,
     )
+    from mail_verdict.auth.sign_ins import (
+        DatabaseSignInStore,
+        SignInRegistry,
+        init_sign_in_registry,
+    )
     from mail_verdict.auth.tokens import TokenVerifier
 
     resolver = init_principal_resolver(
         PrincipalResolver(
             DatabaseUserDirectory(),
-            config.auth.owner_subjects,
             auto_provision=config.auth.auto_provision,
             cache_seconds=config.auth.principal_cache_seconds,
         )
     )
-    app.add_middleware(AuthMiddleware, verifier=TokenVerifier(config.auth), resolver=resolver)
+    sign_ins = init_sign_in_registry(
+        SignInRegistry(
+            DatabaseSignInStore(),
+            native_client_id=config.auth.native_client_id,
+            native_handle=config.auth.native_sign_in_handle,
+            cache_seconds=config.auth.principal_cache_seconds,
+        )
+    )
+    app.add_middleware(
+        AuthMiddleware, verifier=TokenVerifier(config.auth), resolver=resolver, sign_ins=sign_ins,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.server.cors_origins,

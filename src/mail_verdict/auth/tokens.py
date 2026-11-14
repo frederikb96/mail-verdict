@@ -5,8 +5,9 @@ One validator for every kind of caller: the ID token an authenticating proxy
 forwards for a browser, and the access token a native app or an agent sends
 itself. A token passes when it is signed by a key the issuer publishes (an
 asymmetric one -- a symmetric key in the set is ignored), names the configured
-issuer, has not expired, and its audience shares at least one entry with
-auth.audiences.
+issuer, has not expired, its audience shares at least one entry with
+auth.audiences, and it was issued (iat) for no longer than
+auth.max_token_lifetime_seconds.
 
 The key set is fetched from auth.jwks_url and reused for
 auth.jwks_cache_seconds; a token naming a key id the set lacks triggers one
@@ -56,6 +57,7 @@ class TokenVerifier:
         self._jwks_url = config.jwks_url
         self._audiences = list(config.audiences)
         self._leeway = config.leeway_seconds
+        self._max_lifetime = config.max_token_lifetime_seconds
         self._jwks_cache_seconds = config.jwks_cache_seconds
         self._timeout = config.request_timeout_seconds
         self._token_cache_seconds = config.token_cache_seconds
@@ -99,11 +101,18 @@ class TokenVerifier:
                 audience=self._audiences,
                 issuer=self._issuer,
                 leeway=self._leeway,
-                options={"require": ["exp", "iss", "sub", "aud"]},
+                options={"require": ["exp", "iat", "iss", "sub", "aud"]},
             )
         except jwt.PyJWTError as exc:
             logger.debug("Rejected a token: %s", exc)
             raise InvalidToken() from exc
+        lifetime = float(claims["exp"]) - float(claims["iat"])
+        if lifetime > self._max_lifetime:
+            logger.info(
+                "Rejected a token issued for %.0f s, longer than "
+                "auth.max_token_lifetime_seconds (%.0f s)", lifetime, self._max_lifetime,
+            )
+            raise InvalidToken()
 
         expires_at = min(float(claims["exp"]), now + self._token_cache_seconds)
         self._validated[digest] = (expires_at, claims)

@@ -426,6 +426,7 @@ def world(
         "folder_id": folder_id, "message_id": message_id, "calendar_id": calendar_id,
         "addressbook_id": addressbook_id, "event_id": event_id, "contact_id": contact_id,
         "contact_email": b_contact_email,
+        "sign_in_id": app_client.get("/api/me/sign-ins", headers=_as(b_token)).json()[0]["id"],
         **{key: rows[key] for key in (
             "view_id", "alert_id", "order_id", "subscription_id", "identity_id",
             "pipeline_revision", "verdict_id", "run_id", "exception_id", "pending_send_id",

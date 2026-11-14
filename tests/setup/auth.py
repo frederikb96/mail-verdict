@@ -38,6 +38,8 @@ OWNER_SUBJECT = "owner-subject"
 # The audience every minted token carries unless told otherwise, and the one
 # the application is configured to accept.
 AUDIENCE = "mail-verdict-test"
+# The native app's client id: a token whose `azp` names it is a phone's.
+NATIVE_CLIENT_ID = "mail-verdict-test-native"
 
 
 class TestIssuer:
@@ -83,9 +85,13 @@ class TestIssuer:
         issuer: str | None = None,
         expires_in: float = 3600,
         signing_key: rsa.RSAPrivateKey | None = None,
+        extra: dict[str, Any] | None = None,
+        without: tuple[str, ...] = (),
     ) -> str:
-        """A signed token for `subject`. Every argument past it exists to
-        make a token the application must refuse."""
+        """A signed token for `subject`. `extra` adds claims (a phone's
+        `azp` and `jti`, a browser's `auth_time`); `without` drops standard
+        ones. The other arguments past `subject` exist to make a token the
+        application must refuse."""
         now = int(time.time())
         claims: dict[str, Any] = {
             "iss": issuer or self.issuer,
@@ -98,6 +104,9 @@ class TestIssuer:
             claims["email"] = email
         if name is not None:
             claims["name"] = name
+        claims.update(extra or {})
+        for claim in without:
+            claims.pop(claim, None)
         return jwt.encode(
             claims, signing_key or self._key, algorithm="RS256", headers={"kid": self.kid},
         )
@@ -109,6 +118,7 @@ class TestIssuer:
             "MAIL_VERDICT_AUTH_JWKS_URL": self.jwks_url,
             "MAIL_VERDICT_AUTH_AUDIENCES": AUDIENCE,
             "MAIL_VERDICT_AUTH_OWNER_SUBJECTS": ",".join(owner_subjects or [OWNER_SUBJECT]),
+            "MAIL_VERDICT_AUTH_NATIVE_CLIENT_ID": NATIVE_CLIENT_ID,
         }
 
     def close(self) -> None:

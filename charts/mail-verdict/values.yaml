@@ -211,6 +211,8 @@ config: {}
 #   jwks_url: https://login.example.com/oauth/v2/keys
 #   audiences: ["<web client id>", "<api audience>"]
 #   owner_subjects: ["<your own sub claim>"]
+#   native_client_id: "<native app client id>"
+#   max_token_lifetime_seconds: 86400
 # server:
 #   log_level: INFO
 #   cors_origins: []

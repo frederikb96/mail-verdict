@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Every signed-in phone, a person's browsers and every machine client (an agent's or script's own
+  token) are listed, with the name a phone sends in `X-Device-Name` and when each was first and
+  last seen. Anyone revokes their own (`GET /api/me/sign-ins`, `POST /api/me/sign-ins/{id}/revoke`);
+  an admin revokes any one (`GET /api/admin/sign-ins`, `POST /api/admin/sign-ins/{id}/revoke`) and
+  signs a person out everywhere (`POST /api/admin/users/{id}/sign-out`). A revoked sign-in gets
+  `401` `device_revoked` and its open event stream ends. A phone is told apart by the Zitadel
+  session in its access token's `jti` (`auth.native_sign_in_handle`); a native token without one
+  is refused with `401` `device_unrecognised`.
+- An admin adds and removes a user's token subjects (`POST /api/admin/users/{id}/subjects`,
+  `DELETE /api/admin/users/{id}/subjects/{subject}`), the owner's included.
+
+### Changed
+
+- **Breaking:** a token issued for longer than `auth.max_token_lifetime_seconds` (default one day)
+  is refused, and every token must carry `iat`. A deployment still using longer-lived tokens sets
+  the ceiling to their lifetime until they are replaced.
+- **Breaking:** `auth.owner_subjects` is linked to the owner only while the owner has no subject
+  at all, on a new instance. After that the owner's subjects are ordinary entries an admin removes
+  like anyone's, and a removed one is no longer let in from configuration.
+
 ### Fixed
 
 - The chart README names the oauth2-proxy flag that works behind ForwardAuth
