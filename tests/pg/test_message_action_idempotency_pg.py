@@ -581,7 +581,10 @@ class TestClaims:
         key, holder = uuid.uuid4(), uuid.uuid4()
         async with migrated_db.session() as session:
             session.add(
-                MessageActionSubmission(idempotency_key=key, fingerprint="f", claim_token=holder),
+                MessageActionSubmission(
+                    idempotency_key=key, fingerprint="f", claim_token=holder,
+                    user_id=OWNER_USER_ID,
+                ),
             )
         await _release(migrated_db, key, uuid.uuid4())
         assert await _claim_count(migrated_db, key) == 1
@@ -609,9 +612,11 @@ class TestPruning:
             session.add_all([
                 MessageActionSubmission(
                     idempotency_key=old_key, fingerprint="a", response={}, claim_token=uuid.uuid4(),
+                    user_id=OWNER_USER_ID,
                 ),
                 MessageActionSubmission(
                     idempotency_key=new_key, fingerprint="b", response={}, claim_token=uuid.uuid4(),
+                    user_id=OWNER_USER_ID,
                 ),
             ])
         async with migrated_db.session() as session:
