@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [9.0.0] - 2026-11-14
+
 ### Added
 
 - Every signed-in phone, a person's browsers and every machine client (an agent's or script's own
