@@ -23,12 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sign-out. *Admin → Users* shows a person's sign-ins and sign-in subjects, adds and removes
   subjects and signs a person out everywhere; *Admin → Access keys* lists every machine client.
   A browser that was signed out says so instead of reporting the server unreachable.
+- An admin removes a user completely (`DELETE /api/admin/users/{id}`, *Admin → Users → Remove
+  user…*): their mail and DAV accounts are deleted from MailVerdict as deleting each one does, then
+  their orders, files, rules, views, settings, alerts, push devices, sign-ins and subjects, and the
+  user. Nothing changes on any mail or DAV server.
+- A mail or DAV account without an owner raises an `account_unowned` alert for the admins, once,
+  dismissed when the account gets an owner; such an account's mail is otherwise skipped silently.
 
 ### Changed
 
 - **Breaking:** a token issued for longer than `auth.max_token_lifetime_seconds` (default one day)
   is refused, and every token must carry `iat`. A deployment still using longer-lived tokens sets
   the ceiling to their lifetime until they are replaced.
+- **Breaking:** a phone's push subscription has `transport` `native` instead of `apns` (existing
+  rows are converted), since iPhone and Android register the same way; `push.apns_relay_urls` is
+  now `push.relay_urls`.
 - **Breaking:** `auth.owner_subjects` is linked to the owner only while the owner has no subject
   at all, on a new instance. After that the owner's subjects are ordinary entries an admin removes
   like anyone's, and a removed one is no longer let in from configuration.

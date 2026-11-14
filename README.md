@@ -233,7 +233,7 @@ holds, so the relay forwards ciphertext:
   stores nothing.
 
 Native push needs `ENCRYPTION_KEY`. The relays a phone may use are listed in
-`push.apns_relay_urls` in [`config/config.yaml`](config/config.yaml), and every push names the app
+`push.relay_urls` in [`config/config.yaml`](config/config.yaml), and every push names the app
 it is for (`push.relay_app`), since one relay serves several apps. Set it to `[]` to turn native
 push off; nothing is then sent to any relay. With the chart's network policy enabled, allow egress
 to those relays.

@@ -1946,28 +1946,27 @@ class AlertRepository:
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 
-    async def create_provider_unavailable_alert(
-        self, *, dedupe_key: str, title: str, body: str,
+    async def create_instance_alert(
+        self, *, kind: str, dedupe_key: str, title: str, body: str,
     ) -> Alert | None:
         """
-        Insert a delivered "provider_unavailable" alert -- see
-        alerts/provider_health.py.
+        Insert a delivered alert about the instance itself -- an AI provider
+        that stayed suspended (alerts/provider_health.py), an account nobody
+        owns (alerts/ownerless.py).
 
-        An AI provider that stayed suspended past the alert threshold. It
-        belongs to no account, no user and no folder: it is the admins'
+        It belongs to no account, no user and no folder: it is the admins'
         (alerts/audience.py), and no folder filter ever hides it. dedupe_key
-        carries the breaker name and the moment it was suspended, so it
-        fires once per outage.
+        names what it is about, so it fires once for it.
 
         Returns:
-            The inserted Alert, or None if this outage was already alerted on
+            The inserted Alert, or None if this was already alerted on
         """
         now = func.now()
         async with self._db.session() as session:
             stmt = (
                 pg_insert(Alert)
                 .values(
-                    kind="provider_unavailable",
+                    kind=kind,
                     deliver_at=now,
                     delivered_at=now,
                     title=title,
@@ -2341,7 +2340,7 @@ class PushSubscriptionRepository:
             stmt = (
                 pg_insert(PushSubscription)
                 .values(
-                    transport="apns", installation_id=installation_id, relay_url=relay_url,
+                    transport="native", installation_id=installation_id, relay_url=relay_url,
                     encrypted_relay_ticket=encrypted_relay_ticket,
                     encrypted_content_key=encrypted_content_key, label=label,
                     muted_channels=muted_channels or [], last_seen_at=func.now(),
@@ -2358,11 +2357,11 @@ class PushSubscriptionRepository:
             return result.scalar_one()
 
     async def list_native(self, audience: str) -> list[PushSubscription]:
-        """The native (apns) devices of an audience (alerts/audience.py) --
+        """The native (phone) devices of an audience (alerts/audience.py) --
         what a read-sync push goes to."""
         async with self._db.session() as session:
             stmt = select(PushSubscription).where(
-                PushSubscription.transport == "apns", _subscribers_of(audience),
+                PushSubscription.transport == "native", _subscribers_of(audience),
             )
             return list((await session.execute(stmt)).scalars().all())
 

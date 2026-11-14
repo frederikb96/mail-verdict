@@ -24,6 +24,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import case, select, text
 from sqlalchemy import func as sa_func
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.access import owned_account
 from mail_verdict.api.deps import current_scope, get_account_prefs_repo
@@ -332,50 +333,69 @@ async def delete_account(account_id: uuid.UUID) -> None:
     """
     db = get_db_connection()
     async with db.session() as session:
-        info = await read_postimap_info(session)
-        if info is None or not supports_account_delete(info):
-            raise HTTPException(
-                status_code=501,
-                detail=(
-                    "Account deletion requires PostIMAP service_version >= 1.0.1; "
-                    f"the running instance reports "
-                    f"{info.service_version if info else 'unknown'}. "
-                    "Set is_active=false to pause syncing instead."
-                ),
-            )
-
+        await require_account_delete_support(session)
         result = await session.execute(select(Account).where(Account.id == account_id))
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Account not found")
-
-        # The glacier has no foreign key onto accounts (by design -- see
-        # docs/architecture.md), so deleting the account would silently
-        # orphan the only copy of everything in it rather than cascading.
-        held = (
-            await session.execute(
-                text(
-                    "SELECT count(*) FROM glacier_messages "
-                    "WHERE account_id = :account_id AND visible_at IS NOT NULL"
-                ),
-                {"account_id": account_id},
-            )
-        ).scalar_one()
-        if held:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"the glacier still holds {held} message(s) -- restore or permanently "
-                    "delete them first"
-                ),
-            )
-
         owner = await owner_of_account(session, account_id)
-        order_changes = await orders_delete_for_account(session, account_id)
-        await forget_account_owner(session, account_id)
-        await postimap_delete_account(session, account_id)
+        order_changes = await remove_mail_account(session, account_id)
 
     for order_id, change in order_changes:
         await announce_order(get_event_ring(), owner, order_id, change)
+
+
+async def require_account_delete_support(session: AsyncSession) -> None:
+    """501 unless PostIMAP grants deleting an account (service_version >= 1.0.1)."""
+    info = await read_postimap_info(session)
+    if info is None or not supports_account_delete(info):
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Account deletion requires PostIMAP service_version >= 1.0.1; "
+                f"the running instance reports "
+                f"{info.service_version if info else 'unknown'}. "
+                "Set is_active=false to pause syncing instead."
+            ),
+        )
+
+
+async def remove_mail_account(
+    session: AsyncSession, account_id: uuid.UUID,
+) -> list[tuple[uuid.UUID, str]]:
+    """
+    Delete an existing account in `session`: its orders, its owner row, and
+    the account with its whole mirrored mailbox (PostIMAP cascades the rest).
+
+    Returns:
+        The order changes to announce to its former owner.
+
+    Raises:
+        HTTPException: 409 while the glacier still holds mail of it.
+    """
+    # The glacier has no foreign key onto accounts (by design -- see
+    # docs/architecture.md), so deleting the account would silently
+    # orphan the only copy of everything in it rather than cascading.
+    held = (
+        await session.execute(
+            text(
+                "SELECT count(*) FROM glacier_messages "
+                "WHERE account_id = :account_id AND visible_at IS NOT NULL"
+            ),
+            {"account_id": account_id},
+        )
+    ).scalar_one()
+    if held:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"the glacier still holds {held} message(s) -- restore or permanently "
+                "delete them first"
+            ),
+        )
+    order_changes = await orders_delete_for_account(session, account_id)
+    await forget_account_owner(session, account_id)
+    await postimap_delete_account(session, account_id)
+    return order_changes
 
 
 @router.get(

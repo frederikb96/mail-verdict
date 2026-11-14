@@ -353,7 +353,7 @@ class SearchConfig(BaseModel):
 class PushConfig(BaseModel):
     """Native push through a relay (push/relay.py) -- see config.yaml."""
 
-    apns_relay_urls: list[str]
+    relay_urls: list[str]
     relay_app: str = Field(min_length=1)
     read_sync_min_interval_seconds: float
     relay_timeout_seconds: float

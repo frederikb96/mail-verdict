@@ -845,7 +845,7 @@ class PushSubscriptionResponse(BaseModel):
     back, and an endpoint is personal."""
 
     id: uuid.UUID
-    transport: Literal["webpush", "apns"]
+    transport: Literal["webpush", "native"]
     label: str | None
     alert_folder_ids: list[uuid.UUID] | None
     reminders_enabled: bool

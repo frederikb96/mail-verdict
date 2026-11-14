@@ -82,7 +82,7 @@ async def db_at_previous(postgres_url: str) -> AsyncIterator[str]:
 _NATIVE_INSERT = (
     "INSERT INTO push_subscriptions (transport, installation_id, relay_url, "
     "encrypted_relay_ticket, encrypted_content_key, user_id) "
-    "VALUES ('apns', :installation, 'https://relay.example', :ticket, '\\x01'::bytea, "
+    "VALUES ('native', :installation, 'https://relay.example', :ticket, '\\x01'::bytea, "
     "'00000000-0000-0000-0000-000000000001')"
 )
 
@@ -135,7 +135,7 @@ async def test_each_transport_must_carry_its_own_fields(db_at_previous: str) -> 
             "a native row with no ticket",
             "INSERT INTO push_subscriptions (transport, installation_id, relay_url, "
             "encrypted_content_key, user_id) "
-            "VALUES ('apns', gen_random_uuid(), 'https://r', '\\x01', "
+            "VALUES ('native', gen_random_uuid(), 'https://r', '\\x01', "
             "'00000000-0000-0000-0000-000000000001')",
             {},
         ),

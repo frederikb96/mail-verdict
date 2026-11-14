@@ -120,7 +120,8 @@ async def raise_provider_alerts_once(
         if now - since < threshold:
             continue
         minutes = int((now - since).total_seconds() // 60)
-        alert = await repo.create_provider_unavailable_alert(
+        alert = await repo.create_instance_alert(
+            kind=ALERT_KIND,
             dedupe_key=_dedupe_key(name, since),
             title="AI provider unavailable",
             body=f"{name} has been suspended for {minutes} min: {reason or 'no reason recorded'}",

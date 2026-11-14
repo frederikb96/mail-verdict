@@ -1,5 +1,5 @@
 """
-Native push against a real schema: who a native (apns) device is sent to,
+Native push against a real schema: who a native (phone) device is sent to,
 what reaches its relay, what happens to its row on each relay answer, the
 per-device badge, and the endpoints a native app and the web client use.
 
@@ -83,7 +83,7 @@ def _relay_client(fake: _FakeRelay, encryption_key: str = _ENCRYPTION_KEY) -> Re
     return RelayClient(
         encryption_key=encryption_key,
         config=PushConfig(
-            apns_relay_urls=[_RELAY], relay_app="mailverdict",
+            relay_urls=[_RELAY], relay_app="mailverdict",
             read_sync_min_interval_seconds=600.0, relay_timeout_seconds=5.0,
         ),
         transport=httpx.MockTransport(fake.handler),
@@ -546,7 +546,7 @@ class TestNativeEndpoints:
 
         assert response.status_code == 201, response.text
         created = response.json()
-        assert created["transport"] == "apns"
+        assert created["transport"] == "native"
         assert created["muted_channels"] == ["system"]
         assert "ticket" not in created and "content_key" not in created
 
@@ -566,7 +566,7 @@ class TestNativeEndpoints:
         assert decrypt(stored, _ENCRYPTION_KEY) == body["ticket"]
 
         listed = client.get("/alerts/subscriptions").json()
-        assert any(s["id"] == created["id"] and s["transport"] == "apns" for s in listed)
+        assert any(s["id"] == created["id"] and s["transport"] == "native" for s in listed)
 
     def test_registering_is_refused_for_a_foreign_relay_a_bad_key_or_no_encryption_key(
         self, client: TestClient, api_ready: _FakeRelay, monkeypatch: pytest.MonkeyPatch,

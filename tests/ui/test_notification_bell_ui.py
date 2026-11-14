@@ -328,7 +328,7 @@ def _seed_native_device(postgres_url: str, label: str) -> None:
                     "INSERT INTO push_subscriptions (transport, installation_id, relay_url, "
                     "encrypted_relay_ticket, encrypted_content_key, label, last_seen_at, "
                     "user_id) "
-                    "VALUES ('apns', :installation, 'https://relay.example', '\\x01'::bytea, "
+                    "VALUES ('native', :installation, 'https://relay.example', '\\x01'::bytea, "
                     "'\\x01'::bytea, :label, now(), :owner)"
                 ),
                 {"installation": uuid.uuid4(), "label": label, "owner": OWNER_USER_ID},

@@ -52,6 +52,10 @@ ROUTE_CASES: list[RouteCase] = [
         owner_also=(404,),
     ),
     RouteCase(
+        "DELETE /api/admin/users/{user_id}", "admin",
+        params=lambda world: {"user_id": str(uuid.uuid4())}, owner_also=(404,),
+    ),
+    RouteCase(
         "POST /api/admin/users/{user_id}/sign-out", "admin",
         params=lambda world: {"user_id": str(uuid.uuid4())}, owner_also=(404,),
     ),

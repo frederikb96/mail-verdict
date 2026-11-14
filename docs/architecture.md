@@ -762,8 +762,11 @@ without polling.
 Every alert is one user's. One about an account's mail, a send, a webhook or the glacier carries
 its account's owner in `user_id`, stamped from `account_owners` by the statement that writes it,
 and moves with the account when an admin gives it to someone else; one about the instance itself
-(`provider_unavailable`) has neither account nor user and is the admins'. An alert of an account
-with no owner reaches nobody. `alerts/audience.py` names that audience the way the event stream
+(`provider_unavailable`, `account_unowned`) has neither account nor user and is the admins'. An
+alert of an account with no owner reaches nobody, so `alerts/ownerless.py` raises an
+`account_unowned` alert once for every mail or DAV account without an owner -- one created
+directly in PostIMAP, say -- naming it in its text, and dismisses it once the account has an
+owner or is gone. `alerts/audience.py` names that audience the way the event stream
 names its keys, and every path addresses it the same way: the list, counts, lookup and dismissal
 read only the caller's alerts (`alert_visible_to`), `alert.new` and `alert.dismissed` go on the
 owner's key, and a push goes only to the owner's devices.
@@ -816,10 +819,10 @@ the push service is its own protocol-level unsubscribe signal and deletes the ro
 is stamped `failed_at` and left for the next alert to try again — an outbound push is never
 awaited inline in the listener, which would delay every event still queued behind it.
 
-The iPhone app is a second transport on the same table: a `push_subscriptions` row with
-`transport = 'apns'`, so every rule above — folder scope, staging, exactly-once, resolution —
+A phone app, iPhone or Android, is a second transport on the same table: a `push_subscriptions` row with
+`transport = 'native'`, so every rule above — folder scope, staging, exactly-once, resolution —
 applies to it unchanged. Only the app's publisher can sign pushes for the app, so a server never
-talks to Apple itself; it goes through a stateless push relay
+talks to Apple or Google itself; it goes through a stateless push relay
 ([`push-relay`](https://github.com/frederikberg/push-relay/blob/main/docs/api.md)), which serves
 several apps: every push names this one (`push.relay_app`), and the relay refuses a ticket a device
 registered for another.
@@ -844,7 +847,7 @@ this server ──sealed envelope + ticket──► relay ──► APNs ──�
   (`POST /api/alerts/lookup` for the notifications it still shows), in the `resolved` list of the
   next push, and through a silent push that `announce_alerts_dismissed` schedules to every phone of
   the alerts' owner, at most once per `push.read_sync_min_interval_seconds` for each owner.
-- **Opting out.** Only relays listed in `push.apns_relay_urls` are registered against or sent to;
+- **Opting out.** Only relays listed in `push.relay_urls` are registered against or sent to;
   an empty list turns native push off entirely.
 
 ## Read state in Archive and Trash

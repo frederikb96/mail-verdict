@@ -68,6 +68,12 @@ export function useUpdateAdminUser() {
   });
 }
 
+/** Removes a user and everything that is theirs. */
+export function useRemoveAdminUser() {
+  const invalidate = useInvalidateAdmin();
+  return useMutation({ mutationFn: (id: string) => api.admin.removeUser(id), onSuccess: invalidate });
+}
+
 /** Reassigning an account moves it between users; `kind` picks mail or DAV. */
 export function useSetAccountOwner() {
   const invalidate = useInvalidateAdmin();

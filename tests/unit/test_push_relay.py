@@ -21,7 +21,7 @@ _RELAY = "https://relay.example"
 
 def _config(**overrides: Any) -> PushConfig:
     values: dict[str, Any] = {
-        "apns_relay_urls": [_RELAY], "relay_app": "mailverdict",
+        "relay_urls": [_RELAY], "relay_app": "mailverdict",
         "read_sync_min_interval_seconds": 600.0, "relay_timeout_seconds": 5.0,
     }
     values.update(overrides)
@@ -37,7 +37,7 @@ def _client(handler: Any, **kwargs: Any) -> RelayClient:
 def _native_row(client: RelayClient, relay_url: str = _RELAY) -> PushSubscription:
     ticket, key = client.seal_credentials("the-ticket", bytes(32))
     return PushSubscription(
-        id=uuid.uuid4(), transport="apns", installation_id=uuid.uuid4(), relay_url=relay_url,
+        id=uuid.uuid4(), transport="native", installation_id=uuid.uuid4(), relay_url=relay_url,
         encrypted_relay_ticket=ticket, encrypted_content_key=key, muted_channels=[],
     )
 
@@ -128,8 +128,8 @@ def test_the_shipped_config_names_the_shared_relay_and_this_app() -> None:
     push = PushConfig(**yaml.safe_load(shipped.read_text())["push"])
 
     assert push.relay_app == "mailverdict"
-    assert "https://push.frederikberg.net" in push.apns_relay_urls
-    assert "https://mailverdict-push.frederikberg.net" in push.apns_relay_urls
+    assert "https://push.frederikberg.net" in push.relay_urls
+    assert "https://mailverdict-push.frederikberg.net" in push.relay_urls
 
 
 def test_an_empty_app_name_is_refused_at_startup() -> None:
@@ -171,7 +171,7 @@ class TestAvailability:
         assert not client.allows(_RELAY)
 
     def test_an_empty_relay_list_disables_native_push(self) -> None:
-        client = RelayClient(encryption_key=_KEY, config=_config(apns_relay_urls=[]))
+        client = RelayClient(encryption_key=_KEY, config=_config(relay_urls=[]))
         assert client.unavailable_reason() is not None
         assert not client.allows(_RELAY)
 
@@ -327,7 +327,7 @@ class TestReadSyncThrottle:
         self, fake_time: _FakeTime, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         client = RelayClient(
-            encryption_key=_KEY, config=_config(apns_relay_urls=[]),
+            encryption_key=_KEY, config=_config(relay_urls=[]),
             clock=fake_time.clock, sleep=fake_time.sleep,
         )
         sends: list[float] = []

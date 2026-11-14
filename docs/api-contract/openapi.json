@@ -7583,7 +7583,7 @@
           "transport": {
             "enum": [
               "webpush",
-              "apns"
+              "native"
             ],
             "title": "Transport",
             "type": "string"
@@ -11804,6 +11804,41 @@
       }
     },
     "/admin/users/{user_id}": {
+      "delete": {
+        "description": "Remove a user completely, in one transaction: their mail accounts (as\ndeleting each one does: its orders, then the account and its mirrored\nmailbox), their calendar and contact accounts, and then every row that\nnames them -- orders, files, rules, views, settings, alerts, push\ndevices, sign-ins and subjects -- and the user. Nothing on any mail or\nDAV server is touched. Their tokens are refused from then on, as an\nunknown subject's (with auth.auto_provision on, a later sign-in starts\nan empty new user).\n\n400 for the owner or the caller themselves; 409 while the glacier holds\nmail of one of their accounts; 501 if PostIMAP cannot delete what they\nown.",
+        "operationId": "remove_user_admin_users__user_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove User",
+        "tags": [
+          "admin"
+        ]
+      },
       "patch": {
         "description": "Rename a user, change their role, or disable or enable them. The owner\ncan be neither demoted nor disabled -- they are an enabled admin\nregardless (auth/principal.py), so either change would only make this\ntable lie.",
         "operationId": "update_user_admin_users__user_id__patch",
@@ -12349,7 +12384,7 @@
     },
     "/alerts/subscriptions/native": {
       "post": {
-        "description": "Register a native device for the caller, or refresh the one\nregistered under this installation_id (see PushSubscriptionRepository.upsert_native). 400 if\nrelay_url is not one push.apns_relay_urls allows, 503 if native push\nis unavailable here.",
+        "description": "Register a native device for the caller, or refresh the one\nregistered under this installation_id (see PushSubscriptionRepository.upsert_native). 400 if\nrelay_url is not one push.relay_urls allows, 503 if native push\nis unavailable here.",
         "operationId": "register_native_subscription_alerts_subscriptions_native_post",
         "requestBody": {
           "content": {
