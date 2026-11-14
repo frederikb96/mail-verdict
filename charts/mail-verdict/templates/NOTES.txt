@@ -21,11 +21,10 @@ Check status:
 The web UI is exposed at:
   http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
 
-Reachable through this Ingress means reachable to anyone who can resolve the
-host, unless something in front of it (a ForwardAuth middleware, network
-policy, or the API key itself) gates access -- MailVerdict has no login
-page of its own. See the chart README's access section before exposing
-this publicly.
+Every /api and /mcp request needs a valid OIDC token, which MailVerdict checks
+itself against config.auth. It has no login page of its own, so a browser needs
+an authenticating proxy in front that forwards its ID token as a bearer token.
+See the chart README's access section.
 {{- else }}
 
 No Ingress is enabled (ingress.enabled=false). The Service is only

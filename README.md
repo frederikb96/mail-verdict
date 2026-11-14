@@ -189,7 +189,8 @@ the owner's subjects. It refuses to start without them.
 Several people can share one instance. Each person sees only the mail, calendars and contacts of
 the accounts they added. The owner, named by `auth.owner_subjects`, is the first admin and owns
 whatever existed before there were users. Admins manage users and who owns which account through
-`/api/admin`, and never see anyone else's mail. A new person becomes a user the first time they
+`/api/admin`, whose routes return no mail themselves. An admin can still give any account to
+themselves there, so an admin is trusted with every account's mail. A new person becomes a user the first time they
 sign in, unless `auth.auto_provision` is off, in which case an admin adds them first. The chart
 README has a worked example.
 
@@ -203,8 +204,8 @@ The web UI works at phone width and can be installed to the home screen, where i
 notifications.
 
 [mail-verdict-ios](https://github.com/frederikberg/mail-verdict-ios) is a native iPhone client for
-the same server. It talks to the same API as the browser, sending whatever credential the proxy in
-front of it expects (a bearer token or basic auth).
+the same server. It talks to the same API as the browser, signing in with the same identity provider and sending
+its access token as a bearer token.
 
 Its notifications go through a push relay run by the app's publisher, because only the publisher
 can sign pushes for the app. Each notification is sealed on this server with a key only the phone

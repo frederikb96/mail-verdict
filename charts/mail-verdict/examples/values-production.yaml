@@ -63,11 +63,11 @@ networkPolicy:
         - protocol: TCP
           port: 443
 
-# Browser-facing route, behind Traefik ForwardAuth. The middleware
-# authenticates the browser session (OIDC, basic auth, whatever your IdP
-# is -- not this chart's concern) before traffic ever reaches MailVerdict,
-# which has no login page of its own. See the chart README for the full
-# Middleware example this annotation set assumes.
+# Browser-facing route, behind Traefik ForwardAuth. The middleware signs
+# the browser in with your OIDC provider and forwards its ID token as a
+# bearer token, which MailVerdict validates itself (config.auth); it has no
+# login page of its own. See the chart README for the full Middleware
+# example this annotation set assumes.
 ingress:
   enabled: true
   className: traefik
