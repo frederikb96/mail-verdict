@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [8.0.0] - 2026-11-14
+
 ### Added
 
 - Gmail and iCloud presets in the add-account form: servers filled in, a link to each provider's
