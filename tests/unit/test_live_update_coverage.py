@@ -86,6 +86,10 @@ _UNANNOUNCED: dict[str, str] = {
         "An admin adding a user changes nobody's mail, calendar or settings; the admin's own "
         "user list refetches after the write it made."
     ),
+    "DELETE /admin/users/{user_id}": (
+        "The removed user's accounts go with PostIMAP's own notifications and their streams "
+        "end at once; nothing else of theirs is anyone else's to see."
+    ),
     "POST /admin/users/{user_id}/subjects": (
         "The same, for a subject added to a user."
     ),

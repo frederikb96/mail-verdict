@@ -295,8 +295,8 @@ function OtherDevicesCard() {
     <SectionCard icon={Smartphone} title="Other devices">
       <div className="flex flex-col gap-2">
         {otherDevices.map((device) => {
-          const isPhone = device.transport === "apns";
-          const label = device.label ?? (isPhone ? "iPhone" : "Unnamed device");
+          const isPhone = device.transport === "native";
+          const label = device.label ?? (isPhone ? "Phone" : "Unnamed device");
           return (
             <div
               key={device.id}

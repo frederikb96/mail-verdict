@@ -81,6 +81,7 @@ _pipeline_reconciler: Any | None = None
 _pending_send_timer: Any | None = None
 _stalled_outbox_timer: Any | None = None
 _provider_alert_timer: Any | None = None
+_ownerless_alert_timer: Any | None = None
 _usage_exporter: Any | None = None
 _action_submission_pruner: Any | None = None
 _mail_alert_finalizer: Any | None = None
@@ -157,6 +158,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _order_auto_closer
     global _order_file_pruner
     global _stalled_outbox_timer, _action_submission_pruner, _provider_alert_timer
+    global _ownerless_alert_timer
     global _usage_exporter
 
     config = get_config()
@@ -336,6 +338,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         timedelta(seconds=config.providers.suspended_alert_after_seconds),
     )
     await _provider_alert_timer.start()
+
+    from mail_verdict.alerts.ownerless import build_ownerless_alert_timer
+
+    _ownerless_alert_timer = build_ownerless_alert_timer(db, event_ring, vapid_repo)
+    await _ownerless_alert_timer.start()
 
     from mail_verdict.usage.export import build_usage_export_timer
 
@@ -531,6 +538,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _stalled_outbox_timer.stop()
     if _provider_alert_timer:
         await _provider_alert_timer.stop()
+    if _ownerless_alert_timer:
+        await _ownerless_alert_timer.stop()
     if _usage_exporter:
         await _usage_exporter.stop()
     if _action_submission_pruner:
@@ -563,6 +572,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pending_send_timer = None
     _stalled_outbox_timer = None
     _provider_alert_timer = None
+    _ownerless_alert_timer = None
     _usage_exporter = None
     _action_submission_pruner = None
     _mail_alert_finalizer = None

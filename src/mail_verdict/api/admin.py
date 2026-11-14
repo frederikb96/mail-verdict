@@ -8,6 +8,7 @@ who owns what, by display name, never what they hold.
 GET   /api/admin/users                         -- every user, their subjects and account counts
 POST  /api/admin/users                         -- add a user before their first sign-in
 PATCH /api/admin/users/{user_id}               -- rename, change role, disable or enable
+DELETE /api/admin/users/{user_id}              -- remove a user and everything that is theirs
 POST  /api/admin/users/{user_id}/subjects      -- let another token subject sign in as a user
 DELETE /api/admin/users/{user_id}/subjects/{subject} -- stop a subject signing in as a user
 GET   /api/admin/accounts                      -- every mail account and its owner
@@ -24,16 +25,20 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import Table, delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from mail_verdict.alerts.audience import reassign_account_alerts
+from mail_verdict.api.accounts import remove_mail_account, require_account_delete_support
+from mail_verdict.api.dav_accounts import require_dav_support
 from mail_verdict.api.deps import require_admin, require_principal
 from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.sign_ins import revoke_sign_ins
 from mail_verdict.api.unified import drop_account_memberships
 from mail_verdict.auth.ownership import (
     account_display_name,
+    forget_account_owner,
+    forget_dav_account_owner,
     owned_account_name,
     owner_of_account,
     set_account_owner,
@@ -41,10 +46,12 @@ from mail_verdict.auth.ownership import (
     user_changed_on_commit,
 )
 from mail_verdict.auth.principal import OWNER_USER_ID, Principal, get_principal_resolver
+from mail_verdict.auth.sign_ins import get_sign_in_registry
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
     AccountOwner,
+    Base,
     DavAccount,
     DavAccountOwner,
     SignIn,
@@ -53,7 +60,7 @@ from mail_verdict.database.models import (
 )
 from mail_verdict.orders.announce import announce_changes
 from mail_verdict.orders.ownership import reassign_account
-from mail_verdict.postimap.actions import update_account, update_dav_account
+from mail_verdict.postimap.actions import delete_dav_account, update_account, update_dav_account
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -215,6 +222,76 @@ async def update_user(user_id: uuid.UUID, request: AdminUserUpdateRequest) -> Ad
     if resolver is not None:
         resolver.forget(user_id)
     return (await _user_responses(user_id))[0]
+
+
+def _user_owned_tables() -> list[Table]:
+    """Every table with a foreign key onto users.id, dependents first --
+    derived from the models, so a table added for users is covered by
+    remove_user without being listed anywhere."""
+    users = Base.metadata.tables["users"]
+    return [
+        table for table in reversed(Base.metadata.sorted_tables)
+        if any(fk.column.table is users for fk in table.foreign_keys)
+    ]
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def remove_user(
+    user_id: uuid.UUID, principal: Principal = Depends(require_principal),
+) -> None:
+    """
+    Remove a user completely, in one transaction: their mail accounts (as
+    deleting each one does: its orders, then the account and its mirrored
+    mailbox), their calendar and contact accounts, and then every row that
+    names them -- orders, files, rules, views, settings, alerts, push
+    devices, sign-ins and subjects -- and the user. Nothing on any mail or
+    DAV server is touched. Their tokens are refused from then on, as an
+    unknown subject's (with auth.auto_provision on, a later sign-in starts
+    an empty new user).
+
+    400 for the owner or the caller themselves; 409 while the glacier holds
+    mail of one of their accounts; 501 if PostIMAP cannot delete what they
+    own.
+    """
+    if user_id == OWNER_USER_ID:
+        raise HTTPException(status_code=400, detail="the owner cannot be removed")
+    if user_id == principal.user_id:
+        raise HTTPException(status_code=400, detail="you cannot remove yourself")
+    async with get_db_connection().session() as session:
+        if await session.get(User, user_id) is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        accounts = (
+            await session.execute(
+                select(AccountOwner.account_id).where(AccountOwner.user_id == user_id)
+            )
+        ).scalars().all()
+        dav_accounts = (
+            await session.execute(
+                select(DavAccountOwner.dav_account_id).where(DavAccountOwner.user_id == user_id)
+            )
+        ).scalars().all()
+        if accounts:
+            await require_account_delete_support(session)
+        if dav_accounts:
+            await require_dav_support()
+        for account_id in accounts:
+            if await session.get(Account, account_id) is None:
+                await forget_account_owner(session, account_id)
+            else:
+                await remove_mail_account(session, account_id)
+        for dav_account_id in dav_accounts:
+            await forget_dav_account_owner(session, dav_account_id)
+            await delete_dav_account(session, dav_account_id)
+        for table in _user_owned_tables():
+            await session.execute(delete(table).where(table.c.user_id == user_id))
+        await session.execute(delete(User).where(User.id == user_id))
+        user_changed_on_commit(session)
+    resolver = get_principal_resolver()
+    if resolver is not None:
+        resolver.forget()
+    registry = get_sign_in_registry()
+    if registry is not None:
+        registry.forget()
 
 
 @router.post("/users/{user_id}/subjects", response_model=AdminUserResponse, status_code=201)

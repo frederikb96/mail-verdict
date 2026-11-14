@@ -1065,8 +1065,9 @@ class TestEveryAlertIsItsOwners:
     async def test_an_instance_alert_is_the_admins(self, migrated_db: DatabaseConnection) -> None:
         a, _account, _inbox = await self._user_with_account(migrated_db)
         repo = AlertRepository(migrated_db)
-        system = await repo.create_provider_unavailable_alert(
-            dedupe_key=f"own-provider-{uuid.uuid4()}", title="Provider down", body="b",
+        system = await repo.create_instance_alert(
+            kind="provider_unavailable", dedupe_key=f"own-provider-{uuid.uuid4()}",
+            title="Provider down", body="b",
         )
         assert system is not None
 

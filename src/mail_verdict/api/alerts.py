@@ -252,7 +252,7 @@ async def register_native_subscription(
 ) -> PushSubscriptionResponse:
     """Register a native device for the caller, or refresh the one
     registered under this installation_id (see PushSubscriptionRepository.upsert_native). 400 if
-    relay_url is not one push.apns_relay_urls allows, 503 if native push
+    relay_url is not one push.relay_urls allows, 503 if native push
     is unavailable here."""
     relay = get_relay_client()
     reason = relay.unavailable_reason()

@@ -1943,7 +1943,7 @@ class PushSubscription(Base):
 
     transport is which sender reaches it. A "webpush" row is a browser:
     endpoint/p256dh/auth, as PushManager.subscribe() returned them. An
-    "apns" row is a native app reached through a push relay (push/relay.py):
+    "native" row is a phone app reached through a push relay (push/relay.py):
     relay_url, the sealed ticket that relay issued for the device, and the
     content key its notification extension decrypts with, both encrypted
     under ENCRYPTION_KEY; installation_id is what the app re-registers
@@ -1994,16 +1994,18 @@ class PushSubscription(Base):
 
     __table_args__ = (
         Index("ix_push_subscriptions_user_id", "user_id"),
-        CheckConstraint("transport IN ('webpush', 'apns')", name="ck_push_subscriptions_transport"),
+        CheckConstraint(
+            "transport IN ('webpush', 'native')", name="ck_push_subscriptions_transport",
+        ),
         CheckConstraint(
             "transport <> 'webpush' OR "
             "(endpoint IS NOT NULL AND p256dh IS NOT NULL AND auth IS NOT NULL)",
             name="ck_push_subscriptions_webpush_fields",
         ),
         CheckConstraint(
-            "transport <> 'apns' OR (installation_id IS NOT NULL AND relay_url IS NOT NULL "
+            "transport <> 'native' OR (installation_id IS NOT NULL AND relay_url IS NOT NULL "
             "AND encrypted_relay_ticket IS NOT NULL AND encrypted_content_key IS NOT NULL)",
-            name="ck_push_subscriptions_apns_fields",
+            name="ck_push_subscriptions_native_fields",
         ),
         Index(
             "uq_push_subscriptions_installation_id", "installation_id", unique=True,

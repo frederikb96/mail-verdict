@@ -11,7 +11,7 @@ and left for the next alert.
 Two transports. A browser ("webpush") is sent the alert over Web Push,
 signed with this server's VAPID key (push/vapid.py): a 404 or 410 from the
 push service is its own protocol-level unsubscribe signal (RFC 8030 s7).
-A native app ("apns") is sent an envelope sealed with its own content key
+A phone app ("native") is sent an envelope sealed with its own content key
 (push/envelope.py) through its push relay (push/relay.py), carrying its
 user's badge (alerts/badge.py) and that user's mail alerts recently
 resolved, so the phone can withdraw those banners. Each transport's credential is fetched
@@ -133,7 +133,7 @@ async def send_to_subscription(
         PushUnavailableError: This row's transport cannot send from here
     """
     repo = PushSubscriptionRepository(db)
-    if sub.transport == "apns":
+    if sub.transport == "native":
         outcome = await _send_native(db, relay, alert, sub)
     else:
         outcome = await _send_webpush(vapid_repo, alert, sub)

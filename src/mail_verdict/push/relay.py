@@ -10,7 +10,7 @@ issued for another app. The relay's HTTP API:
 https://github.com/frederikberg/push-relay/blob/main/docs/api.md
 
 The ticket and content key are stored encrypted under ENCRYPTION_KEY and
-decrypted per send. A relay missing from push.apns_relay_urls is never
+decrypted per send. A relay missing from push.relay_urls is never
 sent to, so emptying that list stops all traffic to relays.
 
 Read-sync: when alerts are dismissed or resolved, every native device of
@@ -79,7 +79,7 @@ class RelayClient:
             clock, sleep: The read-sync throttle's time source, for tests
         """
         self._encryption_key = encryption_key
-        self._relay_urls = list(config.apns_relay_urls)
+        self._relay_urls = list(config.relay_urls)
         self._app = config.relay_app
         self._timeout = config.relay_timeout_seconds
         self._read_sync_interval = config.read_sync_min_interval_seconds
@@ -100,7 +100,7 @@ class RelayClient:
         if not self._encryption_key:
             return "ENCRYPTION_KEY is not configured on this server"
         if not self._relay_urls:
-            return "This server has native push disabled (push.apns_relay_urls is empty)"
+            return "This server has native push disabled (push.relay_urls is empty)"
         return None
 
     def allows(self, relay_url: str | None) -> bool:

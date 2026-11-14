@@ -472,8 +472,8 @@ export interface VapidPublicKeyResponse {
  * provider API key follows. */
 export interface PushSubscriptionResponse {
   id: string;
-  /** "webpush" is a browser, "apns" the iPhone app. */
-  transport: "webpush" | "apns";
+  /** "webpush" is a browser, "native" a phone app. */
+  transport: "webpush" | "native";
   label: string | null;
   alert_folder_ids: string[] | null;
   reminders_enabled: boolean;

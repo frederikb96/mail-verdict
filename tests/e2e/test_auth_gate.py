@@ -255,6 +255,59 @@ class TestUsers:
         assert refused.json() == {"detail": "device_revoked"}
         assert agent not in owner["subjects"]
 
+    def test_an_admin_removes_a_user_and_everything_of_theirs(
+        self, app_client: TestClient, auth_issuer: TestIssuer, postgres_url: str,
+    ) -> None:
+        phone = _phone_token(auth_issuer, f"leaver-{uuid.uuid4()}", "V2_501")
+        user_id = app_client.get("/api/me", headers=bearer(phone)).json()["user_id"]
+        account = app_client.post(
+            "/api/accounts", headers=bearer(phone),
+            json={
+                "name": "Leaving", "imap_host": "imap.invalid", "imap_port": 993,
+                "imap_user": "u", "imap_password": "p", "is_active": False,
+            },
+        )
+        assert account.status_code == 201, account.text
+        view = app_client.post(
+            "/api/unified/views", headers=bearer(phone), json={"name": "Mine"},
+        )
+        assert view.status_code in (200, 201), view.text
+
+        removed = app_client.delete(f"/api/admin/users/{user_id}")
+        # Every table with a foreign key onto users, read from the database
+        # itself rather than from the code that did the removal.
+        tables = [
+            row[0] for row in asyncio.run(_rows(
+                postgres_url,
+                "SELECT conrelid::regclass::text FROM pg_constraint "
+                "WHERE contype = 'f' AND confrelid = 'users'::regclass",
+            ))
+        ]
+        left = {
+            table: count
+            for table in tables
+            if (count := asyncio.run(_rows(
+                postgres_url, f"SELECT count(*) FROM {table} WHERE user_id = :u", u=user_id,
+            ))[0][0])
+        }
+        users = asyncio.run(_rows(postgres_url, "SELECT 1 FROM users WHERE id = :u", u=user_id))
+        accounts = asyncio.run(_rows(
+            postgres_url, "SELECT 1 FROM accounts WHERE id = :a", a=account.json()["id"],
+        ))
+        after = app_client.get("/api/me", headers=bearer(phone))
+
+        assert removed.status_code == 204, removed.text
+        assert {"sign_ins", "user_identities", "account_owners", "unified_views"} <= set(tables)
+        assert left == {}
+        assert users == [] and accounts == []
+        # Sign-up is open in tests (auth.auto_provision), so the same token
+        # comes back as a new, empty user rather than as the removed one.
+        assert after.status_code == 200
+        assert after.json()["user_id"] != user_id
+
+    def test_the_owner_cannot_be_removed(self, app_client: TestClient) -> None:
+        assert app_client.delete(f"/api/admin/users/{OWNER_USER_ID}").status_code == 400
+
     def test_the_subject_a_request_signed_in_with_cannot_be_removed_by_it(
         self, app_client: TestClient,
     ) -> None:

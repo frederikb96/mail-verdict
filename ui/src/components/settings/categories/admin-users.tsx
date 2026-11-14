@@ -36,6 +36,7 @@ import {
   useAdminDavAccounts,
   useAdminUsers,
   useCreateAdminUser,
+  useRemoveAdminUser,
   useSetAccountOwner,
   useUpdateAdminUser,
 } from "@/hooks/use-admin";
@@ -488,7 +489,8 @@ function AccountLine({
 type Pending =
   | { kind: "role"; user: AdminUser }
   | { kind: "disable"; user: AdminUser }
-  | { kind: "sign-out"; user: AdminUser };
+  | { kind: "sign-out"; user: AdminUser }
+  | { kind: "remove"; user: AdminUser };
 
 function UserRow({
   user,
@@ -580,6 +582,9 @@ function UserRow({
                     Disable sign-in
                   </DropdownMenuItem>
                 )}
+                <DropdownMenuItem variant="destructive" onClick={() => onPending({ kind: "remove", user })}>
+                  Remove user…
+                </DropdownMenuItem>
               </>
             )}
           </DropdownMenuContent>
@@ -606,6 +611,7 @@ export function AdminUsers() {
   const { data: davAccounts } = useAdminDavAccounts();
   const update = useUpdateAdminUser();
   const signOut = useSignOutUser();
+  const remove = useRemoveAdminUser();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [renaming, setRenaming] = useState<AdminUser | null>(null);
@@ -748,6 +754,23 @@ export function AdminUsers() {
           confirmLabel="Disable sign-in"
           isConfirming={update.isPending}
           onConfirm={() => mutate(pending.user, { disabled: true }, () => setPending(null))}
+        />
+      )}
+      {pending?.kind === "remove" && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => !open && setPending(null)}
+          title={`Remove ${pending.user.display_name} completely?`}
+          description="Their mail, calendar and contact accounts are deleted from MailVerdict along with their orders, rules, views, settings, alerts and sign-ins. Nothing changes on their mail or calendar servers, and none of it can be brought back. To keep someone out without deleting anything, disable their sign-in instead."
+          confirmLabel="Remove user"
+          isConfirming={remove.isPending}
+          onConfirm={() =>
+            remove.mutate(pending.user.id, {
+              onSuccess: () => push(`${pending.user.display_name} was removed`, "success"),
+              onError: (err) => push(errorText(err, "Could not remove them"), "error"),
+              onSettled: () => setPending(null),
+            })
+          }
         />
       )}
       {pending?.kind === "sign-out" && (

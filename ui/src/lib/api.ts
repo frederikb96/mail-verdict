@@ -541,6 +541,9 @@ export const api = {
     updateUser(id: string, data: AdminUserUpdateRequest): Promise<AdminUser> {
       return request(`/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(data) });
     },
+    removeUser(id: string): Promise<void> {
+      return request(`/admin/users/${id}`, { method: "DELETE" });
+    },
     accounts(): Promise<AdminAccount[]> {
       return request("/admin/accounts");
     },

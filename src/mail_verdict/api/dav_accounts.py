@@ -52,7 +52,7 @@ _UNSUPPORTED_DETAIL = (
 )
 
 
-async def _require_support() -> None:
+async def require_dav_support() -> None:
     db = get_db_connection()
     async with db.session() as session:
         info = await read_postimap_info(session)
@@ -90,7 +90,7 @@ def _to_response(account: DavAccount, collections: list[DavCollection]) -> DavAc
 @router.get("", response_model=list[DavAccountResponse])
 async def list_dav_accounts(scope: Scope = Depends(current_scope)) -> list[DavAccountResponse]:
     """List every DAV account with its collections."""
-    await _require_support()
+    await require_dav_support()
     repo = DavAccountRepository(get_db_connection())
     accounts = await repo.list_owned(scope)
     responses = []
@@ -105,7 +105,7 @@ async def get_dav_account(
     dav_account_id: uuid.UUID, scope: Scope = Depends(current_scope),
 ) -> DavAccountResponse:
     """Get one DAV account with its collections."""
-    await _require_support()
+    await require_dav_support()
     repo = DavAccountRepository(get_db_connection())
     account = await repo.get_by_id(dav_account_id)
     if account is None:
@@ -122,7 +122,7 @@ async def create_dav_account_endpoint(
     """Add a CalDAV/CardDAV server, owned by the caller. PostIMAP discovers
     the principal and the two homes, then backfills every collection it
     finds. The owner row is written in the same transaction."""
-    await _require_support()
+    await require_dav_support()
     owner = scope.require_user()
     db = get_db_connection()
     async with db.session() as session:
@@ -140,7 +140,7 @@ async def update_dav_account_endpoint(
     scope: Scope = Depends(current_scope),
 ) -> DavAccountResponse:
     """Update name, password or is_active."""
-    await _require_support()
+    await require_dav_support()
     values = request.model_dump(exclude_unset=True)
     if not values:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -182,7 +182,7 @@ async def delete_dav_account_endpoint(
 ) -> None:
     """Permanently remove a DAV account and everything mirrored under it.
     Nothing on the server itself is touched."""
-    await _require_support()
+    await require_dav_support()
     db = get_db_connection()
     repo = DavAccountRepository(db)
     if await repo.get_by_id(dav_account_id) is None:
@@ -200,7 +200,7 @@ async def trigger_dav_sync(
     """Wake this account's sync early, via the same postimap_commands
     channel mail accounts use -- both orchestrators listen, and the one
     owning the id acts."""
-    await _require_support()
+    await require_dav_support()
     repo = DavAccountRepository(get_db_connection())
     if await repo.get_by_id(dav_account_id) is None:
         raise HTTPException(status_code=404, detail="DAV account not found")

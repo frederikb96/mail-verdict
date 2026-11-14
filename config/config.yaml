@@ -143,7 +143,7 @@ mail_actions:
   # message no longer where the client saw it is left alone.
   submission_retention_hours: 168
 
-# Native (iPhone) push. The app registers its device with a push relay, and
+# Native (phone app) push. The app registers its device with a push relay, and
 # this server sends each notification through that relay sealed with a key
 # only the phone holds: the relay sees the device token, the caller's
 # address and an encrypted blob, never a subject, a sender or an account.
@@ -152,7 +152,7 @@ push:
   # Relays a native app may register this server against. An empty list
   # disables native push and stops every send to a relay. Both addresses
   # reach the same relay; apps built against either keep working.
-  apns_relay_urls:
+  relay_urls:
     - "https://push.frederikberg.net"
     - "https://mailverdict-push.frederikberg.net"
   # The app name every push names at the relay. A relay serves several apps

@@ -304,7 +304,9 @@ mail client: a `mailto:` link opens the composer filled in from the link.
   (role, accounts by name, last seen, sign-ins and sign-in subjects; make or remove admin, disable
   or enable sign-in, rename, pre-create a user, add or remove a sign-in subject, sign someone out
   everywhere, sign out one of their phones, browsers or access keys, reassign a mail or calendar
-  account to another user -- no screen for anyone's mail), Access keys (every machine client that
+  account to another user, remove a user completely with their accounts, orders, rules and
+  settings -- no screen for anyone's mail; an account nobody owns raises an alert for the admins),
+  Access keys (every machine client that
   has signed in, whoever it belongs to, each of which can be signed out), Models (one row per
   AI task with provider, model, reasoning effort and token budget), Providers & keys, Processing
   (queues as compact tiles with their controls in a menu, failed runs, and each user's rule set as
